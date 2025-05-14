@@ -127,9 +127,14 @@ class ImageProcessingPipeline:
             df_new = pd.concat([df_old, df_new], ignore_index=True)
             masks_for_fe = None
         else:
-            df_new, masks_for_fe = self.feature_extractor.extract_features(
-                segmentation_results, img
-            )
+            if metadata["stim"] == True:
+                df_new, masks_for_fe = self.feature_extractor.extract_features(
+                    segmentation_results, img, stim_mask
+                )
+            else:
+                df_new, masks_for_fe = self.feature_extractor.extract_features(
+                    segmentation_results, img
+                )
 
             for key, value in metadata.items():
                 if isinstance(value, (list, tuple)):

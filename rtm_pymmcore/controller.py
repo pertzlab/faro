@@ -238,24 +238,25 @@ class Controller:
                         )
                         stim_exposure = row.get("stim_exposure", None)
 
-                        stimulation_event = useq.MDAEvent(
-                            index={
-                                "t": timestep,
-                                "p": row["fov"],
-                            },
-                            channel={
-                                "config": stim_channel_name,
-                                "group": stim_channel_group,
-                            },
-                            metadata=metadata_dict,
-                            x_pos=fov_x,
-                            y_pos=fov_y,
-                            z_pos=fov_z,
-                            exposure=stim_exposure,
-                            min_start_time=event_start_time,
-                            properties=[power_prop] if power_prop is not None else None,
-                        )
-                        if self._dmd is not None:
+                        if self._dmd is None: 
+                            stimulation_event = useq.MDAEvent(
+                                index={
+                                    "t": timestep,
+                                    "p": row["fov"],
+                                },
+                                channel={
+                                    "config": stim_channel_name,
+                                    "group": stim_channel_group,
+                                },
+                                metadata=metadata_dict,
+                                x_pos=fov_x,
+                                y_pos=fov_y,
+                                z_pos=fov_z,
+                                exposure=stim_exposure,
+                                min_start_time=event_start_time,
+                                properties=[power_prop] if power_prop is not None else None,
+                            )
+                        else:
                             stim_mask = fov_obj.stim_mask_queue.get(
                                 block=True
                             )  # TODO: Not really a good idea, but timeout is also not good, as
@@ -266,9 +267,26 @@ class Controller:
                             else:
                                 stim_mask = self._dmd.affine_transform(stim_mask)
 
-                            stimulation_event["slm_image"] = SLMImage(
-                                data=stim_mask, device=self._dmd.name
-                            )
+                            stimulation_event = useq.MDAEvent(
+                                index={
+                                    "t": timestep,
+                                    "p": row["fov"],
+                                },
+                                channel={
+                                    "config": stim_channel_name,
+                                    "group": stim_channel_group,
+                                },
+                                metadata=metadata_dict,
+                                x_pos=fov_x,
+                                y_pos=fov_y,
+                                z_pos=fov_z,
+                                exposure=stim_exposure,
+                                min_start_time=event_start_time,
+                                properties=[power_prop] if power_prop is not None else None,
+                                slm_image=SLMImage(
+                                    data=stim_mask, device=self._dmd.name
+                                )
+                                )    
 
                         self._queue.put(stimulation_event)
 

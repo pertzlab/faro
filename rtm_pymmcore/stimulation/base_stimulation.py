@@ -55,20 +55,23 @@ class StimCircle(Stim):
     """
 
     def get_stim_mask(
-        self, label_image: np.ndarray, metadata: dict
+        self, label_images: np.ndarray, metadata: dict, img: np.ndarray = None
     ) -> npt.NDArray[np.uint8]:
 
-        fov = metadata["fov_object"]
-        offset_x = metadata["offset_x"]
-        offset_y = metadata["offset_y"]
-        radius = metadata["radius"]
+        offset_x = metadata.get("offset_x", 0)
+        offset_y = metadata.get("offset_y", 0)
+        radius = metadata.get("radius", 25)
 
+        label_image = label_images["labels"]
         stim_mask = np.zeros_like(label_image, dtype=np.uint8)
         props = regionprops(label_image)
         labels_stim = []
         for prop in props:
             centroid = (prop.centroid[0] + offset_y, prop.centroid[1] + offset_x)
             rr, cc = disk(centroid, radius=radius)
-            stim_mask[rr, cc] = 1
+            # Ensure the coordinates are within the image bounds
+            rr = np.clip(rr, 0, stim_mask.shape[0] - 1)
+            cc = np.clip(cc, 0, stim_mask.shape[1] - 1) 
+            stim_mask[rr, cc] = 255
             labels_stim.append(prop.label)
         return stim_mask, labels_stim

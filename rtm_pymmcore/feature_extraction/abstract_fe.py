@@ -7,5 +7,5 @@ class FeatureExtractor:
     from this class and override this method.
     """
 
-    def extract_features(self, labels: dict, image: np.ndarray) -> np.ndarray:
+    def extract_features(self, labels: dict, image: np.ndarray, stim_mask:np.ndarray = None) -> np.ndarray:
         raise NotImplementedError("Subclasses should implement this!")

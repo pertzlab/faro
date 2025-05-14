@@ -227,8 +227,6 @@ class DMD:
         @self.mmc.mda.events.frameReady.connect
         def new_frame(img: np.ndarray, event: MDAEvent):
             calibration_images.append(img)
-            plt.imshow(img, cmap="gray")
-            plt.show()
 
         for event in events:
             self.mmc.mda.run([event])
