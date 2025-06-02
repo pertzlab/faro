@@ -1,11 +1,11 @@
 import numpy as np
 import pandas as pd
 
-from skimage.measure import label
 from skimage.segmentation import expand_labels
 from skimage.measure import regionprops_table
 
 from rtm_pymmcore.feature_extraction.abstract_fe import FeatureExtractor
+from rtm_pymmcore.feature_extraction.utils import median_intensity
 
 
 class FE_ErkKtr(FeatureExtractor):
@@ -48,9 +48,18 @@ class FE_ErkKtr(FeatureExtractor):
         labels_ring = self.extract_ring(labels)  # create cytosolic rings
         # EXTRACT FEATURES
         table_nuc = regionprops_table(
-            labels, image, ["mean_intensity", "label", "centroid"]
+            labels,
+            image,
+            ["mean_intensity", "label", "centroid"],
+            extra_properties=[median_intensity],
         )  # extract features#"centroid"
-        table_ring = regionprops_table(labels_ring, image, ["mean_intensity", "label"])
+
+        table_ring = regionprops_table(
+            labels_ring,
+            image,
+            ["mean_intensity", "label"],
+            extra_properties=[median_intensity],
+        )
 
         # CREATE TABLES
         table_nuc = pd.DataFrame.from_dict(table_nuc)
@@ -60,6 +69,8 @@ class FE_ErkKtr(FeatureExtractor):
                 "mean_intensity-0": "mean_intensity_C0_nuc",
                 "mean_intensity-1": "mean_intensity_C1_nuc",
                 "mean_intensity-2": "mean_intensity_C2_nuc",
+                "median_intensity-0": "median_intensity_C0_nuc",
+                "median_intensity-1": "median_intensity_C1_nuc",
             },
             axis="columns",
         )
@@ -68,6 +79,8 @@ class FE_ErkKtr(FeatureExtractor):
                 "mean_intensity-0": "mean_intensity_C0_ring",
                 "mean_intensity-1": "mean_intensity_C1_ring",
                 "mean_intensity-2": "mean_intensity_C2_ring",
+                "median_intensity-0": "median_intensity_C0_ring",
+                "median_intensity-1": "median_intensity_C1_ring",
             },
             axis="columns",
         )
@@ -76,7 +89,10 @@ class FE_ErkKtr(FeatureExtractor):
         table = table_nuc.merge(table_ring, on=["label"])
 
         # CALCULATE the ERK ratio
-        # table['ratio_ERK'] = table['mean_intensity_C1_ring']/table['mean_intensity_C1_nuc']
+        table["cnr"] = table["mean_intensity_C1_ring"] / table["mean_intensity_C1_nuc"]
+        table["cnr_median"] = (
+            table["median_intensity_C1_ring"] / table["median_intensity_C1_nuc"]
+        )
 
         # TODO add the points from stardist
         # table['x'] = details["points"][:,0]
