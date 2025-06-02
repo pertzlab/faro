@@ -237,6 +237,8 @@ class ImageProcessingPipeline_postExperiment:
         feature_extractor: abstract_fe.FeatureExtractor = None,
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
+        use_old_segmentations: bool = False,
+        n_jobs: int = 2
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
@@ -245,6 +247,9 @@ class ImageProcessingPipeline_postExperiment:
         self.feature_extractor_optocheck = feature_extractor_optocheck
         self.storage_path = out_path
         self.img_storage_path = img_storage_path
+        self.use_old_segmentations = use_old_segmentations
+        self.n_jobs = n_jobs
+
         folders = ["raw", "tracks"]
         if self.tracker is not None:
             folders.append("particles")
@@ -262,21 +267,19 @@ class ImageProcessingPipeline_postExperiment:
 
     def run(self):
         unique_fovs = self.df_acquire["fov"].unique()
-        print(unique_fovs)
-        for fov_id in unique_fovs:
-            max_workers = min(2, len(unique_fovs))  # Limit number of threads
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(self.run_on_fov, fov_id): fov_id
-                    for fov_id in unique_fovs
-                }
-                for future in as_completed(futures):
-                    fov_id = futures[future]
-                    try:
-                        future.result()
-                        print(f"Finished processing FOV {fov_id}")
-                    except Exception as e:
-                        print(f"Error processing FOV {fov_id}: {str(e)}")
+        max_workers = min(self.n_jobs, len(unique_fovs))  # Limit number of threads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.run_on_fov, fov_id): fov_id
+                for fov_id in unique_fovs
+            }
+            for future in as_completed(futures):
+                fov_id = futures[future]
+                try:
+                    future.result()
+                    print(f"Finished processing FOV {fov_id}")
+                except Exception as e:
+                    print(f"Error processing FOV {fov_id}: {str(e)}")
         print("Finished processing all FOVs.")
 
     def run_on_fov(self, fov_id) -> dict:
@@ -293,10 +296,18 @@ class ImageProcessingPipeline_postExperiment:
             metadata = row.to_dict()
             shape_img = (img.shape[-2], img.shape[-1])
             segmentation_results = {}
-            for seg in self.segmentators:
-                segmentation_results[seg["name"]] = seg["class"].segment(
-                    img[seg["use_channel"], :, :]
-                )
+            if self.use_old_segmentations: 
+                for seg in self.segmentators:
+                    segmentation_results[seg["name"]] = tifffile.imread(
+                        os.path.join(
+                            self.img_storage_path, seg["name"], row["fname"] + ".tiff"
+                        )
+                    )
+            else:
+                for seg in self.segmentators:
+                    segmentation_results[seg["name"]] = seg["class"].segment(
+                        img[seg["use_channel"], :, :]
+                    )
 
             if self.feature_extractor is not None:
                 df_new, masks_for_fe = self.feature_extractor.extract_features(
@@ -334,9 +345,11 @@ class ImageProcessingPipeline_postExperiment:
                         store_img(
                             tracked_label, metadata, self.storage_path, "particles"
                         )
-                        store_img(value, metadata, self.storage_path, key)
+                        if not self.use_old_segmentations:
+                            store_img(value, metadata, self.storage_path, key)
                     else:
-                        store_img(value, metadata, self.storage_path, key)
+                        if not self.use_old_segmentations:
+                            store_img(value, metadata, self.storage_path, key)
 
         df_tracked.drop(columns=["fov_object"], inplace=True)
         df_tracked.to_parquet(
