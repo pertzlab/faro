@@ -50,7 +50,7 @@ class FE_ErkKtr(FeatureExtractor):
         table_nuc = regionprops_table(
             labels,
             image,
-            ["mean_intensity", "label", "centroid"],
+            ["mean_intensity", "label", "centroid", "area"],
             extra_properties=[median_intensity],
         )  # extract features#"centroid"
 
@@ -71,6 +71,7 @@ class FE_ErkKtr(FeatureExtractor):
                 "mean_intensity-2": "mean_intensity_C2_nuc",
                 "median_intensity-0": "median_intensity_C0_nuc",
                 "median_intensity-1": "median_intensity_C1_nuc",
+                "area-0": "area_nuc",
             },
             axis="columns",
         )
