@@ -113,19 +113,55 @@ The `rtm-pymmcore` workflow relies on a **uManager configuration file** to defin
 * A `setup` group containing a preset named `Startup`. This preset will be automatically executed when the script initializes, typically configuring essential hardware components.
 * Additional presets for each fluorophore used in the experiment. These presets should define the appropriate settings for filters, lasers, and other optical elements required for imaging each fluorescent channel (e.g., presets named after the fluorophores like `GFP`, `mCherry`, etc.).
 
+#### Example: Using the Micro-Manager Demo Microscope
+```python
+from rtm_pymmcore.microscope.MMDemo import MMDemo
+mic = MMDemo()
+```
+
+#### Example: Using a Real Microscope (e.g., "Jungfrau")
+```python
+from rtm_pymmcore.microscope.Jungfrau import Jungfrau
+mic = Jungfrau()
+```
+The `mic` object provides access to the configured microscope and is used throughout the workflow.
+
+#### Structure of a Microscope Subclass
+
+Each microscope subclass must inherit from `AbstractMicroscope` and implement the following methods:
+
+- **`init_scope(self)`**
+  Initializes the microscope, loads the appropriate Micro-Manager configuration file, and sets up any required hardware groups or settings. Is configured to run automatically when class is instantiated.
+
+- **`run_experiment(self)`**
+  Prepares the system for running an experiment, e.g., by configuring logging or hardware state (e.g. wakeup lasers periodically).
+
+- **`post_experiment(self)`**
+  (Optional) Handles any post-processing or cleanup after the experiment (e.g. re-enables sleep on lasers).
+
+For more details on how to implement a custom microscope subclass, refer to the `rtm_pymmcore/microscope/AbstractMicroscope.py` file.
+
+Briefly, to add support for a new microscope:
+
+1. **Create a new Python file** in `rtm_pymmcore/microscope/`, e.g., `MyCustomScope.py`.
+2. **Implement a class** that inherits from `AbstractMicroscope` and overrides the required methods as shown above.
+3. **Import and instantiate** your class in your notebook or script:
+    ```python
+    from rtm_pymmcore.microscope.MyCustomScope import MyCustomScope
+    mic = MyCustomScope()
+    ```
+
+You can add any additional properties or methods needed for your specific hardware, as long as the required interface is implemented.
+
 ### Running the Script
 
 The workflow is designed to be executed step by step using Jupyter notebooks. This allows for interactive control and monitoring of the experiment. Currently, three example workflows are provided:
 
-* **`00_NoStim_MMDemo.ipynb`**: This notebook demonstrates how to run the pipeline without any stimulation. It focuses on cell tracking and feature extraction. This is an excellent starting point for users to familiarize themselves with the basic structure of the pipeline and the functionality of different modules. It utilizes a simulated Micro-Manager demo microscope and loads example images from the `test_exp_data` folder.
+* **`00_NoStim.ipynb`**: This notebook demonstrates how to run the pipeline without any stimulation. It focuses on cell tracking and feature extraction. This is an excellent starting point for users to familiarize themselves with the basic structure of the pipeline and the functionality of different modules. It utilizes a simulated Micro-Manager demo microscope and loads example images from the `test_exp_data` folder.
 
-* **`01_ERK-KTR_full_fov_stimulation.ipynb`** and **`01_ERK-KTR_full_fov_stimulation_Jungfrau.ipynb`**: These notebooks showcase a full field of view stimulation experiment targeting cells expressing an optogenetic actuator, such as FGFR1. The translocation of the ERK-KTR biosensor is measured in all individual cells as a readout of the stimulation response. Two versions of this script are available:
-    * The first version (`01_ERK-KTR_full_fov_stimulation.ipynb`) is designed to work with the Micro-Manager demo microscope, simulating a real experiment using images from the `test_exp_data` folder. This allows users to test and understand the workflow without needing access to a physical microscope.
-    * The second version (`01_ERK-KTR_full_fov_stimulation_Jungfrau.ipynb`) is specifically configured for use with our Ti Eclipse microscope (named "Jungfrau"), demonstrating the pipeline's application on a real experimental setup.
+* **`01_full_FOV_stimulation_ERK_w_optocheck.ipynb`** and **`01_full_FOV_stimulation_ERK_w_ramp_w_optocheck.ipynb`**: These notebooks showcase a full field of view stimulation experiment targeting cells expressing an optogenetic actuator, such as FGFR1. The translocation of the ERK-KTR biosensor is measured in all individual cells as a readout of the stimulation response. Both versions features an image which will be acquired after the experiment to quantify the optogenetic actuator (optocheck). The difference between the two notebooks is that `01_full_FOV_stimulation_ERK_w_ramp_w_optocheck.ipynb` includes a ramping stimulation protocol, where the stimulation intensity is gradually increased over time, whereas `01_full_FOV_stimulation_ERK_w_optocheck.ipynb` applies a constant stimulation exposure.
 
-* **`02_CellMigration.ipynb`** and **`02_CellMigration_Niesen.ipynb`**: These notebooks illustrate how the pipeline can be used for studying directed cell migration. In this example, only the front part of the migrating cells is selectively stimulated with light using structured illumination. Similar to the previous example, two versions are provided:
-    * `02_CellMigration.ipynb` is intended for use with the Micro-Manager demo microscope.
-    * `02_CellMigration_Niesen.ipynb` is configured for our Ti2 microscope equipped with a DMD for structured illumination (named "Niesen").
+* **`02_CellMigration.ipynb`**. This notebook illustrate how the pipeline can be used for studying directed cell migration. In this example, only the front part of the migrating cells is selectively stimulated with light using structured illumination. Similar to the previous example, two versions are provided:
 
 ## Installation
 
