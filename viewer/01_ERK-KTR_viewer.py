@@ -1,18 +1,32 @@
+# Standardbibliothek
+import csv
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import List
+
+# Drittanbieter
+import dask.array as da
+import matplotlib.pyplot as plt
 import napari
+import numpy as np
+from dask import delayed
 import pandas as pd
 from magicgui import magicgui
 from magicgui.widgets import ComboBox
-from typing import List
-import os
-from tifffile import imread as tiff_imread
-import dask.array as da
 from skimage.io.collection import alphanumeric_key
-import skimage
-import dask.array as da
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dask import delayed
-import numpy as np
-from pathlib import Path
+from tifffile import imread as tiff_imread
+from qtpy.QtCore import QTimer
+from qtpy.QtWidgets import (
+    QPushButton,
+    QComboBox,
+    QLabel,
+    QSizePolicy,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
+)
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
 
 RAW_FOLDER = "raw"
@@ -41,6 +55,9 @@ FOLDERS_TO_LOAD = (
     Layer_Info(LABELS_RINGS, "labels", "translucent", None),
 )
 
+NORM_UNTIL_TIMEPOINT_DEFAULT = 10  # Default timepoint for normalization
+
+
 exp_df = None
 currently_added_layers = []
 
@@ -52,6 +69,42 @@ def load_exp_df(project_path):
     ):
         exp_df = pd.read_parquet(os.path.join(project_path, "exp_data.parquet"))
         exp_df["stim_timestep"] = exp_df["stim_timestep"].apply(tuple)
+        # UID-Spalte hinzufügen
+        if "uid" not in exp_df.columns:
+            exp_df["uid"] = (
+                exp_df["fov"].astype("string")
+                + "_"
+                + exp_df["particle"].astype("string")
+            )
+        # Normierung nur falls noch nicht vorhanden
+        time_col = None
+        if "frame" in exp_df.columns:
+            time_col = "frame"
+        elif "timestep" in exp_df.columns:
+            time_col = "timestep"
+        if time_col is not None:
+            if "cnr" not in exp_df.columns:
+                exp_df["cnr"] = (
+                    exp_df["mean_intensity_C1_ring"] / exp_df["mean_intensity_C1_nuc"]
+                )
+            if "cnr_median" not in exp_df.columns:
+                exp_df["cnr_median"] = exp_df.groupby("uid")[
+                    "mean_intensity_C1_ring"
+                ].transform("median") / exp_df.groupby("uid")[
+                    "mean_intensity_C1_nuc"
+                ].transform(
+                    "median"
+                )
+            for col, base in [("cnr_norm", "cnr"), ("cnr_norm_median", "cnr_median")]:
+                if col not in exp_df.columns and base in exp_df.columns:
+                    mean_cnr = (
+                        exp_df[exp_df[time_col] < NORM_UNTIL_TIMEPOINT_DEFAULT]
+                        .groupby("uid")[base]
+                        .mean()
+                    )
+                    exp_df[col] = exp_df.apply(
+                        lambda row: row[base] / mean_cnr.get(row["uid"], 1), axis=1
+                    )
 
 
 def get_cell_lines() -> List[str]:
@@ -155,14 +208,22 @@ def update_or_add_layer(layer_name, data, colormap, blending, layer_type="image"
 
 
 @magicgui(
-    cell_line={
-        "widget_type": ComboBox,
-        "choices": [],
-        "label": "Cell Line",
-    },
+    cell_line={"widget_type": ComboBox, "choices": [], "label": "Cell Line"},
+    filter_cell_line={"widget_type": "CheckBox", "label": "use filter", "value": True},
     exposure_time={"widget_type": ComboBox, "choices": [], "label": "StimExposure"},
-    fov={"widget_type": ComboBox, "choices": [], "label": "FOV"},
+    filter_exposure_time={
+        "widget_type": "CheckBox",
+        "label": "use filter",
+        "value": True,
+    },
     stim_timestep={"widget_type": ComboBox, "choices": [], "label": "StimTimepoint"},
+    filter_stim_timestep={
+        "widget_type": "CheckBox",
+        "label": "use filter",
+        "value": True,
+    },
+    fov={"widget_type": ComboBox, "choices": [], "label": "FOV"},
+    filter_fov={"widget_type": "CheckBox", "label": "use filter", "value": True},
     call_button="Load FOV",
     next_fov={"widget_type": "PushButton", "label": "Next FOV ->"},
     previous_fov={"widget_type": "PushButton", "label": "Previous FOV <-"},
@@ -175,20 +236,42 @@ def update_or_add_layer(layer_name, data, colormap, blending, layer_type="image"
 )
 def selection_widget(
     cell_line: str,
+    filter_cell_line: bool,
     exposure_time: int,
+    filter_exposure_time: bool,
     stim_timestep,
+    filter_stim_timestep: bool,
     fov: str,
+    filter_fov: bool,
     select_data: list[str] = [folder.folder_name for folder in FOLDERS_TO_LOAD],
     lazy: bool = True,
     next_fov: bool = False,
     previous_fov: bool = False,
 ):
     print(
-        f"Selected Cell Line: {cell_line}, Exposure Time: {exposure_time}, Selected FOV: {fov}"
+        f"Selected: cell_line={cell_line}({filter_cell_line}), exposure_time={exposure_time}({filter_exposure_time}), stim_timestep={stim_timestep}({filter_stim_timestep}), fov={fov}({filter_fov})"
     )
     global currently_added_layers
 
-    # Update choices for cell_line, exposure_time, and fov
+    # Dynamisch Filter-Query bauen
+    filter_parts = []
+    if filter_cell_line:
+        filter_parts.append("cell_line == @cell_line")
+    if filter_exposure_time:
+        filter_parts.append("stim_exposure == @exposure_time")
+    if filter_stim_timestep:
+        filter_parts.append("stim_timestep == @stim_timestep")
+    if filter_fov:
+        filter_parts.append("fov == @fov")
+    if filter_parts:
+        query_str = " and ".join(filter_parts)
+        filtered_df = exp_df.query(query_str)
+    else:
+        filtered_df = exp_df
+
+    filenames = filtered_df["fname"].unique().tolist()
+
+    layers_added_in_current_call = []
 
     def update_or_add_layer(
         layer_name,
@@ -214,16 +297,6 @@ def selection_widget(
                 )
             elif layer_type == "labels":
                 viewer.add_labels(data, name=layer_name, blending=blending)
-
-    layers_added_in_current_call = []
-
-    filenames = (
-        exp_df.query(
-            "cell_line == @cell_line and stim_exposure == @exposure_time and fov == @fov"
-        )["fname"]
-        .unique()
-        .tolist()
-    )
 
     for folder in select_data:
         folder_info = next(
@@ -316,6 +389,11 @@ def set_next(value):
             selection_widget.fov.value = fov_choices[current_index + 1]
     elif current_fov is None:
         selection_widget.fov.value = fov_choices[0]
+    # Unset highlighting when changing FOV
+    if hasattr(cell_time_series_widget, "selected_particle"):
+        cell_time_series_widget.selected_particle = None
+        cell_time_series_widget._show_all = True
+        cell_time_series_widget.update_plot()
     selection_widget.call_button.clicked.emit()
 
 
@@ -330,6 +408,11 @@ def set_previous(value):
             selection_widget.fov.value = fov_choices[current_index - 1]
     elif current_fov is None:
         selection_widget.fov.value = fov_choices[0]
+    # Unset highlighting when changing FOV
+    if hasattr(cell_time_series_widget, "selected_particle"):
+        cell_time_series_widget.selected_particle = None
+        cell_time_series_widget._show_all = True
+        cell_time_series_widget.update_plot()
     selection_widget.call_button.clicked.emit()
 
 
@@ -494,32 +577,363 @@ def add_optocheck_overlay(next_fov: bool = False):
     selection_widget.fov.value = current_fov
 
 
-if __name__ == "__main__":
-    current_fov = None
-    current_cell_line = None
-    current_exposure_time = None
-    current_stim_timestep = None
-    project_path = None
+current_fov = None
+current_cell_line = None
+current_exposure_time = None
+current_stim_timestep = None
+project_path = None
 
-    # check if viewer is already open, if not create a new viewer
-    if napari.current_viewer() is None:
-        viewer = napari.Viewer()
-    else:
-        viewer = napari.current_viewer()
+# check if viewer is already open, if not create a new viewer
+if napari.current_viewer() is None:
+    viewer = napari.Viewer()
+else:
+    viewer = napari.current_viewer()
 
-    # create widgets and add them to napari
-    dock_widget = viewer.window.add_dock_widget(
-        directorypicker, name="Choose a directory"
-    )
-    viewer.window.add_dock_widget(selection_widget, name="Load FOV")
-    viewer.window.add_dock_widget(add_cnr_overlay, name="Add CNr overlay")
-    viewer.window.add_dock_widget(add_optocheck_overlay, name="Add optocheck overlay")
+# create widgets and add them to napari
+dock_widget = viewer.window.add_dock_widget(directorypicker, name="Choose a directory")
+viewer.window.add_dock_widget(selection_widget, name="Load FOV")
+viewer.window.add_dock_widget(add_cnr_overlay, name="Add CNr overlay")
+viewer.window.add_dock_widget(add_optocheck_overlay, name="Add optocheck overlay")
 
-    selection_widget.cell_line.changed.connect(update_exposure_times)
-    selection_widget.exposure_time.changed.connect(update_stim_timesteps)
-    selection_widget.stim_timestep.changed.connect(update_fov)
-    selection_widget.next_fov.changed.connect(set_next)
-    selection_widget.previous_fov.changed.connect(set_previous)
+selection_widget.cell_line.changed.connect(update_exposure_times)
+selection_widget.exposure_time.changed.connect(update_stim_timesteps)
+selection_widget.stim_timestep.changed.connect(update_fov)
+selection_widget.next_fov.changed.connect(set_next)
+selection_widget.previous_fov.changed.connect(set_previous)
 
-    # start event loop
-    napari.run()
+
+class CellTimeSeriesWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Hauptlayout: horizontal (links Controls, rechts Plot)
+        main_layout = QHBoxLayout()
+        self.setLayout(main_layout)
+
+        # Linke Spalte für Controls (ca. 1/6 der Breite)
+        control_layout = QVBoxLayout()
+        control_widget = QWidget()
+        control_widget.setLayout(control_layout)
+        control_widget.setFixedWidth(150)  # ca. 1/6 der typischen Plotbreite
+
+        self.label = QLabel("y-axis:")
+        self.combo = QComboBox()
+        self.combo.addItems(["cnr", "cnr_median", "cnr_norm", "cnr_norm_median"])
+        default_index = self.combo.findText("cnr_norm")
+        if default_index != -1:
+            self.combo.setCurrentIndex(default_index)
+        self.highlight_btn = QPushButton("Highlight Cell")
+        self.delete_btn = QPushButton("Remove Cell")
+        control_layout.addWidget(self.label)
+        control_layout.addWidget(self.combo)
+        control_layout.addSpacing(10)
+        control_layout.addWidget(self.highlight_btn)
+        control_layout.addWidget(self.delete_btn)
+        control_layout.addStretch()
+
+        # Plot rechts
+        plot_layout = QVBoxLayout()
+        plot_widget = QWidget()
+        plot_widget.setLayout(plot_layout)
+        self.fig, self.ax = plt.subplots()
+        self.canvas = FigureCanvas(self.fig)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        plot_layout.addWidget(self.canvas)
+
+        # Layouts zusammenfügen
+        main_layout.addWidget(control_widget)
+        main_layout.addWidget(plot_widget, stretch=5)
+
+        self.combo.currentTextChanged.connect(self.update_plot)
+        self.selected_particle = None
+        self.lines = []
+        self.line_cache = {}  # particle -> (line, group)
+        self.cid = self.canvas.mpl_connect("pick_event", self.on_pick)
+        self.labels_layer = None  # wird später gesetzt
+
+        self.highlight_btn.clicked.connect(self.highlight_cell)
+        self.delete_btn.clicked.connect(self.delete_cell)
+
+        # Rechtsklick-Event für "alle Zellen wieder anzeigen"
+        self.canvas.mpl_connect("button_press_event", self.on_right_click)
+
+        self._show_all = True  # Flag: alle Zellen anzeigen
+        self._last_fov = None
+        self._last_y_col = None
+
+    def set_labels_layer(self, labels_layer):
+        self.labels_layer = labels_layer
+
+    def update_data(self, exp_df, fov, y_col="cnr"):
+        self.exp_df = exp_df
+        self.fov = fov
+        self.y_col = y_col
+        self.ensure_norm_columns(force_default=True)
+        self._show_all = True
+        self._last_fov = None  # erzwinge Neuzeichnen
+        self.update_plot()
+
+    def ensure_norm_columns(self, force_default=False):
+        pass
+
+    def update_norm(self):
+        self.ensure_norm_columns(force_default=False)
+        self.update_plot()
+
+    def update_plot(self):
+        if not hasattr(self, "exp_df") or self.exp_df is None or self.fov is None:
+            return
+        y_col = self.combo.currentText()
+        # Nur neu zeichnen, wenn sich FOV oder y_col geändert hat
+        if (
+            self._last_fov == self.fov
+            and self._last_y_col == y_col
+            and hasattr(self, "lines")
+            and self.lines
+        ):
+            self.highlight_particle(self.selected_particle)
+            return
+        self.ax.clear()
+        self.lines = []
+        self.line_cache = {}
+        df = self.exp_df[self.exp_df["fov"] == self.fov]
+        if "timestep" in df.columns:
+            x = "timestep"
+        elif "frame" in df.columns:
+            x = "frame"
+        else:
+            self.canvas.draw()
+            return
+        # Plot die Linien und cache sie
+        for i, (particle, group) in enumerate(df.groupby("particle")):
+            if (
+                not self._show_all
+                and self.selected_particle is not None
+                and particle != self.selected_particle
+            ):
+                continue
+            (line,) = self.ax.plot(
+                group[x],
+                group.get(y_col, group["cnr"]),
+                label=str(particle),
+                picker=5,
+                alpha=0.3,
+                linewidth=1.0,
+            )
+            self.lines.append((line, particle))
+            self.line_cache[particle] = (line, group)
+        # Blaue Ticks für alle Werte in stim_timestep (nur Tick, keine Linie)
+        if "stim_timestep" in df.columns:
+            stim_steps = set()
+            for s in df["stim_timestep"].dropna():
+                if isinstance(s, (tuple, list)):
+                    for val in s:
+                        stim_steps.add(val)
+                else:
+                    stim_steps.add(s)
+            stim_ticks = df[df[x].isin(stim_steps)][x].unique()
+            y_min, y_max = self.ax.get_ylim()
+            for tick in stim_ticks:
+                self.ax.plot(
+                    tick,
+                    y_min,
+                    marker="|",
+                    color="blue",
+                    markersize=12,
+                    alpha=0.5,
+                    zorder=10,
+                )
+        self.ax.set_xlabel("time [min]")
+        self.ax.set_ylabel(y_col)
+        self._last_fov = self.fov
+        self._last_y_col = y_col
+        self.canvas.draw()
+
+    def on_pick(self, event):
+        for line, particle in self.lines:
+            if event.artist == line:
+                self.selected_particle = particle
+                self._show_all = False
+                self.highlight_particle(particle)
+                break
+
+    def on_right_click(self, event):
+        if event.button == 3:  # 3 = Rechtsklick
+            self._show_all = True
+            self.selected_particle = None
+            self.update_plot()
+
+            def unset_label():
+                self.labels_layer.show_selected_label = False
+
+            QTimer.singleShot(50, unset_label)
+
+    def highlight_particle(self, particle):
+        # Nur die Linieneigenschaften anpassen, nicht alles neu zeichnen
+        for line, p in self.lines:
+            if p == particle:
+                line.set_linewidth(3.0)
+                line.set_alpha(1.0)
+            else:
+                line.set_linewidth(1.0)
+                line.set_alpha(0.3)
+        self.canvas.draw()
+        if self.labels_layer is not None and particle is not None:
+
+            def set_label():
+                self.labels_layer.selected_label = particle
+                self.labels_layer.opacity = 1.0
+                self.labels_layer.visible = True
+                self.labels_layer.show_selected_label = True
+
+            QTimer.singleShot(50, set_label)
+            QTimer.singleShot(100, set_label)
+        self.selected_particle = particle
+
+    def highlight_cell(self):
+        self.set_flag_for_selected_cell("selected", True)
+
+    def delete_cell(self):
+        self.set_flag_for_selected_cell("deleted", True)
+
+    def set_flag_for_selected_cell(self, flag, value):
+        if self.selected_particle is None or self.fov is None:
+            return
+        uid = f"{self.fov}_{self.selected_particle}"
+        csv_path = os.path.join(project_path, "cell_selection.csv")
+        entry = {
+            "particle": self.selected_particle,
+            "label": self.selected_particle,
+            "fov": self.fov,
+            "uid": uid,
+            "selected": False,
+            "deleted": False,
+        }
+        rows = []
+        found = False
+        if os.path.exists(csv_path):
+            with open(csv_path, newline="", encoding="utf-8") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    if str(row.get("uid", "")) == uid:
+                        row[flag] = str(value)
+                        found = True
+                    rows.append(row)
+        if not found:
+            entry[flag] = True
+            rows.append(entry)
+        with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+            fieldnames = ["particle", "label", "fov", "uid", "selected", "deleted"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(
+                    {
+                        "particle": row["particle"],
+                        "label": row["label"],
+                        "fov": row["fov"],
+                        "uid": row.get("uid", f"{row['fov']}_{row['particle']}"),
+                        "selected": str(row.get("selected", False)),
+                        "deleted": str(row.get("deleted", False)),
+                    }
+                )
+
+
+# Widget-Instanz erstellen
+cell_time_series_widget = CellTimeSeriesWidget()
+
+
+# Funktion, um das Widget mit aktuellen Daten zu füllen
+def update_cell_time_series_widget():
+    if exp_df is None or current_fov is None:
+        return
+    y_col = cell_time_series_widget.combo.currentText()
+    # Daten filtern
+    exp_df_filtered = exp_df[exp_df["fov"] == current_fov].copy()
+    # UID-Spalte hinzufügen, falls nicht vorhanden
+    if "uid" not in exp_df_filtered.columns:
+        exp_df_filtered["uid"] = (
+            exp_df_filtered["fov"].astype("string")
+            + "_"
+            + exp_df_filtered["particle"].astype("string")
+        )
+    cell_time_series_widget.update_data(exp_df_filtered, current_fov, y_col)
+    # Labels-Layer suchen
+    labels_layer = None
+    for layer in viewer.layers:
+        if layer.name == "particles":
+            labels_layer = layer
+            break
+    cell_time_series_widget.set_labels_layer(labels_layer)
+
+
+# Callback, wenn FOV oder Layer gewechselt wird
+def on_fov_change(event=None):
+    update_cell_time_series_widget()
+
+
+# Callback, wenn in Napari ein Label ausgewählt wird
+def on_label_selected(event):
+    labels_layer = event.source
+    particle = labels_layer.selected_label
+    # Typ angleichen, falls nötig
+    try:
+        particle = int(particle)
+    except Exception:
+        pass
+    cell_time_series_widget.highlight_particle(particle)
+
+
+# Events verbinden
+selection_widget.fov.changed.connect(on_fov_change)
+selection_widget.cell_line.changed.connect(on_fov_change)
+selection_widget.exposure_time.changed.connect(on_fov_change)
+selection_widget.stim_timestep.changed.connect(on_fov_change)
+cell_time_series_widget.combo.currentTextChanged.connect(update_cell_time_series_widget)
+selection_widget.call_button.clicked.connect(update_cell_time_series_widget)
+
+
+# Labels-Layer Event verbinden (wenn Layer existiert)
+def connect_label_event():
+    for layer in viewer.layers:
+        if layer.name == "particles":
+            try:
+                layer.events.selected_label.connect(on_label_selected)
+            except Exception:
+                pass
+
+
+connect_label_event()
+viewer.layers.events.inserted.connect(lambda event: connect_label_event())
+
+# Initiales Update
+update_cell_time_series_widget()
+
+
+@viewer.bind_key("a", overwrite=True)
+def highlight_selected_label_in_plot(event=None):
+    # Suche das particles-Layer
+    labels_layer = None
+    for layer in viewer.layers:
+        if layer.name == "particles":
+            labels_layer = layer
+            break
+    if labels_layer is not None:
+        particle = labels_layer.selected_label
+        if particle is not None and particle != 0:
+            try:
+                particle = int(particle)
+            except Exception:
+                pass
+            cell_time_series_widget.highlight_particle(particle)
+
+
+# Plot-Widget unten andocken (statt als Tab)
+viewer.window.add_dock_widget(
+    cell_time_series_widget, name="Cell Time Series", area="bottom"
+)
+cell_time_series_widget.setMinimumHeight(250)
+cell_time_series_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+
+# start event loop
+napari.run()
