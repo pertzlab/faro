@@ -1,32 +1,18 @@
-# Standardbibliothek
-import csv
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
-from typing import List
-
-# Drittanbieter
-import dask.array as da
-import matplotlib.pyplot as plt
 import napari
-import numpy as np
-from dask import delayed
 import pandas as pd
 from magicgui import magicgui
 from magicgui.widgets import ComboBox
-from skimage.io.collection import alphanumeric_key
+from typing import List
+import os
 from tifffile import imread as tiff_imread
-from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import (
-    QPushButton,
-    QComboBox,
-    QLabel,
-    QSizePolicy,
-    QHBoxLayout,
-    QVBoxLayout,
-    QWidget,
-)
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import dask.array as da
+from skimage.io.collection import alphanumeric_key
+import skimage
+import dask.array as da
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dask import delayed
+import numpy as np
+from pathlib import Path
 
 
 RAW_FOLDER = "raw"
@@ -57,7 +43,6 @@ FOLDERS_TO_LOAD = (
 
 NORM_UNTIL_TIMEPOINT_DEFAULT = 10  # Default timepoint for normalization
 
-
 exp_df = None
 currently_added_layers = []
 
@@ -83,18 +68,6 @@ def load_exp_df(project_path):
         elif "timestep" in exp_df.columns:
             time_col = "timestep"
         if time_col is not None:
-            if "cnr" not in exp_df.columns:
-                exp_df["cnr"] = (
-                    exp_df["mean_intensity_C1_ring"] / exp_df["mean_intensity_C1_nuc"]
-                )
-            if "cnr_median" not in exp_df.columns:
-                exp_df["cnr_median"] = exp_df.groupby("uid")[
-                    "mean_intensity_C1_ring"
-                ].transform("median") / exp_df.groupby("uid")[
-                    "mean_intensity_C1_nuc"
-                ].transform(
-                    "median"
-                )
             for col, base in [("cnr_norm", "cnr"), ("cnr_norm_median", "cnr_median")]:
                 if col not in exp_df.columns and base in exp_df.columns:
                     mean_cnr = (
@@ -602,6 +575,21 @@ selection_widget.next_fov.changed.connect(set_next)
 selection_widget.previous_fov.changed.connect(set_previous)
 
 
+from qtpy.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSizePolicy,
+    QLabel,
+    QComboBox,
+    QPushButton,
+)
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import matplotlib.pyplot as plt
+from qtpy.QtCore import QTimer
+import csv
+
+
 class CellTimeSeriesWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -646,7 +634,6 @@ class CellTimeSeriesWidget(QWidget):
         self.combo.currentTextChanged.connect(self.update_plot)
         self.selected_particle = None
         self.lines = []
-        self.line_cache = {}  # particle -> (line, group)
         self.cid = self.canvas.mpl_connect("pick_event", self.on_pick)
         self.labels_layer = None  # wird später gesetzt
 
@@ -657,8 +644,6 @@ class CellTimeSeriesWidget(QWidget):
         self.canvas.mpl_connect("button_press_event", self.on_right_click)
 
         self._show_all = True  # Flag: alle Zellen anzeigen
-        self._last_fov = None
-        self._last_y_col = None
 
     def set_labels_layer(self, labels_layer):
         self.labels_layer = labels_layer
@@ -669,7 +654,6 @@ class CellTimeSeriesWidget(QWidget):
         self.y_col = y_col
         self.ensure_norm_columns(force_default=True)
         self._show_all = True
-        self._last_fov = None  # erzwinge Neuzeichnen
         self.update_plot()
 
     def ensure_norm_columns(self, force_default=False):
@@ -680,114 +664,285 @@ class CellTimeSeriesWidget(QWidget):
         self.update_plot()
 
     def update_plot(self):
-        if not hasattr(self, "exp_df") or self.exp_df is None or self.fov is None:
-            return
-        y_col = self.combo.currentText()
-        # Nur neu zeichnen, wenn sich FOV oder y_col geändert hat
-        if (
-            self._last_fov == self.fov
-            and self._last_y_col == y_col
-            and hasattr(self, "lines")
-            and self.lines
-        ):
-            self.highlight_particle(self.selected_particle)
-            return
-        self.ax.clear()
-        self.lines = []
-        self.line_cache = {}
-        df = self.exp_df[self.exp_df["fov"] == self.fov]
-        if "timestep" in df.columns:
-            x = "timestep"
-        elif "frame" in df.columns:
-            x = "frame"
-        else:
-            self.canvas.draw()
-            return
-        # Plot die Linien und cache sie
-        for i, (particle, group) in enumerate(df.groupby("particle")):
-            if (
-                not self._show_all
-                and self.selected_particle is not None
-                and particle != self.selected_particle
-            ):
-                continue
-            (line,) = self.ax.plot(
-                group[x],
-                group.get(y_col, group["cnr"]),
-                label=str(particle),
-                picker=5,
-                alpha=0.3,
-                linewidth=1.0,
-            )
-            self.lines.append((line, particle))
-            self.line_cache[particle] = (line, group)
-        # Blaue Ticks für alle Werte in stim_timestep (nur Tick, keine Linie)
-        if "stim_timestep" in df.columns:
-            stim_steps = set()
-            for s in df["stim_timestep"].dropna():
-                if isinstance(s, (tuple, list)):
-                    for val in s:
-                        stim_steps.add(val)
-                else:
-                    stim_steps.add(s)
-            stim_ticks = df[df[x].isin(stim_steps)][x].unique()
-            y_min, y_max = self.ax.get_ylim()
-            for tick in stim_ticks:
-                self.ax.plot(
-                    tick,
-                    y_min,
-                    marker="|",
-                    color="blue",
-                    markersize=12,
-                    alpha=0.5,
-                    zorder=10,
-                )
-        self.ax.set_xlabel("time [min]")
-        self.ax.set_ylabel(y_col)
-        self._last_fov = self.fov
-        self._last_y_col = y_col
-        self.canvas.draw()
+        try:
+            if not hasattr(self, "exp_df") or self.exp_df is None or self.fov is None:
+                return
+
+            y_col = self.combo.currentText()
+            self.ax.clear()
+            self.lines = []
+            df = self.exp_df[self.exp_df["fov"] == self.fov]
+
+            if "timestep" in df.columns:
+                x = "timestep"
+            elif "frame" in df.columns:
+                x = "frame"
+            else:
+                self.canvas.draw_idle()
+                return
+
+            # Sichere Plot-Erstellung mit Fehlerbehandlung pro Linie
+            plotted_count = 0
+            max_lines = 500  # Limitiere die Anzahl der Linien für Performance
+
+            for i, (particle, group) in enumerate(df.groupby("particle")):
+                try:
+                    # Performance-Limit
+                    if plotted_count >= max_lines:
+                        print(f"Limiting display to {max_lines} lines for performance")
+                        break
+
+                    # Filter basierend auf _show_all Flag
+                    if (
+                        not self._show_all
+                        and self.selected_particle is not None
+                        and particle != self.selected_particle
+                    ):
+                        continue
+
+                    # Sichere Datenextraktion
+                    if group.empty:
+                        continue
+
+                    x_data = group[x]
+                    if y_col in group.columns:
+                        y_data = group[y_col]
+                    elif "cnr" in group.columns:
+                        y_data = group["cnr"]
+                    else:
+                        # Fallback: verwende die erste numerische Spalte
+                        numeric_cols = group.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            y_data = group[numeric_cols[0]]
+                        else:
+                            continue
+
+                    # Bestimme Stil basierend auf Auswahl
+                    if particle == self.selected_particle:
+                        alpha, linewidth, zorder = 1.0, 3.0, 10
+                    else:
+                        alpha, linewidth, zorder = 0.3, 1.0, 1
+
+                    (line,) = self.ax.plot(
+                        x_data,
+                        y_data,
+                        label=str(particle),
+                        picker=True,
+                        pickradius=5,
+                        alpha=alpha,
+                        linewidth=linewidth,
+                        zorder=zorder,
+                        rasterized=True,  # Bessere Performance
+                    )
+                    self.lines.append((line, particle))
+                    plotted_count += 1
+
+                except Exception as e:
+                    print(f"Error plotting particle {particle}: {e}")
+                    continue
+
+            # Stimulus-Ticks robuster hinzufügen
+            try:
+                if "stim_timestep" in df.columns and not df.empty:
+                    stim_steps = set()
+                    for s in df["stim_timestep"].dropna():
+                        if isinstance(s, (tuple, list)):
+                            for val in s:
+                                if pd.notna(val):
+                                    stim_steps.add(val)
+                        elif pd.notna(s):
+                            stim_steps.add(s)
+
+                    if stim_steps:
+                        stim_ticks = df[df[x].isin(stim_steps)][x].unique()
+                        for tick in stim_ticks:
+                            self.ax.axvline(
+                                tick, color="blue", alpha=0.3, linewidth=1, zorder=0
+                            )
+            except Exception as e:
+                print(f"Error adding stimulus ticks: {e}")
+
+            # Sichere Achsenbeschriftung
+            try:
+                self.ax.set_xlabel("time [min]")
+                self.ax.set_ylabel(y_col)
+            except Exception as e:
+                print(f"Error setting axis labels: {e}")
+
+            # Sichere Canvas-Update
+            try:
+                self.canvas.draw_idle()
+            except Exception as e:
+                print(f"Error drawing canvas: {e}")
+
+        except Exception as e:
+            print(f"Error updating plot: {e}")
+            # Minimaler Fallback
+            try:
+                self.ax.clear()
+                self.lines = []
+                self.canvas.draw_idle()
+            except Exception as e2:
+                print(f"Error in plot fallback: {e2}")
 
     def on_pick(self, event):
-        for line, particle in self.lines:
-            if event.artist == line:
-                self.selected_particle = particle
-                self._show_all = False
-                self.highlight_particle(particle)
-                break
+        try:
+            # Robustes Picking für überlappende Linien
+            found_particle = None
+
+            # Sicherheitscheck: lines müssen existieren
+            if not hasattr(self, "lines") or not self.lines:
+                return
+
+            # Bei überlappenden Linien kann event.artist eine Liste sein
+            picked_artists = (
+                event.artist if isinstance(event.artist, list) else [event.artist]
+            )
+
+            # Finde die erste passende Linie
+            for artist in picked_artists:
+                for line, particle in self.lines:
+                    if artist == line:
+                        found_particle = particle
+                        break
+                if found_particle is not None:
+                    break
+
+            if found_particle is not None:
+                # Unterscheide zwischen Single- und Double-Click
+                if hasattr(event, "dblclick") and event.dblclick:
+                    # Doppelklick: Einzelansicht
+                    self.selected_particle = found_particle
+                    self._show_all = False
+                    self.update_plot()
+                else:
+                    # Einfachklick: nur hervorheben, alle sichtbar lassen
+                    self.selected_particle = found_particle
+                    self._show_all = True  # Alle Linien bleiben sichtbar
+                    self.highlight_particle(found_particle)
+
+        except Exception as e:
+            print(f"Error in pick event: {e}")
+            # Sicherer Fallback ohne komplettes Neuzeichnen
+            try:
+                if hasattr(self, "selected_particle"):
+                    self.selected_particle = None
+                    self._show_all = True
+            except Exception:
+                pass
 
     def on_right_click(self, event):
+        # Rechtsklick: alle Zellen wieder anzeigen
         if event.button == 3:  # 3 = Rechtsklick
-            self._show_all = True
-            self.selected_particle = None
-            self.update_plot()
+            try:
+                # Reset zu Vollansicht
+                self._show_all = True
+                old_particle = self.selected_particle
+                self.selected_particle = None
 
-            def unset_label():
-                self.labels_layer.show_selected_label = False
+                # Nur neu zeichnen wenn sich etwas geändert hat
+                if not self._show_all or old_particle is not None:
+                    self.update_plot()
 
-            QTimer.singleShot(50, unset_label)
+                # Sicher prüfen ob labels_layer existiert
+                if self.labels_layer is not None:
+
+                    def unset_label():
+                        try:
+                            if hasattr(self.labels_layer, "show_selected_label"):
+                                self.labels_layer.show_selected_label = False
+                            if hasattr(self.labels_layer, "selected_label"):
+                                self.labels_layer.selected_label = 0
+                        except Exception:
+                            pass
+
+                    QTimer.singleShot(50, unset_label)
+            except Exception as e:
+                print(f"Error in right-click: {e}")
+                # Minimaler Fallback
+                try:
+                    self._show_all = True
+                    self.selected_particle = None
+                except Exception:
+                    pass
 
     def highlight_particle(self, particle):
-        # Nur die Linieneigenschaften anpassen, nicht alles neu zeichnen
-        for line, p in self.lines:
-            if p == particle:
-                line.set_linewidth(3.0)
-                line.set_alpha(1.0)
-            else:
-                line.set_linewidth(1.0)
-                line.set_alpha(0.3)
-        self.canvas.draw()
-        if self.labels_layer is not None and particle is not None:
+        try:
+            # Sicher prüfen ob lines existieren
+            if not hasattr(self, "lines") or not self.lines:
+                return
 
-            def set_label():
-                self.labels_layer.selected_label = particle
-                self.labels_layer.opacity = 1.0
-                self.labels_layer.visible = True
-                self.labels_layer.show_selected_label = True
+            if particle is None:
+                return
 
-            QTimer.singleShot(50, set_label)
-            QTimer.singleShot(100, set_label)
-        self.selected_particle = particle
+            # Batch-Update aller Linien-Eigenschaften
+            updates = []
+            any_changes = False
+
+            for line, p in self.lines:
+                try:
+                    # Prüfe aktuelle Eigenschaften vor Änderung
+                    current_width = line.get_linewidth()
+                    current_alpha = line.get_alpha()
+
+                    if p == particle:
+                        # Hervorheben
+                        target_width, target_alpha = 3.0, 1.0
+                    else:
+                        # Normal
+                        target_width, target_alpha = 1.0, 0.3
+
+                    # Nur ändern wenn nötig
+                    if current_width != target_width or current_alpha != target_alpha:
+                        updates.append((line, target_width, target_alpha))
+                        any_changes = True
+
+                except Exception:
+                    # Ignoriere ungültige Linien
+                    continue
+
+            # Alle Updates auf einmal anwenden (nur wenn nötig)
+            if any_changes:
+                for line, linewidth, alpha in updates:
+                    try:
+                        line.set_linewidth(linewidth)
+                        line.set_alpha(alpha)
+                        line.set_zorder(
+                            10 if linewidth > 2 else 1
+                        )  # Z-order für Hervorhebung
+                    except Exception:
+                        continue
+
+                # Nur ein draw-Call am Ende
+                self.canvas.draw_idle()
+
+            # Napari-Synchronisation nur wenn layer existiert
+            if self.labels_layer is not None:
+
+                def set_label():
+                    try:
+                        if hasattr(self.labels_layer, "selected_label"):
+                            self.labels_layer.selected_label = particle
+                        if hasattr(self.labels_layer, "opacity"):
+                            self.labels_layer.opacity = 1.0
+                        if hasattr(self.labels_layer, "visible"):
+                            self.labels_layer.visible = True
+                        if hasattr(self.labels_layer, "show_selected_label"):
+                            self.labels_layer.show_selected_label = True
+                    except Exception:
+                        pass
+
+                QTimer.singleShot(50, set_label)
+
+            self.selected_particle = particle
+
+        except Exception as e:
+            print(f"Error highlighting particle {particle}: {e}")
+            # Minimaler Fallback - setze nur selected_particle
+            try:
+                self.selected_particle = particle
+            except Exception:
+                pass
 
     def highlight_cell(self):
         self.set_flag_for_selected_cell("selected", True)
@@ -844,26 +999,34 @@ cell_time_series_widget = CellTimeSeriesWidget()
 
 # Funktion, um das Widget mit aktuellen Daten zu füllen
 def update_cell_time_series_widget():
-    if exp_df is None or current_fov is None:
-        return
-    y_col = cell_time_series_widget.combo.currentText()
-    # Daten filtern
-    exp_df_filtered = exp_df[exp_df["fov"] == current_fov].copy()
-    # UID-Spalte hinzufügen, falls nicht vorhanden
-    if "uid" not in exp_df_filtered.columns:
-        exp_df_filtered["uid"] = (
-            exp_df_filtered["fov"].astype("string")
-            + "_"
-            + exp_df_filtered["particle"].astype("string")
-        )
-    cell_time_series_widget.update_data(exp_df_filtered, current_fov, y_col)
-    # Labels-Layer suchen
-    labels_layer = None
-    for layer in viewer.layers:
-        if layer.name == "particles":
-            labels_layer = layer
-            break
-    cell_time_series_widget.set_labels_layer(labels_layer)
+    try:
+        if exp_df is None or current_fov is None:
+            return
+
+        y_col = cell_time_series_widget.combo.currentText()
+        # Daten filtern
+        exp_df_filtered = exp_df[exp_df["fov"] == current_fov].copy()
+
+        # UID-Spalte hinzufügen, falls nicht vorhanden
+        if "uid" not in exp_df_filtered.columns:
+            exp_df_filtered["uid"] = (
+                exp_df_filtered["fov"].astype("string")
+                + "_"
+                + exp_df_filtered["particle"].astype("string")
+            )
+
+        cell_time_series_widget.update_data(exp_df_filtered, current_fov, y_col)
+
+        # Labels-Layer suchen
+        labels_layer = None
+        for layer in viewer.layers:
+            if layer.name == "particles":
+                labels_layer = layer
+                break
+        cell_time_series_widget.set_labels_layer(labels_layer)
+
+    except Exception as e:
+        print(f"Error updating cell time series widget: {e}")
 
 
 # Callback, wenn FOV oder Layer gewechselt wird
@@ -873,14 +1036,19 @@ def on_fov_change(event=None):
 
 # Callback, wenn in Napari ein Label ausgewählt wird
 def on_label_selected(event):
-    labels_layer = event.source
-    particle = labels_layer.selected_label
-    # Typ angleichen, falls nötig
     try:
-        particle = int(particle)
-    except Exception:
-        pass
-    cell_time_series_widget.highlight_particle(particle)
+        particle = event.value
+        # Typ angleichen, falls nötig
+        try:
+            particle = int(particle)
+        except Exception:
+            pass
+
+        # Nur highlighten wenn das Widget existiert und bereit ist
+        if hasattr(cell_time_series_widget, "highlight_particle"):
+            cell_time_series_widget.highlight_particle(particle)
+    except Exception as e:
+        print(f"Error in label selection: {e}")
 
 
 # Events verbinden
@@ -931,8 +1099,6 @@ def highlight_selected_label_in_plot(event=None):
 viewer.window.add_dock_widget(
     cell_time_series_widget, name="Cell Time Series", area="bottom"
 )
-cell_time_series_widget.setMinimumHeight(250)
-cell_time_series_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
 
 # start event loop
