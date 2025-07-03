@@ -618,7 +618,7 @@ class VerticalNavigationToolbar(QToolBar):
         # Home action
         home_action = QAction("🏠", self)
         home_action.setToolTip("Reset original view")
-        home_action.triggered.connect(self._nav_toolbar.home)
+        home_action.triggered.connect(self._custom_home)
         self.addAction(home_action)
 
         self.addSeparator()
@@ -674,6 +674,20 @@ class VerticalNavigationToolbar(QToolBar):
             elif mode == "zoom":
                 self._nav_toolbar.zoom()
             self.mode = ""
+
+    def _custom_home(self):
+        """Custom home action that triggers a proper plot reset"""
+        # Find the parent widget that contains the plot
+        parent = self.parent()
+        while parent and not hasattr(parent, "update_plot"):
+            parent = parent.parent()
+
+        # If we found the widget with update_plot method, call it
+        if parent and hasattr(parent, "update_plot"):
+            parent.update_plot()
+        else:
+            # Fallback to default home behavior
+            self._nav_toolbar.home()
 
 
 class CellTimeSeriesWidget(QWidget):
@@ -836,33 +850,33 @@ class CellTimeSeriesWidget(QWidget):
                     print(f"Error plotting particle {particle}: {e}")
                     continue
 
-            # Stimulus-Ticks robuster hinzufügen
+            # Blaue Ticks für alle Werte in stim_timestep (nur Tick, keine Linie)
             try:
                 if "stim_timestep" in df.columns and not df.empty:
                     stim_steps = set()
                     for s in df["stim_timestep"].dropna():
                         if isinstance(s, (tuple, list)):
                             for val in s:
-                                if pd.notna(val):
-                                    stim_steps.add(val)
-                        elif pd.notna(s):
+                                stim_steps.add(val)
+                        else:
                             stim_steps.add(s)
-
-                    if stim_steps:
-                        stim_ticks = df[df[x].isin(stim_steps)][x].unique()
-                        for tick in stim_ticks:
-                            self.ax.axvline(
-                                tick, color="blue", alpha=0.3, linewidth=1, zorder=0
-                            )
+                    stim_ticks = df[df[x].isin(stim_steps)][x].unique()
+                    y_min, y_max = self.ax.get_ylim()
+                    for tick in stim_ticks:
+                        self.ax.plot(
+                            tick,
+                            y_min,
+                            marker="|",
+                            color="blue",
+                            markersize=12,
+                            alpha=0.5,
+                            zorder=10,
+                        )
             except Exception as e:
                 print(f"Error adding stimulus ticks: {e}")
 
-            # Sichere Achsenbeschriftung
-            try:
-                self.ax.set_xlabel("time [min]")
-                self.ax.set_ylabel(y_col)
-            except Exception as e:
-                print(f"Error setting axis labels: {e}")
+            self.ax.set_xlabel("time [min]")
+            self.ax.set_ylabel(y_col)
 
             # Sichere Canvas-Update
             try:
