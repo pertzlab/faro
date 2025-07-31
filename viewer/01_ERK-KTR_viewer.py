@@ -1,3 +1,17 @@
+# /// script
+# dependencies = [
+#   "napari[pyqt5]",
+#   "pandas",
+#   "magicgui",
+#   "dask",
+#   "tifffile",
+#   "scikit-image",
+#   "pyarrow",
+#   "matplotlib",
+#   "numpy"
+# ]
+# python = "3.11"
+# ///
 import napari
 import pandas as pd
 from magicgui import magicgui
@@ -13,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dask import delayed
 import numpy as np
 from pathlib import Path
+import csv
 
 
 RAW_FOLDER = "raw"
@@ -585,6 +600,8 @@ from qtpy.QtWidgets import (
     QPushButton,
     QToolBar,
     QAction,
+    QListWidget,
+    QListWidgetItem,
 )
 from qtpy.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -693,7 +710,7 @@ class VerticalNavigationToolbar(QToolBar):
 class CellTimeSeriesWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Hauptlayout: horizontal (links Controls, rechts Plot)
+        # Hauptlayout: horizontal (links Controls, mitte Plot, rechts Cell List)
         main_layout = QHBoxLayout()
         self.setLayout(main_layout)
 
@@ -718,7 +735,7 @@ class CellTimeSeriesWidget(QWidget):
         control_layout.addWidget(self.delete_btn)
         control_layout.addStretch()
 
-        # Plot rechts mit vertikaler Toolbar links
+        # Plot in der Mitte mit vertikaler Toolbar links
         plot_layout = QHBoxLayout()
         plot_widget = QWidget()
         plot_widget.setLayout(plot_layout)
@@ -736,9 +753,41 @@ class CellTimeSeriesWidget(QWidget):
         plot_layout.addWidget(self.toolbar)
         plot_layout.addWidget(self.canvas)
 
-        # Layouts zusammenfügen
+        # Rechte Spalte für Cell List
+        cell_list_layout = QVBoxLayout()
+        cell_list_widget = QWidget()
+        cell_list_widget.setLayout(cell_list_layout)
+        cell_list_widget.setFixedWidth(200)  # Feste Breite für die Liste
+
+        # Cell list title
+        cell_list_title = QLabel("Marked Cells:")
+        cell_list_title.setStyleSheet("font-weight: bold;")
+
+        # Cell list widget
+        self.cell_list = QListWidget()
+        self.cell_list.setMaximumHeight(300)  # Begrenzte Höhe
+        self.cell_list.itemClicked.connect(
+            self.on_cell_list_selection
+        )  # Add selection handler
+
+        # Button to remove selected entry from list
+        self.remove_marking_btn = QPushButton("Remove Marking")
+        self.remove_marking_btn.clicked.connect(self.remove_selected_marking)
+
+        # Refresh button to update the list
+        self.refresh_list_btn = QPushButton("Refresh List")
+        self.refresh_list_btn.clicked.connect(self.update_cell_list)
+
+        cell_list_layout.addWidget(cell_list_title)
+        cell_list_layout.addWidget(self.cell_list)
+        cell_list_layout.addWidget(self.remove_marking_btn)
+        cell_list_layout.addWidget(self.refresh_list_btn)
+        cell_list_layout.addStretch()
+
+        # Layouts zusammenfügen: Controls links, Plot mitte, Cell List rechts
         main_layout.addWidget(control_widget)
         main_layout.addWidget(plot_widget, stretch=5)
+        main_layout.addWidget(cell_list_widget)
 
         self.combo.currentTextChanged.connect(self.update_plot)
         self.selected_particle = None
@@ -754,6 +803,202 @@ class CellTimeSeriesWidget(QWidget):
 
         self._show_all = True  # Flag: alle Zellen anzeigen
 
+        # Dictionary to store cell markings (highlighted/deleted)
+        self.cell_markings = {}
+
+    def update_cell_list(self):
+        """Update the cell list widget with current markings"""
+        self.cell_list.clear()
+
+        if not hasattr(self, "fov") or self.fov is None:
+            return
+
+        # Sort markings by particle number for consistent display
+        sorted_markings = sorted(self.cell_markings.items())
+
+        for particle, marking in sorted_markings:
+            if marking == "highlighted":
+                item_text = f"ID {particle} (Highlighted)"
+                item = QListWidgetItem(item_text)
+                item.setData(
+                    1, {"particle": particle, "marking": marking}
+                )  # Store data
+                item.setBackground(
+                    item.background().color().lighter(140)
+                )  # Light background
+                self.cell_list.addItem(item)
+            elif marking == "deleted":
+                item_text = f"ID {particle} (Removed)"
+                item = QListWidgetItem(item_text)
+                item.setData(
+                    1, {"particle": particle, "marking": marking}
+                )  # Store data
+                item.setBackground(
+                    item.background().color().darker(120)
+                )  # Dark background
+                self.cell_list.addItem(item)
+
+    def on_cell_list_selection(self, item):
+        """Handle cell list selection - highlight corresponding cell in plot and napari"""
+        if item is None:
+            return
+
+        item_data = item.data(1)
+        if item_data is None:
+            return
+
+        particle = item_data["particle"]
+
+        # Highlight in plot
+        self.selected_particle = particle
+        self._show_all = True  # Keep all cells visible
+        self.highlight_particle(particle)
+
+        # Highlight in napari viewer
+        if self.labels_layer is not None:
+
+            def set_napari_label():
+                try:
+                    if hasattr(self.labels_layer, "selected_label"):
+                        self.labels_layer.selected_label = particle
+                except Exception as e:
+                    pass  # Ignore errors if layer is not set up correctly
+
+            QTimer.singleShot(50, set_napari_label)
+
+    def highlight_cell_in_list(self, particle):
+        """Highlight a specific cell in the list if it exists"""
+        if particle is None:
+            return
+
+        # Find the item in the list that corresponds to this particle
+        for i in range(self.cell_list.count()):
+            item = self.cell_list.item(i)
+            item_data = item.data(1)
+            if item_data and item_data["particle"] == particle:
+                # Select this item in the list
+                self.cell_list.setCurrentItem(item)
+                # Scroll to make sure it's visible
+                self.cell_list.scrollToItem(item)
+                break
+
+    def remove_selected_marking(self):
+        """Remove the selected marking from the list and CSV file"""
+        current_item = self.cell_list.currentItem()
+        if current_item is None:
+            return
+
+        # Get particle data from the item
+        item_data = current_item.data(1)
+        if item_data is None:
+            return
+
+        particle = item_data["particle"]
+
+        # Remove from CSV file
+        self.remove_marking_from_csv(particle)
+
+        # Reload markings and update display
+        self.load_cell_markings()
+        self.update_cell_list()
+        self.update_plot()
+
+    def remove_marking_from_csv(self, particle):
+        """Remove a specific particle marking from the CSV file"""
+        if self.fov is None:
+            return
+
+        uid = f"{self.fov}_{particle}"
+        csv_path = os.path.join(project_path, "cell_selection.csv")
+
+        if not os.path.exists(csv_path):
+            return
+
+        # Read existing data
+        rows = []
+        try:
+            with open(csv_path, newline="", encoding="utf-8") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    # Keep all rows except the one we want to remove
+                    if str(row.get("uid", "")) != uid:
+                        rows.append(row)
+                    else:
+                        # Found the row to remove - don't add it to the new list
+                        print(
+                            f"Removing marking for particle {particle} in FOV {self.fov}"
+                        )
+        except Exception as e:
+            print(f"Error reading CSV file: {e}")
+            return
+
+        # Write back the data without the removed entry
+        try:
+            with open(csv_path, "w", newline="", encoding="utf-8") as csvfile:
+                if rows:  # Only write if there are rows left
+                    fieldnames = [
+                        "particle",
+                        "label",
+                        "fov",
+                        "uid",
+                        "selected",
+                        "deleted",
+                    ]
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in rows:
+                        writer.writerow(row)
+                else:
+                    # If no rows left, create empty file with headers
+                    fieldnames = [
+                        "particle",
+                        "label",
+                        "fov",
+                        "uid",
+                        "selected",
+                        "deleted",
+                    ]
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+        except Exception as e:
+            print(f"Error writing CSV file: {e}")
+
+    def load_cell_markings(self):
+        """Load cell markings from CSV file"""
+        if self.fov is None:
+            return
+
+        csv_path = os.path.join(project_path, "cell_selection.csv")
+        self.cell_markings = {}
+
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, newline="", encoding="utf-8") as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        if str(row.get("fov", "")) == str(self.fov):
+                            particle = int(row.get("particle", 0))
+                            selected = row.get("selected", "False").lower() == "true"
+                            deleted = row.get("deleted", "False").lower() == "true"
+
+                            if selected:
+                                self.cell_markings[particle] = "highlighted"
+                            elif deleted:
+                                self.cell_markings[particle] = "deleted"
+            except Exception as e:
+                print(f"Error loading cell markings: {e}")
+
+    def get_line_style_for_particle(self, particle):
+        """Get line style based on particle marking"""
+        marking = self.cell_markings.get(particle, "normal")
+
+        if marking == "deleted":
+            return {"linestyle": "--", "alpha": 0.2, "linewidth": 1.0}
+        elif marking == "highlighted":
+            return {"linestyle": "-.", "alpha": 0.8, "linewidth": 2.0}
+        else:
+            return {"linestyle": "-", "alpha": 0.3, "linewidth": 1.0}
+
     def set_labels_layer(self, labels_layer):
         self.labels_layer = labels_layer
 
@@ -763,6 +1008,8 @@ class CellTimeSeriesWidget(QWidget):
         self.y_col = y_col
         self.ensure_norm_columns(force_default=True)
         self._show_all = True
+        self.load_cell_markings()  # Load markings when data is updated
+        self.update_cell_list()  # Update the cell list display
         self.update_plot()
 
     def ensure_norm_columns(self, force_default=False):
@@ -826,11 +1073,19 @@ class CellTimeSeriesWidget(QWidget):
                         else:
                             continue
 
-                    # Bestimme Stil basierend auf Auswahl
+                    # Bestimme Stil basierend auf Auswahl und Markierung
+                    line_style = self.get_line_style_for_particle(particle)
+
                     if particle == self.selected_particle:
-                        alpha, linewidth, zorder = 1.0, 3.0, 10
+                        # Selected particle gets extra emphasis
+                        alpha = 1.0
+                        linewidth = 3.0
+                        zorder = 10
                     else:
-                        alpha, linewidth, zorder = 0.3, 1.0, 1
+                        # Use marking-based style
+                        alpha = line_style["alpha"]
+                        linewidth = line_style["linewidth"]
+                        zorder = 1
 
                     (line,) = self.ax.plot(
                         x_data,
@@ -840,6 +1095,7 @@ class CellTimeSeriesWidget(QWidget):
                         pickradius=5,
                         alpha=alpha,
                         linewidth=linewidth,
+                        linestyle=line_style["linestyle"],
                         zorder=zorder,
                         rasterized=True,  # Bessere Performance
                     )
@@ -935,6 +1191,10 @@ class CellTimeSeriesWidget(QWidget):
                     self._show_all = True  # Alle Linien bleiben sichtbar
                     self.highlight_particle(found_particle)
 
+                    # Highlight in cell list if the particle is marked
+                    if found_particle in self.cell_markings:
+                        self.highlight_cell_in_list(found_particle)
+
         except Exception as e:
             print(f"Error in pick event: {e}")
             # Sicherer Fallback ohne komplettes Neuzeichnen
@@ -1000,15 +1260,21 @@ class CellTimeSeriesWidget(QWidget):
                     current_alpha = line.get_alpha()
 
                     if p == particle:
-                        # Hervorheben
+                        # Hervorheben - always make selected particle prominent
                         target_width, target_alpha = 3.0, 1.0
+                        target_zorder = 10
                     else:
-                        # Normal
-                        target_width, target_alpha = 1.0, 0.3
+                        # Normal - use marking-based style
+                        line_style = self.get_line_style_for_particle(p)
+                        target_width = line_style["linewidth"]
+                        target_alpha = line_style["alpha"]
+                        target_zorder = 1
 
                     # Nur ändern wenn nötig
                     if current_width != target_width or current_alpha != target_alpha:
-                        updates.append((line, target_width, target_alpha))
+                        updates.append(
+                            (line, target_width, target_alpha, target_zorder)
+                        )
                         any_changes = True
 
                 except Exception:
@@ -1017,13 +1283,11 @@ class CellTimeSeriesWidget(QWidget):
 
             # Alle Updates auf einmal anwenden (nur wenn nötig)
             if any_changes:
-                for line, linewidth, alpha in updates:
+                for line, linewidth, alpha, zorder in updates:
                     try:
                         line.set_linewidth(linewidth)
                         line.set_alpha(alpha)
-                        line.set_zorder(
-                            10 if linewidth > 2 else 1
-                        )  # Z-order für Hervorhebung
+                        line.set_zorder(zorder)
                     except Exception:
                         continue
 
@@ -1060,9 +1324,15 @@ class CellTimeSeriesWidget(QWidget):
 
     def highlight_cell(self):
         self.set_flag_for_selected_cell("selected", True)
+        self.load_cell_markings()  # Reload markings
+        self.update_cell_list()  # Update the cell list display
+        self.update_plot()  # Update plot to show new markings
 
     def delete_cell(self):
         self.set_flag_for_selected_cell("deleted", True)
+        self.load_cell_markings()  # Reload markings
+        self.update_cell_list()  # Update the cell list display
+        self.update_plot()  # Update plot to show new markings
 
     def set_flag_for_selected_cell(self, flag, value):
         if self.selected_particle is None or self.fov is None:
@@ -1161,6 +1431,10 @@ def on_label_selected(event):
         # Nur highlighten wenn das Widget existiert und bereit ist
         if hasattr(cell_time_series_widget, "highlight_particle"):
             cell_time_series_widget.highlight_particle(particle)
+
+            # Also highlight in cell list if the particle is marked
+            if particle in cell_time_series_widget.cell_markings:
+                cell_time_series_widget.highlight_cell_in_list(particle)
     except Exception as e:
         print(f"Error in label selection: {e}")
 
@@ -1207,6 +1481,10 @@ def highlight_selected_label_in_plot(event=None):
             except Exception:
                 pass
             cell_time_series_widget.highlight_particle(particle)
+
+            # Also highlight in cell list if the particle is marked
+            if particle in cell_time_series_widget.cell_markings:
+                cell_time_series_widget.highlight_cell_in_list(particle)
 
 
 # Plot-Widget unten andocken (statt als Tab)
