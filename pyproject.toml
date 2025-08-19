@@ -1,0 +1,28 @@
+[project]
+name = "rtm-pymmcore"
+version = "0.1.0"
+description = "Real-time feedback control microscopy using pymmcore as interface "
+readme = "README.md"
+requires-python = ">=3.11, <3.13"
+dependencies = [
+    "pandas",
+    "numpy",
+    "pyarrow",
+    "ipykernel",
+    "ipywidgets",
+    "matplotlib",
+    "napari[all]",
+    "scikit-image",
+    "tifffile",
+    "pymmcore-plus",
+    "pymmcore-widgets",
+    "trackpy",
+    "napari-micromanager",
+    "ome-zarr",
+]
+
+[project.optional-dependencies]
+stardist = [
+    "stardist",
+    "tensorflow",
+    ]
