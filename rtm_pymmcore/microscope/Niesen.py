@@ -86,7 +86,7 @@ class Niesen(AbstractMicroscope):
         if self.dmd is not None and self.dmd.affine is None:
             self.dmd.calibrate()
 
-    def run_experiment(self):
+    def run_experiment(self, df_acquire):
         """Run the experiment."""
         pymmcore_plus.configure_logging(stderr_level="WARNING")
         self.wl.run(wait_for_warmup=True)

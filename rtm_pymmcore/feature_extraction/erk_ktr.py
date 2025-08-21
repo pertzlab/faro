@@ -16,22 +16,25 @@ class FE_ErkKtr(FeatureExtractor):
     extracts mean intensities from both the nucleus and the ring.
     """
 
-    def __init__(self, used_mask):
+    def __init__(self, used_mask, margin=2, distance=4):
         self.used_mask = used_mask
         self.name_extra_mask = "labels_ring"
         self.extra_folders = [self.name_extra_mask]
+        self.margin = margin
+        self.distance = distance
         super().__init__()
 
     def extract_ring(
-        self, labels, margin=2, distance=4
+        self,
+        labels,
     ):  # distance = 10 for 40x; 4px for 20x
         """Create the cytosolic rings for biosensor dependant on nuclear/cytosolic fluorescence intensity.
         Args:
             margin: nb pixels between nucleus and ring
             distance: nb pixels ring width (margin is subtracted)
         """
-        labels_expanded_margin = expand_labels(labels, distance=margin)
-        labels_expanded_rings = expand_labels(labels, distance=distance)
+        labels_expanded_margin = expand_labels(labels, distance=self.margin)
+        labels_expanded_rings = expand_labels(labels, distance=self.distance)
         labels_expanded_rings[labels_expanded_margin != 0] = 0
         return labels_expanded_rings.astype(int)
 

@@ -1,5 +1,6 @@
 import os
 from rtm_pymmcore.dmd import DMD
+from queue import Queue
 
 
 class AbstractMicroscope:
@@ -12,12 +13,19 @@ class AbstractMicroscope:
 
     def __init__(self):
         self.dmd = None
+        self.queue = Queue()
+        self.pipeline = None
+        self.analyzer = None
+        self.controller = None
 
     def init_scope(self):
         """Initialize the microscope scope."""
         raise NotImplementedError("This method should be implemented in a subclass.")
 
-    def run_experiment(self):
+    def set_pipeline(self, pipeline):
+        self.pipeline = pipeline
+
+    def run_experiment(self, df_acquire):
         """Run the experiment."""
         raise NotImplementedError("This method should be implemented in a subclass.")
 
