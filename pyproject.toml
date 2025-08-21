@@ -18,11 +18,17 @@ dependencies = [
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
-    "ome-zarr",
 ]
 
 [project.optional-dependencies]
+omeyzarr = [
+    "ome-zarr",
+    ]
+
 stardist = [
     "stardist",
     "tensorflow",
+    ]
+cellpose = [
+    "cellpose",
     ]
