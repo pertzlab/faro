@@ -55,7 +55,13 @@ class Controller:
     STOP_EVENT = object()
 
     def __init__(
-        self, analyzer: Analyzer, mmc, queue, use_autofocus_event=False, dmd=None
+        self,
+        analyzer: Analyzer,
+        mmc,
+        queue,
+        use_autofocus_event=False,
+        dmd=None,
+        dmd_needs_to_be_waken=False,
     ):
         self._queue = queue  # queue of MDAEvents
         self._analyzer = analyzer  # analyzer object
@@ -67,6 +73,7 @@ class Controller:
         self._dmd = dmd
         self._mmc = mmc
         self.use_autofocus_event = use_autofocus_event
+        self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
         self._mmc.mda.events.frameReady.disconnect()
         self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
 
@@ -179,7 +186,15 @@ class Controller:
                             min_start_time=event_start_time,
                             exposure=channel_i.get("exposure", None),
                             properties=[power_prop] if power_prop is not None else None,
+                            slm_image=SLMImage(
+                                data=True, device="Mosaic3", exposure=1500
+                            ),
                         )
+                        # if self._dmd is not None and self.dmd_needs_to_be_waken:
+                        #     print("TestTEstTest")
+                        #     acquisition_event.replace(slm_image=SLMImage(
+                        #         data=np.ones((600,800), device="Mosaic3", exposure=channel_i.get("exposure", None) + 1000,
+                        #     ))
                         # add the event to the acquisition queue
                         self._queue.put(acquisition_event)
 
@@ -269,8 +284,12 @@ class Controller:
                             else:
                                 stim_mask = self._dmd.affine_transform(stim_mask)
 
-                            stimulation_event["slm_image"] = SLMImage(
-                                data=stim_mask, device=self._dmd.name
+                            stimulation_event.replace(
+                                slm_image=SLMImage(
+                                    data=stim_mask,
+                                    device=self._dmd.name,
+                                    exposure=stim_exposure + 1000,
+                                )
                             )
 
                         self._queue.put(stimulation_event)
