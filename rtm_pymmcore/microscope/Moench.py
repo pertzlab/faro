@@ -119,10 +119,6 @@ class Moench(AbstractMicroscope):
 
         self.image_height = self.mmc.getImageHeight()
         self.image_width = self.mmc.getImageWidth()
-        # roi for andor zyla 4.2
-        # self.mmc.setROI(50, 250, self.image_width - 50 - 24, self.image_height - 250 - 24) # roi setting for andor zyla
-        # roi for prime bsi
-        # mic.mmc.setROI(0, 50, 900, 700) # would be possible, rectangular image
 
     def calibrate_dmd(self):
         "Calibrate the DMD if it is not already calibrated." ""
