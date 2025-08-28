@@ -46,6 +46,10 @@ class Analyzer:
                 thread = threading.Thread(target=self.pipeline.run, args=(img, event))
                 thread.start()
             store_img(img[0:len_raw_img], metadata, self.pipeline.storage_path, "raw")
+            if not os.path.exists(
+                os.path.join(self.pipeline.storage_path, "optocheck")
+            ):
+                os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
         return {"result": "STOP"}
@@ -55,7 +59,13 @@ class Controller:
     STOP_EVENT = object()
 
     def __init__(
-        self, analyzer: Analyzer, mmc, queue, use_autofocus_event=False, dmd=None
+        self,
+        analyzer: Analyzer,
+        mmc,
+        queue,
+        use_autofocus_event=False,
+        dmd=None,
+        dmd_needs_to_be_waken=False,
     ):
         self._queue = queue  # queue of MDAEvents
         self._analyzer = analyzer  # analyzer object
@@ -67,6 +77,7 @@ class Controller:
         self._dmd = dmd
         self._mmc = mmc
         self.use_autofocus_event = use_autofocus_event
+        self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
         self._mmc.mda.events.frameReady.disconnect()
         self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
 
@@ -98,7 +109,7 @@ class Controller:
                 current_time_df = df_acquire[df_acquire["time"] == exp_time]
                 for index, row in current_time_df.iterrows():
                     # Pause if queue is getting too full to allow analyzer to catch up
-                    while self._queue.qsize() >= 5:
+                    while self._queue.qsize() >= 10:
                         time.sleep(1)  # Wait 1s before checking again
                     # Get FOV data directly from the DataFrame
                     timestep = row["timestep"]
@@ -142,8 +153,9 @@ class Controller:
                         )
                         self._queue.put(acquisition_event)
 
-                    # if timestep > 0:
-                    #     fov_obj.tracks = fov_obj.tracks_queue.get(block=True)
+                    slm_image = None
+                    if self._dmd is not None and self.dmd_needs_to_be_waken:
+                        slm_image = SLMImage(data=True, device=self._dmd.name)
 
                     for i, channel_i in enumerate(channels):
                         metadata_dict["last_channel"] = False
@@ -179,8 +191,9 @@ class Controller:
                             min_start_time=event_start_time,
                             exposure=channel_i.get("exposure", None),
                             properties=[power_prop] if power_prop is not None else None,
+                            slm_image=slm_image,
                         )
-                        # add the event to the acquisition queue
+
                         self._queue.put(acquisition_event)
 
                     if optocheck:
@@ -221,6 +234,7 @@ class Controller:
                                 properties=(
                                     [power_prop] if power_prop is not None else None
                                 ),
+                                slm_image=slm_image,
                             )
                             self._queue.put(acquisition_event)
 
@@ -240,6 +254,23 @@ class Controller:
                             "stim_channel_group", self._current_group
                         )
                         stim_exposure = row.get("stim_exposure", None)
+                        slm_image = None
+
+                        if self._dmd is not None:
+                            stim_mask = fov_obj.stim_mask_queue.get(
+                                block=True
+                            )  # TODO: Not really a good idea, but timeout is also not good, as
+                            # the queue fills up already much in advance of the actual acquisition for optofgfr experiments without constant stimming.
+                            # best would be to either slow down the iteration through the dataframe, or give error masks, or something else
+                            if np.all(stim_mask == 1):
+                                stim_mask = True
+                            else:
+                                stim_mask = self._dmd.affine_transform(stim_mask)
+
+                            slm_image = SLMImage(
+                                data=stim_mask,
+                                device=self._dmd.name,
+                            )
 
                         stimulation_event = useq.MDAEvent(
                             index={
@@ -257,21 +288,8 @@ class Controller:
                             exposure=stim_exposure,
                             min_start_time=event_start_time,
                             properties=[power_prop] if power_prop is not None else None,
+                            slm_image=slm_image,
                         )
-                        if self._dmd is not None:
-                            stim_mask = fov_obj.stim_mask_queue.get(
-                                block=True
-                            )  # TODO: Not really a good idea, but timeout is also not good, as
-                            # the queue fills up already much in advance of the actual acquisition for optofgfr experiments without constant stimming.
-                            # best would be to either slow down the iteration through the dataframe, or give error masks, or something else
-                            if np.all(stim_mask == 1):
-                                stim_mask = True
-                            else:
-                                stim_mask = self._dmd.affine_transform(stim_mask)
-
-                            stimulation_event["slm_image"] = SLMImage(
-                                data=stim_mask, device=self._dmd.name
-                            )
 
                         self._queue.put(stimulation_event)
 

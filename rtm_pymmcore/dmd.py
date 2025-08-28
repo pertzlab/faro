@@ -36,6 +36,7 @@ class DMD:
         self.test_mode = test_mode
         self.affine = None
         self.calibration_profile = calibration_profile
+
         if affine_matrix is not None:
             self.affine = affine_matrix
 
@@ -82,10 +83,17 @@ class DMD:
     def all_on(self):
         """turn on projector all pixels for a long time"""
         self.mmc.setSLMPixelsTo(self.name, 255)
+        self.mmc.displaySLMImage(self.name)
 
     def all_off(self):
         """turn off pixels"""
         self.mmc.setSLMPixelsTo(self.name, 0)
+        self.mmc.displaySLMImage(self.name)
+
+    def all_on_img(self):
+        """generate an image with all pixels on"""
+        all_on_image = np.full((self.height, self.width), 255, dtype=np.uint8)
+        return all_on_image
 
     def checker_board(self, pixels=20):
         """display a checkerboard pattern for a long time"""
@@ -94,12 +102,8 @@ class DMD:
             axis=0
         ) % 2
         checker_board = checker_board.astype(np.uint8) * 255
-        event = MDAEvent(
-            slm_image=SLMImage(data=checker_board))
-        self.mmc.mda.events.frameReady.disconnect()
-        self.mmc.mda.run([event])
-        
-
+        self.mmc.setSLMImage(self.name, checker_board)
+        self.mmc.displaySLMImage(self.name)
 
     def select_well_distributed_points(self, valid_pixels, n_points):
         """
@@ -227,12 +231,12 @@ class DMD:
         @self.mmc.mda.events.frameReady.connect
         def new_frame(img: np.ndarray, event: MDAEvent):
             calibration_images.append(img)
-            plt.imshow(img, cmap="gray")
-            plt.show()
+            # plt.imshow(img, cmap="gray")
+            # plt.show()
 
         for event in events:
             self.mmc.mda.run([event])
-            time.sleep(1)
+            time.sleep(0.1)
         calibration_images = np.array(calibration_images)
 
         for img in calibration_images:
@@ -257,7 +261,7 @@ class DMD:
             self.mmc.mda.run(
                 [
                     MDAEvent(
-                        slm_image=SLMImage(data=True, device=self.name),
+                        slm_image=SLMImage(data=self.sample_mask_off, device=self.name),
                         exposure=1,
                         properties=[
                             (
@@ -344,13 +348,15 @@ class DMD:
                 axs[3].scatter(
                     test_dst[i][0], test_dst[i][1], marker="x", facecolor="green"
                 )
+            axs[3].set_xlim(0, self.camera_width)
+            axs[3].set_ylim(self.camera_height, 0)
 
             plt.show()
         self.mmc.mda.events.frameReady.disconnect()
         self.mmc.mda.run(
             [
                 MDAEvent(
-                    slm_image=SLMImage(data=True, device=self.name),
+                    slm_image=SLMImage(data=self.sample_mask_off, device=self.name),
                     exposure=1,
                     properties=[
                         (
