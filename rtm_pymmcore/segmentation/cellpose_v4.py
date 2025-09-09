@@ -9,13 +9,11 @@ class CellposeV4(Segmentator):
     def __init__(
         self,
         custom_model_path=None,
-        diameter=None,
         flow_threshold: float = 0.4,
         cellprob_threshold: float = 0.0,
         min_size: int = 50,
     ):
 
-        self.diameter = diameter
         self.flow_threshold = flow_threshold
         self.cellprob_threshold = cellprob_threshold
         self.min_size = min_size
@@ -33,7 +31,6 @@ class CellposeV4(Segmentator):
             img,
             flow_threshold=self.flow_threshold,
             cellprob_threshold=self.cellprob_threshold,
-            diameter=self.diameter,
         )
 
         if self.min_size > 0:
