@@ -38,7 +38,7 @@ PARTICLES_FOLDER = "particles"
 LABELS_RINGS = "labels_ring"
 TRACKS_FOLDER = "tracks"
 
-DEFAULT_FOLDER = "\\\\izbkingston.izb.unibe.ch\\imaging.data\\mic01-imaging\\Cedric\\experimental_data"
+DEFAULT_FOLDER = "\\\\izbkingston.izb.unibe.ch\\imaging.data\\PertzLab\\optoRTK_CedricZ\\experimental_data"
 
 
 class Layer_Info:
@@ -68,7 +68,24 @@ def load_exp_df(project_path):
         os.path.join(project_path, "exp_data.parquet")
     ):
         exp_df = pd.read_parquet(os.path.join(project_path, "exp_data.parquet"))
-        exp_df["stim_timestep"] = exp_df["stim_timestep"].apply(tuple)
+
+        # Normalize stim_timestep to native Python types (None / int / tuple[int,...])
+        def _normalize_timestep(x):
+            if x is None or (np.isscalar(x) and pd.isna(x)):
+                return None
+            # already a tuple/list/ndarray -> convert to tuple of ints
+            if isinstance(x, (list, tuple, np.ndarray)):
+                try:
+                    return tuple(int(i) for i in x)
+                except Exception:
+                    return None
+            # single numeric value -> int
+            try:
+                return int(x)
+            except Exception:
+                return None
+
+        exp_df["stim_timestep"] = exp_df["stim_timestep"].apply(_normalize_timestep)
         # UID-Spalte hinzufügen
         if "uid" not in exp_df.columns:
             exp_df["uid"] = (
@@ -111,10 +128,10 @@ def get_exposure_times(cell_line: str) -> List[int]:
     return sorted(exposure_times)
 
 
-def get_stim_timesteps(cell_line: str, stim_exposure: int) -> List[str]:
+def get_stim_timesteps(cell_line: str, stim_exposure: int):
     # Filter out NA values in stim_exposure
     filtered_df = exp_df.dropna(subset=["stim_exposure"])
-    stim_timesteps = (
+    raw = (
         filtered_df[
             (filtered_df["cell_line"] == cell_line)
             & (filtered_df["stim_exposure"] == stim_exposure)
@@ -122,11 +139,39 @@ def get_stim_timesteps(cell_line: str, stim_exposure: int) -> List[str]:
         .unique()
         .tolist()
     )
-    stim_timesteps_dict_map = {
-        "choices": stim_timesteps,
-        "key": lambda x: ",".join([str(i) for i in x]),
-    }
-    return stim_timesteps_dict_map
+    # normalize and keep unique preserving order
+    seen = set()
+    values = []
+    for s in raw:
+        if s is None:
+            continue
+        if isinstance(s, (list, tuple, np.ndarray)):
+            try:
+                val = tuple(int(x) for x in s)
+            except Exception:
+                continue
+        else:
+            try:
+                val = int(s)
+            except Exception:
+                continue
+        if val in seen:
+            continue
+        seen.add(val)
+        values.append(val)
+
+    def _timestep_label(v):
+        if v is None:
+            return ""
+        if isinstance(v, (list, tuple)):
+            return ",".join(str(x) for x in v)
+        return str(v)
+
+    # Return list of (label, value) pairs for magicgui ComboBox
+    choices = []
+    for v in values:
+        choices.append((_timestep_label(v), v))
+    return choices
 
 
 def get_fov_choices(cell_line: str, stim_exposure: int, stim_timestep) -> List[str]:
@@ -444,11 +489,12 @@ def update_stim_timesteps(event=None):
     )
     selection_widget.stim_timestep.choices = stim_timepoints
 
-    if selection_widget.stim_timestep.value in stim_timepoints["choices"]:
+    values = [v for _, v in stim_timepoints]
+    if selection_widget.stim_timestep.value in values:
         selection_widget.stim_timestep.value = selection_widget.stim_timestep.value
     else:
-        if stim_timepoints["choices"]:
-            selection_widget.stim_timestep.value = stim_timepoints["choices"][0]
+        if values:
+            selection_widget.stim_timestep.value = values[0]
         else:
             # Wenn keine stim_timesteps vorhanden, setze auf None aber nur wenn erlaubt
             try:
