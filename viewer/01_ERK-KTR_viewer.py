@@ -1,6 +1,6 @@
 # /// script
 # dependencies = [
-#   "napari[pyqt5]",
+#   "napari[pyqt5] == 0.6.1",
 #   "pandas",
 #   "magicgui",
 #   "dask",
@@ -8,7 +8,9 @@
 #   "scikit-image",
 #   "pyarrow",
 #   "matplotlib",
-#   "numpy"
+#   "numpy",
+#   "napari-timestamper",
+#   "opencv-python"
 # ]
 # python = "3.11"
 # ///
