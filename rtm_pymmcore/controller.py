@@ -239,6 +239,8 @@ class Controller:
                             self._queue.put(acquisition_event)
 
                     if stim:
+                        if row["stim_power"] == 0 or row["stim_exposure"] == 0:
+                            continue
                         metadata_dict["img_type"] = ImgType.IMG_STIM
                         metadata_dict["last_channel"] = True
 
