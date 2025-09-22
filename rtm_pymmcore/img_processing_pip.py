@@ -88,7 +88,6 @@ class ImageProcessingPipeline:
         # Rest of the code...
 
         metadata = event.metadata
-
         fov_obj: Fov = metadata["fov_object"]
         if metadata["timestep"] > 0:
             df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
@@ -152,7 +151,10 @@ class ImageProcessingPipeline:
                 and self.tracker is not None
             ):
                 df_tracked = self.feature_extractor_optocheck.extract_features(
-                    segmentation_results, img_optocheck, df_tracked
+                    segmentation_results,
+                    img_optocheck,
+                    df_tracked,
+                    metadata,
                 )
         fov_obj.tracks_queue.put(df_tracked)
 
@@ -240,6 +242,7 @@ class ImageProcessingPipeline_postExperiment:
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
         use_old_segmentations: bool = False,
         n_jobs: int = 2,
+        correct_timestep_jumps: bool = False,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
@@ -250,6 +253,7 @@ class ImageProcessingPipeline_postExperiment:
         self.img_storage_path = img_storage_path
         self.use_old_segmentations = use_old_segmentations
         self.n_jobs = n_jobs
+        self.correct_timestep_jumps = correct_timestep_jumps
 
         folders = ["raw", "tracks"]
         if self.tracker is not None:
@@ -269,26 +273,94 @@ class ImageProcessingPipeline_postExperiment:
     def run(self):
         unique_fovs = self.df_acquire["fov"].unique()
         max_workers = min(self.n_jobs, len(unique_fovs))  # Limit number of threads
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(self.run_on_fov, fov_id): fov_id
-                for fov_id in unique_fovs
-            }
-            for future in as_completed(futures):
-                fov_id = futures[future]
-                try:
-                    future.result()
-                    print(f"Finished processing FOV {fov_id}")
-                except Exception as e:
-                    print(f"Error processing FOV {fov_id}: {str(e)}")
+        if self.n_jobs == 1:
+            for fov_id in unique_fovs:
+                print(f"Processing FOV {fov_id}")
+                self.run_on_fov(fov_id)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(self.run_on_fov, fov_id): fov_id
+                    for fov_id in unique_fovs
+                }
+                for future in as_completed(futures):
+                    fov_id = futures[future]
+                    try:
+                        future.result()
+                        print(f"Finished processing FOV {fov_id}")
+                    except Exception as e:
+                        print(f"Error processing FOV {fov_id}: {str(e)}")
         print("Finished processing all FOVs.")
 
     def run_on_fov(self, fov_id) -> dict:
-        df = self.df_acquire.query("fov == @fov_id").copy()
-        df_old = pd.DataFrame()
+        df = (
+            self.df_acquire.query("fov ==  @fov_id")
+            .drop_duplicates(subset=["fname"])
+            .reset_index()
+            .copy()
+        )
 
+        cell_specific_cols = [
+            c
+            for c in df.columns
+            if c.startswith("mean_intensity_")
+            or c.startswith("median_intensity_")
+            or c.startswith("cnr_")
+            or c.startswith("cnr")
+            or c.startswith("norm_")
+            or c.startswith("mean_")
+            or c in ["x", "y", "area", "label", "particle"]
+            or c.startswith("optocheck_mean_intensity_")
+            or c.startswith("optocheck_median_intensity_")
+        ]
+        if cell_specific_cols:
+            df = df.drop(columns=cell_specific_cols)
+
+        df_old = pd.DataFrame()
         fov_obj = Fov(0)
         df.loc[:, "fov_object"] = fov_obj
+        df["fov"] = fov_id
+        if self.correct_timestep_jumps:
+            # ensure missing timesteps are filled for this FOV by backfilling all missing frames
+            # e.g. if timestep 176 exists but many earlier timesteps are missing, add 0,1,2,...,175
+            all_timesteps = sorted(self.df_acquire["timestep"].unique())
+            existing_ts = sorted(df["timestep"].unique())
+            existing_set = set(int(x) for x in existing_ts)
+            # consider the full acquisition range and find missing timesteps
+            full_range = range(int(min(all_timesteps)), int(max(all_timesteps)) + 1)
+            missing_ts = [t for t in full_range if t not in existing_set]
+            if len(missing_ts) > 0:
+                print(f"Backfilling missing timesteps for FOV {fov_id}: {missing_ts}")
+                # representative row per existing timestep (use the row at that timestep as template)
+                rep_rows = {int(r["timestep"]): r for _, r in df.iterrows()}
+                sorted_existing = sorted(rep_rows.keys())
+                fov = int(df["fname"][0].split("_")[0])
+
+                new_rows = []
+                for target in missing_ts:
+                    # prefer the nearest later existing timestep as template, otherwise use nearest earlier
+                    later = [t for t in sorted_existing if t > target]
+                    if later:
+                        rep_t = later[0]
+                    else:
+                        earlier = [t for t in sorted_existing if t < target]
+                        if earlier:
+                            rep_t = earlier[-1]
+                        else:
+                            # no representative available for this FOV, skip
+                            continue
+
+                    rep = rep_rows[rep_t].copy()
+                    rep["timestep"] = int(target)
+                    rep["fov_object"] = fov_obj
+                    rep["fname"] = f"{fov:03d}_{int(target):05d}"
+                    # point fname to the representative image so reads succeed
+                    new_rows.append(rep)
+                    existing_set.add(target)
+
+                if new_rows:
+                    df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                    df = df.sort_values(by="timestep").reset_index(drop=True)
 
         for index, row in df.iterrows():
             img = tifffile.imread(
@@ -328,6 +400,28 @@ class ImageProcessingPipeline_postExperiment:
             else:
                 df_tracked = pd.concat([df_old, df_new], ignore_index=True)
             df_old = df_tracked
+
+            if (
+                self.feature_extractor_optocheck is not None
+                and self.tracker is not None
+            ):
+                if metadata["optocheck"] == True:
+                    print(
+                        f'Adding optocheck features for timestep {metadata["timestep"]}, fov {fov_id}'
+                    )
+                    img_optocheck = tifffile.imread(
+                        os.path.join(
+                            self.img_storage_path, "optocheck", row["fname"] + ".tiff"
+                        )
+                    )
+                    n_channels = len(metadata["channels"])
+                    img_optocheck = img_optocheck[n_channels:]
+                    df_tracked = self.feature_extractor_optocheck.extract_features(
+                        segmentation_results,
+                        img_optocheck,
+                        df_tracked,
+                        metadata,
+                    )
 
             if masks_for_fe is not None:
                 for mask_fe in masks_for_fe:
