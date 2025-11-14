@@ -5,6 +5,8 @@ from rtm_pymmcore.data_structures import Fov
 import random
 import pandas as pd
 import dataclasses
+import re
+from pathlib import Path
 
 
 def create_folders(path, folders):
@@ -43,39 +45,60 @@ def fix_tuples_in_stim_exposure_list(
     stim_exposures_timesteps,
 ):
     """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples. Deprecated"""
-
     for stim_exposure_timestep in stim_exposures_timesteps:
-        if isinstance(stim_exposure_timestep["stim_timestep"], range):
-            stim_exposure_timestep["stim_timestep"] = tuple(
-                stim_exposure_timestep["stim_timestep"]
-            )
-        if isinstance(stim_exposure_timestep["stim_exposure_list"], range):
-            stim_exposure_timestep["stim_exposure_list"] = tuple(
-                stim_exposure_timestep["stim_exposure_list"]
-            )
-        if isinstance(stim_exposure_timestep["stim_timestep"], list):
-            stim_exposure_timestep["stim_timestep"] = tuple(
-                stim_exposure_timestep["stim_timestep"]
-            )
-        if isinstance(stim_exposure_timestep["stim_exposure_list"], list):
-            stim_exposure_timestep["stim_exposure_list"] = tuple(
-                stim_exposure_timestep["stim_exposure_list"]
-            )
+        # Normalize both the timestep and the exposure list to tuples.
+        stim_exposure_timestep["stim_timestep"] = _normalize_to_tuple(
+            stim_exposure_timestep.get("stim_timestep")
+        )
+        stim_exposure_timestep["stim_exposure_list"] = _normalize_to_tuple(
+            stim_exposure_timestep.get("stim_exposure_list")
+        )
 
 
-def fix_tuples_stim_treatment(
-    stim_treatment,
+def fix_tuples_stim_treatments(
+    stim_treatments,
 ):
-    """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples."""
+    """Convert any range or list in the stim_exposures_timesteps_before_pause to tuples. Deprecated"""
+    for stim_treatment in stim_treatments:
+        # Normalize stim_timestep and stim_exposure to tuples. If a single int
+        # is supplied it becomes a single-element tuple.
+        stim_treatment["stim_timestep"] = _normalize_to_tuple(
+            stim_treatment.get("stim_timestep")
+        )
+        stim_treatment["stim_exposure"] = _normalize_to_tuple(
+            stim_treatment.get("stim_exposure")
+        )
 
-    if isinstance(stim_treatment["stim_timestep"], range):
-        stim_treatment["stim_timestep"] = tuple(stim_treatment["stim_timestep"])
-    if isinstance(stim_treatment["stim_exposure"], range):
-        stim_treatment["stim_exposure"] = tuple(stim_treatment["stim_exposure"])
-    if isinstance(stim_treatment["stim_timestep"], list):
-        stim_treatment["stim_timestep"] = tuple(stim_treatment["stim_timestep"])
-    if isinstance(stim_treatment["stim_exposure"], list):
-        stim_treatment["stim_exposure"] = tuple(stim_treatment["stim_exposure"])
+        # Backwards compatibility: some callers may expect 'stim_exposure_list'
+        # key (plural). If it's missing but 'stim_exposure' is present, copy it.
+        if (
+            "stim_exposure_list" not in stim_treatment
+            and "stim_exposure" in stim_treatment
+        ):
+            stim_treatment["stim_exposure_list"] = stim_treatment["stim_exposure"]
+
+        # Keep None as None; helper leaves None unchanged.
+
+
+def _normalize_to_tuple(value):
+    """Normalize a value to a tuple.
+
+    - range -> tuple(range)
+    - list/ndarray -> tuple(value)
+    - tuple -> unchanged
+    - scalar (int/float/str) -> (value,)
+    - None -> None
+    """
+    if value is None:
+        return None
+    if isinstance(value, range):
+        return tuple(value)
+    if isinstance(value, tuple):
+        return value
+    if isinstance(value, (list, np.ndarray)):
+        return tuple(value)
+    # Treat any other scalar-like value as a single-element tuple
+    return (value,)
 
 
 def add_stim_parameters_to_stim_exposures_timesteps(
@@ -86,7 +109,7 @@ def add_stim_parameters_to_stim_exposures_timesteps(
     stim_channel_device_name="Spectra",
     stim_channel_power_property_name="Cyan_Level",
 ):
-    """Add general stimulation parameters to each stim_exposures_timesteps_before_pause dict."""
+    """Add general stimulation parameters to each stim_exposures_timesteps_before_pause dict. Deprecated"""
     for stim_exposure_timestep in stim_exposures_timesteps:
         stim_exposure_timestep["stim_power"] = stim_power
         stim_exposure_timestep["stim_channel_name"] = stim_channel_name
@@ -100,13 +123,43 @@ def add_stim_parameters_to_stim_exposures_timesteps(
 def print_stim_exposures_timesteps(
     stim_exposures_timesteps,
 ):
-    """Print the stim_exposures_timesteps_before_pause in a readable format."""
+    """Print the stim_exposures_timesteps_before_pause in a readable format. Deprecated"""
     for stim_exposure_timestep in stim_exposures_timesteps:
-        print("Pattern Name: ", stim_exposure_timestep["ramp_pattern_name"])
+        print("Pattern Name: ", stim_exposure_timestep["treatment_name"])
 
         for stim_exp, stim_timestep in zip(
             stim_exposure_timestep["stim_exposure_list"],
             stim_exposure_timestep["stim_timestep"],
+        ):
+            print(f"{stim_exp} at {stim_timestep}")
+        print("")
+
+
+def print_stim_exposures_timesteps(
+    stim_exposures_timesteps,
+):
+    """Print the stim_exposures_timesteps_before_pause in a readable format."""
+    for stim_exposure_timestep in stim_exposures_timesteps:
+        print("Pattern Name: ", stim_exposure_timestep["treatment_name"])
+
+        for stim_exp, stim_timestep in zip(
+            stim_exposure_timestep["stim_exposure_list"],
+            stim_exposure_timestep["stim_timestep"],
+        ):
+            print(f"{stim_exp} at {stim_timestep}")
+        print("")
+
+
+def print_stim_exposures_timesteps(
+    stim_exposures_timesteps,
+):
+    """Print the stim treatment lists in a readable format."""
+    for stim_exposure_timestep in stim_exposures_timesteps:
+        print("Pattern Name: ", stim_exposure_timestep.treatment_name)
+
+        for stim_exp, stim_timestep in zip(
+            stim_exposure_timestep.stim_exposure_list,
+            stim_exposure_timestep.stim_timestep,
         ):
             print(f"{stim_exp} at {stim_timestep}")
         print("")
@@ -221,7 +274,7 @@ def generate_df_acquire(
 
 def apply_stim_treatments_to_df_acquire(
     df_acquire,
-    stim_exposures_timesteps,
+    stim_treatments,
     condition,
     n_fovs_per_well=None,
     add_stim_exposure_group=False,
@@ -230,25 +283,23 @@ def apply_stim_treatments_to_df_acquire(
     """Apply stim treatments to the df_acquire dataframe."""
 
     n_fovs = len(df_acquire["fov"].unique())
-    n_stim_treatments = len(stim_exposures_timesteps)
+    n_stim_treatments = len(stim_treatments)
     if n_stim_treatments > 0:
         n_fovs_per_stim_condition = (
             n_fovs // n_stim_treatments // len(np.unique(condition))
         )
         stim_treatment_tot = []
-        random.shuffle(stim_exposures_timesteps)
+        random.shuffle(stim_treatments)
         if n_fovs_per_well is None:
             for fov_index in range(0, n_fovs_per_stim_condition):
-                stim_treatment_tot.extend(stim_exposures_timesteps)
+                stim_treatment_tot.extend(stim_treatments)
             random.shuffle(stim_treatment_tot)
 
             if n_fovs % n_stim_treatments != 0:
                 print(
                     f"Warning: Not equal number of fovs per stim condition. {n_fovs % n_stim_treatments} fovs will have repeated treatment"
                 )
-                stim_treatment_tot.extend(
-                    stim_exposures_timesteps[: n_fovs % n_stim_treatments]
-                )
+                stim_treatment_tot.extend(stim_treatments[: n_fovs % n_stim_treatments])
             print(f"Doing {n_fovs_per_stim_condition} experiment per stim condition")
 
             if len(condition) != 1:
@@ -267,9 +318,7 @@ def apply_stim_treatments_to_df_acquire(
                     "fov"
                 ].unique()
                 stim_treat = [
-                    stim
-                    for stim in stim_exposures_timesteps
-                    for _ in range(n_fovs_per_well)
+                    stim for stim in stim_treatments for _ in range(n_fovs_per_well)
                 ]
                 if len(fovs_for_one_cell_line) != len(stim_treat):
                     print(
@@ -331,10 +380,6 @@ def apply_stim_treatments_to_df_acquire(
         df_acquire["stim_exposure"] = df_acquire["stim_exposure"].fillna(0)
 
     return df_acquire
-
-
-import re
-from pathlib import Path
 
 
 def parse_filename(fname):

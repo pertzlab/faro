@@ -5,7 +5,7 @@ import trackpy
 
 
 class TrackerTrackpy(Tracker):
-    def __init__(self, search_range=30, memory=3, adaptive_stop=3, adaptive_step=0.95):
+    def __init__(self, search_range=50, memory=3, adaptive_stop=3, adaptive_step=0.95):
         super().__init__()
         self.search_range = search_range
         self.memory = memory
