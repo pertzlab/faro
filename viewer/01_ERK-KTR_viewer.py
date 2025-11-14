@@ -1,4 +1,5 @@
 # /// script
+# requires-python = "<=3.12"
 # dependencies = [
 #   "napari[pyqt5] == 0.6.1",
 #   "pandas",
@@ -12,8 +13,8 @@
 #   "napari-timestamper",
 #   "opencv-python"
 # ]
-# python = "3.11"
 # ///
+
 import napari
 import pandas as pd
 from magicgui import magicgui
@@ -29,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dask import delayed
 import numpy as np
 from pathlib import Path
+import pyarrow.parquet as pq
 import csv
 
 
@@ -62,29 +64,47 @@ NORM_UNTIL_TIMEPOINT_DEFAULT = 10  # Default timepoint for normalization
 
 exp_df = None
 currently_added_layers = []
+timestep_variable_name = None
 
 
 def load_exp_df(project_path):
     global exp_df
+    global timestep_variable_name
+    time_col = None
     if exp_df is None and os.path.exists(
         os.path.join(project_path, "exp_data.parquet")
     ):
         try:
+            available_columns = pq.read_schema(
+                os.path.join(project_path, "exp_data.parquet")
+            ).names
+            required_columns = [
+                "cell_line",
+                "stim_exposure",
+                "stim_timestep",
+                "fov",
+                "fname",
+                "particle",
+                "timestep",
+                "cnr",
+                "cnr_median",
+            ]
+            if "fov_timestep" in available_columns:
+                required_columns.append("fov_timestep")
+                timestep_variable_name = "fov_timestep"
+            elif "timestep" in available_columns:
+                timestep_variable_name = "timestep"
+            elif "frame" in available_columns:
+                timestep_variable_name = "frame"
+                required_columns.append("frame")
+            else:
+                timestep_variable_name = None
+
             exp_df = pd.read_parquet(
                 os.path.join(project_path, "exp_data.parquet"),
-                columns=[
-                    "cell_line",
-                    "stim_exposure",
-                    "stim_timestep",
-                    "fov",
-                    "fname",
-                    "particle",
-                    "timepoint",
-                    "timestep",
-                    "cnr",
-                    "cnr_median",
-                ],
+                columns=required_columns,
             )
+
         except ValueError:
             exp_df = pd.read_parquet(os.path.join(project_path, "exp_data.parquet"))
 
@@ -113,11 +133,6 @@ def load_exp_df(project_path):
                 + exp_df["particle"].astype("string")
             )
         # Normierung nur falls noch nicht vorhanden
-        time_col = None
-        if "frame" in exp_df.columns:
-            time_col = "frame"
-        elif "timestep" in exp_df.columns:
-            time_col = "timestep"
         if time_col is not None:
             for col, base in [("cnr_norm", "cnr"), ("cnr_norm_median", "cnr_median")]:
                 if col not in exp_df.columns and base in exp_df.columns:
@@ -582,14 +597,14 @@ def directorypicker(
 
 def label_to_value(tracks, labels_stack, what, no_normalization=False):
     particles_stack = np.zeros_like(labels_stack, dtype=np.uint16)
-    tracks_df_norm = tracks[["timestep", "particle", what]].copy()
+    tracks_df_norm = tracks[[timestep_variable_name, "particle", what]].copy()
     tracks_df_norm.replace([np.inf, -np.inf], np.nan, inplace=True)
     tracks_df_norm.dropna(inplace=True)
     particles_stack = np.zeros_like(labels_stack, dtype=np.float64)
     for frame in range(labels_stack.shape[0]):
         labels_f = np.array(labels_stack[frame, :, :])
 
-        tracks_f = tracks_df_norm[tracks_df_norm["timestep"] == frame]
+        tracks_f = tracks_df_norm[tracks_df_norm[timestep_variable_name] == frame]
         from_label = tracks_f["particle"].values
         to_particle = tracks_f[what].to_numpy()
         skimage.util.map_array(
@@ -1136,10 +1151,9 @@ class CellTimeSeriesWidget(QWidget):
             self.lines = []
             df = self.exp_df[self.exp_df["fov"] == self.fov]
 
-            if "timestep" in df.columns:
-                x = "timestep"
-            elif "frame" in df.columns:
-                x = "frame"
+            print(timestep_variable_name)
+            if timestep_variable_name is not None:
+                x = timestep_variable_name
             else:
                 self.canvas.draw_idle()
                 return
@@ -1214,6 +1228,7 @@ class CellTimeSeriesWidget(QWidget):
                     continue
 
             # Blaue Ticks für alle Werte in stim_timestep (nur Tick, keine Linie)
+            # Fixme: Not working for multi phase experiments
             try:
                 if "stim_timestep" in df.columns and not df.empty:
                     stim_steps = set()
