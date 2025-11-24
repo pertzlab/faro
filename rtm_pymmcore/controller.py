@@ -161,6 +161,12 @@ class Controller:
 
                     for i, channel_i in enumerate(channels):
                         metadata_dict["last_channel"] = False
+                        if i == 0:
+                            x_pos = fov_x
+                            y_pos = fov_y
+                        else:
+                            x_pos = None
+                            y_pos = None
                         if not optocheck:
                             last_channel: bool = i == len(channels) - 1
                             metadata_dict["last_channel"] = last_channel
@@ -187,8 +193,8 @@ class Controller:
                                 ),
                             },
                             metadata=metadata_dict,
-                            x_pos=fov_x,
-                            y_pos=fov_y,
+                            x_pos=x_pos,
+                            y_pos=y_pos,
                             z_pos=fov_z,
                             min_start_time=event_start_time,
                             exposure=channel_i.get("exposure", None),
@@ -228,8 +234,8 @@ class Controller:
                                     ),
                                 },
                                 metadata=metadata_dict,
-                                x_pos=fov_x,
-                                y_pos=fov_y,
+                                x_pos=None,
+                                y_pos=None,
                                 z_pos=fov_z,
                                 min_start_time=event_start_time,
                                 exposure=optocheck_ch.get("exposure", None),
@@ -286,8 +292,8 @@ class Controller:
                                 "group": stim_channel_group,
                             },
                             metadata=metadata_dict,
-                            x_pos=fov_x,
-                            y_pos=fov_y,
+                            x_pos=None,
+                            y_pos=None,
                             z_pos=fov_z,
                             exposure=stim_exposure,
                             min_start_time=event_start_time,
