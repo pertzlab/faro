@@ -128,9 +128,10 @@ class JungfrauMDAEngine(MDAEngine):
             ...
 
         self._set_event_xy_position(event)
-        time.sleep(
-            0.2
-        )  # small delay to ensure XY stage has moved, as XY stage encore is broken on this microscope
+        if event.x_pos is not None or event.y_pos is not None:
+            time.sleep(
+                0.2
+            )  # small delay to ensure XY stage has moved, as XY stage encore is broken on this microscope
         if event.z_pos is not None:
             self._set_event_z(event)
         if event.slm_image is not None:
