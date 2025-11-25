@@ -30,10 +30,10 @@ class Analyzer:
         if img_type == ImgType.IMG_RAW:
             # raw image, send to pipeline and store
             store_img(img, metadata, self.pipeline.storage_path, "raw")
-            self.pipeline.run(img, event)
-            # if self.pipeline is not None:
-            #     thread = threading.Thread(target=self.pipeline.run, args=(img, event))
-            #     thread.start()
+            # self.pipeline.run(img, event)
+            if self.pipeline is not None:
+                thread = threading.Thread(target=self.pipeline.run, args=(img, event))
+                thread.start()
 
         elif img_type == ImgType.IMG_STIM:
             # stim image, store
@@ -43,10 +43,10 @@ class Analyzer:
             # on one side store image as normal raw, but also send a copy to optocheck pipeline
             # raw image, send to pipeline and store
             len_raw_img = len(metadata["channels"])
-            self.pipeline.run(img, event)
-            # if self.pipeline is not None:
-            #     thread = threading.Thread(target=self.pipeline.run, args=(img, event))
-            #     thread.start()
+            # self.pipeline.run(img, event)
+            if self.pipeline is not None:
+                thread = threading.Thread(target=self.pipeline.run, args=(img, event))
+                thread.start()
             store_img(img[0:len_raw_img], metadata, self.pipeline.storage_path, "raw")
             if not os.path.exists(
                 os.path.join(self.pipeline.storage_path, "optocheck")
