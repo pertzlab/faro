@@ -18,7 +18,7 @@ dependencies = [
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
-    "imaging-server-kit==0.0.16",
+    "imaging-server-kit",
 ]
 
 [project.optional-dependencies]
