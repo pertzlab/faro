@@ -16,6 +16,7 @@ from rtm_pymmcore.data_structures import Fov, ImgType
 from rtm_pymmcore.utils import labels_to_particles, create_folders
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import queue
 
 
 def store_img(img: np.array, metadata, path: str, folder: str):
@@ -89,7 +90,41 @@ class ImageProcessingPipeline:
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
-        df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
+
+        if metadata["stim"] == True:
+            stim_mask, _ = self.stimulator.get_stim_mask({}, metadata, img)
+            fov_obj.stim_mask_queue.put_nowait(stim_mask)
+
+        try:
+            # First attempt: pull from queue
+            df_old = fov_obj.tracks_queue.get(block=True, timeout=15)
+
+        except TimeoutError:
+            print("Timeout Error")
+            # If queue is empty → fallback to file-based recovery
+            current_fname = f"{metadata['fname']}.parquet"
+            base = current_fname.rsplit("_", 1)[0]
+
+            # Try frame -1, then frame -2
+            for offset in (1, 2):
+                frame_num = int(metadata["timestep"]) - offset
+                if frame_num < 0:
+                    continue  # avoid negative filenames
+
+                fname = f"{base}_{str(frame_num).zfill(5)}.parquet"
+                file_path = os.path.join(self.storage_path, "tracks", fname)
+
+                try:
+                    df_old = pd.read_parquet(file_path)
+                    break  # success → exit loop
+                except FileNotFoundError:
+                    continue  # try the next offset
+
+            else:
+                # Neither file exists → return empty DataFrame
+                df_old = pd.DataFrame()
+                print("Attention df lost")
+
         if "phase_id" or "phase_name" in metadata:
             metadata["fov_timestep"] = fov_obj.fov_timestep_counter
 
@@ -108,18 +143,18 @@ class ImageProcessingPipeline:
                     img[seg["use_channel"], :, :]
                 )
 
-        if metadata["stim"] == True:
-            stim_mask, labels_stim = self.stimulator.get_stim_mask(
-                segmentation_results, metadata, img
-            )
-            fov_obj.stim_mask_queue.put_nowait(stim_mask)
-            # if labels_stim is not None:
-            #     labels_stim = np.unique(labels_stim[labels_stim > 0])
-            #     metadata["stim_labels"] = labels_stim
-            # TODO: Reenable, but make exception for stimwholeframe
-            # mark in the df which cells have been stimulated
-            # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
-            # df_tracked.loc[stim_index,'stim']=True
+        # if metadata["stim"] == True:
+        #     stim_mask, labels_stim = self.stimulator.get_stim_mask(
+        #         segmentation_results, metadata, img
+        #     )
+        #     fov_obj.stim_mask_queue.put_nowait(stim_mask)
+        # if labels_stim is not None:
+        #     labels_stim = np.unique(labels_stim[labels_stim > 0])
+        #     metadata["stim_labels"] = labels_stim
+        # TODO: Reenable, but make exception for stimwholeframe
+        # mark in the df which cells have been stimulated
+        # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
+        # df_tracked.loc[stim_index,'stim']=True
 
         if self.feature_extractor is None:
             df_new = pd.DataFrame([metadata])

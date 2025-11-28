@@ -111,7 +111,7 @@ class Controller:
                 current_time_df = df_acquire[df_acquire["time"] == exp_time]
                 for index, row in current_time_df.iterrows():
                     # Pause if queue is getting too full to allow analyzer to catch up
-                    while self._queue.qsize() >= 10:
+                    while self._queue.qsize() >= 3:
                         time.sleep(0.1)  # Wait 1s before checking again
                     # Get FOV data directly from the DataFrame
                     timestep = row["timestep"]
@@ -267,15 +267,16 @@ class Controller:
                         slm_image = None
 
                         if self._dmd is not None:
-                            stim_mask = fov_obj.stim_mask_queue.get(
-                                block=True
-                            )  # TODO: Not really a good idea, but timeout is also not good, as
-                            # the queue fills up already much in advance of the actual acquisition for optofgfr experiments without constant stimming.
-                            # best would be to either slow down the iteration through the dataframe, or give error masks, or something else
-                            if np.all(stim_mask == 1):
-                                stim_mask = True
-                            else:
+                            try:
+                                stim_mask = fov_obj.stim_mask_queue.get(
+                                    block=True, timeout=35
+                                )
+                                if np.all(stim_mask == 1):
+                                    stim_mask = True
                                 stim_mask = self._dmd.affine_transform(stim_mask)
+                            except TimeoutError:
+                                print("Attention Timeout in Mask generation")
+                                stim_mask = False
 
                             slm_image = SLMImage(
                                 data=stim_mask,

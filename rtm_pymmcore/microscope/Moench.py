@@ -92,6 +92,11 @@ class Moench(AbstractMicroscope):
 
     def __init__(self, affine_calibration_matrix=None):
         super().__init__()
+        pymmcore_plus.configure_logging(
+            stderr_level="CRITICAL",
+            file_level="CRITICAL",
+            file="loglog.txt",
+        )
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
         self.mmc = pymmcore_plus.CMMCorePlus(mm_path=self.MICROMANAGER_PATH)
         self.slm_dev = None
