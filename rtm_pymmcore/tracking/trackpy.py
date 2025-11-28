@@ -56,4 +56,21 @@ class TrackerTrackpy(Tracker):
         # this is against a in trackpy, where the same ID gets assigned twice in one frame
         df_tracked = df_tracked.drop_duplicates(subset=["particle", "fov_timestep"])
         df_tracked = df_tracked.reset_index(drop=True)
+
+        # Allow subclasses to add post-processing
+        df_tracked = self._post_process_tracking(df_tracked, metadata)
+
         return df_tracked
+
+    def _post_process_tracking(self, df: pd.DataFrame, metadata: dict) -> pd.DataFrame:
+        """
+        Hook for subclasses to add post-processing after tracking.
+
+        Args:
+            df: Tracked dataframe
+            metadata: Metadata dictionary
+
+        Returns:
+            pd.DataFrame: Processed dataframe
+        """
+        return df

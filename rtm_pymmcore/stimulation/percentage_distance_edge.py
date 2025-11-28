@@ -9,19 +9,18 @@ from skimage.morphology import binary_dilation as skimage_binary_dilation
 from scipy.ndimage import binary_dilation as scipy_binary_dilation
 
 
-class StimPercentageOfCell(Stim):
+class PercentageDistanceEdgeStimulation(Stim):
     """
     Stimulate a percentage of the cell.
 
-    This class implements a stimulation that stimulates a percentage of the cell.
-    The percentage can be parametrized.
-    """
+    This class implements a stimulation that stimulates a percentage of the cell area
+    plus a configurable distance from the edge. The orientation is stored in df_tracked
+    to maintain consistent directionality across frames.
 
-    def above_line(self, i, j, x2, y2, x3, y3):
-        v1 = (x2 - x3, y2 - y3)
-        v2 = (x2 - i, y2 - j)
-        xp = v1[0] * v2[1] - v1[1] * v2[0]
-        return xp > 0
+    Parameters via metadata:
+    - stim_cell_percentage (float): Percentage of cell area to stimulate (default: 0.3 = 30%)
+    - stim_edge_distance (int): Distance from edge in pixels for stimulation expansion (default: 5)
+    """
 
     def get_stim_mask(
         self,
@@ -36,19 +35,25 @@ class StimPercentageOfCell(Stim):
         props = skimage.measure.regionprops(label_image)
         if metadata is None:
             metadata = {}
-        percentage_of_stim = metadata.get("stim_cell_percentage", 0.3)
 
-        selem = disk(5)
+        # Get parameters from metadata
+        percentage_of_stim = metadata.get("stim_cell_percentage", 0.3)
+        edge_distance = metadata.get(
+            "stim_edge_distance", 5
+        )  # distance from edge in pixels
+
+        selem = disk(int(edge_distance))
+
+        # Get current FOV info (particles are unique per FOV)
+        current_fov = metadata.get("fov", 0)
 
         try:
-            extent = 0.5 - percentage_of_stim
-
             for prop in props:
                 label = prop.label
 
                 # bounding box with padding to reduce computation to a small window
                 minr, minc, maxr, maxc = prop.bbox
-                pad = 6  # a bit larger than selem radius
+                pad = int(edge_distance) + 1
                 r0 = max(0, minr - pad)
                 r1 = min(h, maxr + pad)
                 c0 = max(0, minc - pad)
@@ -63,7 +68,45 @@ class StimPercentageOfCell(Stim):
 
                 # get centroid and geometry in absolute coordinates
                 y0, x0 = prop.centroid
+
+                # Try to get stored orientation from df_tracked, otherwise use current
                 orientation = prop.orientation
+                particle_id = None
+
+                if df_tracked is not None and len(df_tracked) > 0:
+                    # Find the particle ID for this label in the current FOV
+                    label_mask = (df_tracked["label"] == label) & (
+                        df_tracked["fov"] == current_fov
+                    )
+
+                    if label_mask.any():
+                        # Get the most recent entry for this label to find its particle ID
+                        particle_id = df_tracked.loc[label_mask, "particle"].iloc[-1]
+
+                        # Check if this particle already has a stored orientation (within this FOV)
+                        particle_mask = (df_tracked["particle"] == particle_id) & (
+                            df_tracked["fov"] == current_fov
+                        )
+                        if "stim_orientation" in df_tracked.columns:
+                            stored_orientations = df_tracked.loc[
+                                particle_mask, "stim_orientation"
+                            ].dropna()
+                            if len(stored_orientations) > 0:
+                                # Use the first stored orientation for this particle
+                                orientation = stored_orientations.iloc[0]
+
+                        # Store orientation for this particle if not already stored
+                        if "stim_orientation" not in df_tracked.columns:
+                            df_tracked["stim_orientation"] = np.nan
+
+                        # Update the orientation for all entries of this particle in this FOV
+                        df_tracked.loc[particle_mask, "stim_orientation"] = orientation
+
+                # Calculate the extent along major axis based on percentage_of_stim
+                # percentage_of_stim = 0.3 means stimulate 30% of cell area on one side
+                # This translates to a linear extent along the major axis
+                # For ellipse-like shapes: area_fraction ≈ linear_fraction
+                extent = 0.5 - percentage_of_stim
 
                 # point on major axis where cutoff starts
                 x2 = x0 - math.sin(orientation) * extent * prop.major_axis_length
@@ -78,7 +121,6 @@ class StimPercentageOfCell(Stim):
                 ys = np.arange(r0, r1)
                 xs = np.arange(c0, c1)
                 x_coords_sub, y_coords_sub = np.meshgrid(xs, ys)
-                # x_coords_sub, y_coords_sub currently are (rows, cols) with x across cols, y across rows
 
                 # compute cross product (vectorized) to create cutoff mask in subwindow
                 v1_x = x3 - x2

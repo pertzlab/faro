@@ -109,8 +109,8 @@ class ImageProcessingPipeline:
                 )
 
         if metadata["stim"] == True:
-            stim_mask, labels_stim = self.stimulator.get_stim_mask(
-                segmentation_results, metadata, img
+            stim_mask, _ = self.stimulator.get_stim_mask(
+                segmentation_results, metadata, img, df_old
             )
             fov_obj.stim_mask_queue.put_nowait(stim_mask)
             # if labels_stim is not None:

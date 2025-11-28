@@ -409,6 +409,553 @@ def parse_filename(fname):
         return {"fname": fname, "fov": None, "phase": None, "timestep": None}
 
 
+def get_rotating_fov_indices(n_fovs, n_fovs_per_batch, phase_idx):
+    """
+    Get FOV indices for a specific phase with rotation.
+
+    FOVs are divided into batches and rotated so that each batch is used once
+    before any batch is reused.
+
+    Args:
+        n_fovs: Total number of FOVs
+        n_fovs_per_batch: Number of FOVs per batch
+        phase_idx: Phase index (0-based)
+
+    Returns:
+        list: FOV indices for this phase
+
+    Example:
+        n_fovs=20, n_fovs_per_batch=5 creates 4 batches:
+        - Phase 0: [0, 1, 2, 3, 4]
+        - Phase 1: [5, 6, 7, 8, 9]
+        - Phase 2: [10, 11, 12, 13, 14]
+        - Phase 3: [15, 16, 17, 18, 19]
+        - Phase 4: [0, 1, 2, 3, 4] (cycle repeats)
+    """
+    n_batches = n_fovs // n_fovs_per_batch
+    batch_idx = phase_idx % n_batches
+
+    start_idx = batch_idx * n_fovs_per_batch
+    end_idx = start_idx + n_fovs_per_batch
+
+    return list(range(start_idx, end_idx)), batch_idx
+
+
+def generate_df_acquire_single_phase(
+    fovs,
+    channels,
+    phase_id,
+    phase_name,
+    fov_indices,
+    n_frames,
+    imaging_interval=15,
+    channel_optocheck=None,
+    optocheck_timepoints=None,
+    condition=None,
+    stim_exposure=None,
+    stim_cell_percentage=None,
+    stim_edge_distance=None,
+    stim_pattern=None,
+    stim_power=10,
+    stim_channel_name="CyanStim",
+    stim_channel_group="TTL_ERK",
+    stim_channel_device_name="Spectra",
+    stim_channel_power_property_name="Cyan_Level",
+):
+    """
+    Generate df_acquire for a single phase with specific FOVs and stimulation parameters.
+
+    Note: timestep and time always start at 0 for each phase. This is intentional as each
+    phase is acquired and analyzed independently.
+
+    Args:
+        fovs: List of all FOV objects
+        channels: List of imaging channels
+        phase_id: Unique identifier for this phase
+        phase_name: Human-readable name for this phase
+        fov_indices: List of FOV indices to image in this phase
+        n_frames: Number of frames to acquire in this phase
+        imaging_interval: Time between frames in seconds
+        channel_optocheck: Optional optocheck channel
+        optocheck_timepoints: Timesteps for optocheck (relative to this phase)
+        condition: List of conditions per FOV
+        stim_exposure: Stimulation exposure in ms (None = no stim)
+        stim_cell_percentage: Cell percentage for stimulation (0-1)
+        stim_edge_distance: Edge distance for stimulation in pixels
+        stim_pattern: Stimulation pattern ("every_frame", "every_2nd", "every_4th")
+        stim_power: Stimulation power level
+        stim_channel_name: Stimulation channel name
+        stim_channel_group: Stimulation channel group
+        stim_channel_device_name: Stimulation device name
+        stim_channel_power_property_name: Power property name
+
+    Returns:
+        pd.DataFrame: Acquisition dataframe for this phase
+    """
+    dfs = []
+    timestep = 0  # Always start at 0 for each phase
+    current_time = 0  # Always start at 0 for each phase
+
+    for frame_idx in range(n_frames):
+        for fov_idx in fov_indices:
+            fov = fovs[fov_idx]
+
+            # Determine condition for this FOV
+            if condition is None or len(condition) == 0:
+                condition_fov = None
+            elif len(condition) == 1:
+                condition_fov = condition[0]
+            else:
+                condition_fov = condition[fov_idx]
+
+            fname = f"{str(fov_idx).zfill(3)}_{str(phase_id).zfill(2)}_{str(timestep).zfill(5)}"
+
+            row = {
+                "fov_object": fov,
+                "fov": fov_idx,
+                "fov_x": fov.x,
+                "fov_y": fov.y,
+                "fov_z": fov.z,
+                "fov_name": fov.name,
+                "timestep": timestep,
+                "fov_timestep": frame_idx,
+                "time": current_time,
+                "channels": tuple(dataclasses.asdict(channel) for channel in channels),
+                "fname": fname,
+                "phase": phase_name,
+                "phase_id": phase_id,
+            }
+
+            if condition_fov is not None:
+                row["cell_line"] = condition_fov
+
+            if channel_optocheck is not None:
+                if optocheck_timepoints is not None:
+                    row["optocheck"] = timestep in optocheck_timepoints
+                else:
+                    row["optocheck"] = False
+
+                if isinstance(channel_optocheck, list):
+                    row["optocheck_channels"] = tuple(
+                        dataclasses.asdict(channel) for channel in channel_optocheck
+                    )
+                else:
+                    row["optocheck_channels"] = tuple(
+                        [dataclasses.asdict(channel_optocheck)]
+                    )
+
+            # Add stimulation parameters if specified
+            if stim_exposure is not None:
+                row["stim_exposure"] = stim_exposure
+                row["stim_power"] = stim_power
+                row["stim_channel_name"] = stim_channel_name
+                row["stim_channel_group"] = stim_channel_group
+                row["stim_channel_device_name"] = stim_channel_device_name
+                row["stim_channel_power_property_name"] = (
+                    stim_channel_power_property_name
+                )
+                row["stim_cell_percentage"] = (
+                    stim_cell_percentage if stim_cell_percentage is not None else 0.3
+                )
+                row["stim_edge_distance"] = (
+                    stim_edge_distance if stim_edge_distance is not None else 5
+                )
+                row["stim_pattern"] = (
+                    stim_pattern if stim_pattern is not None else "every_frame"
+                )
+
+                # Determine if this frame should be stimulated
+                should_stim = False
+                if stim_pattern == "every_frame":
+                    should_stim = True
+                elif stim_pattern == "every_2nd" and frame_idx % 2 == 0:
+                    should_stim = True
+                elif stim_pattern == "every_4th" and frame_idx % 4 == 0:
+                    should_stim = True
+
+                row["stim"] = should_stim
+            else:
+                row["stim"] = False
+                row["stim_exposure"] = 0
+
+            dfs.append(row)
+            timestep += 1
+
+        current_time += imaging_interval
+
+    df_phase = pd.DataFrame(dfs)
+
+    # If stimulation is enabled, create stim_timestep and stim_exposure_list tuples
+    if stim_exposure is not None:
+        stim_timesteps = df_phase[df_phase["stim"]]["timestep"].unique()
+        stim_timestep_tuple = tuple(int(x) for x in sorted(stim_timesteps))
+        stim_exposure_list_tuple = tuple([stim_exposure] * len(stim_timestep_tuple))
+
+        # Initialize columns first
+        df_phase["stim_timestep"] = None
+        df_phase["stim_exposure_list"] = None
+
+        # Then set values
+        for idx in df_phase.index:
+            df_phase.at[idx, "stim_timestep"] = stim_timestep_tuple
+            df_phase.at[idx, "stim_exposure_list"] = stim_exposure_list_tuple
+
+    return df_phase
+
+
+def generate_df_acquire_rotating_fovs(
+    fovs,
+    channels,
+    n_fovs_per_batch=5,
+    imaging_interval=15,  # seconds between frames
+    batch_duration=1800,  # 30 minutes in seconds
+    n_cycles=5,  # number of times to repeat the entire rotation
+    start_time=0,
+    channel_optocheck=None,
+    optocheck_timepoints=None,
+    condition=None,
+):
+    """
+    Generate a df_acquire for rotating FOV batches.
+
+    Args:
+        fovs: List of FOV objects (should be 20 total: 10 mcherry, 10 lifeact)
+        channels: List of channel configurations
+        n_fovs_per_batch: Number of FOVs to image simultaneously (default: 5)
+        imaging_interval: Time between frames in seconds (default: 15s)
+        batch_duration: Duration to image each batch in seconds (default: 1800s = 30min)
+        n_cycles: Number of times to repeat the entire rotation (default: 5)
+        start_time: Starting time in seconds (default: 0)
+        channel_optocheck: Optional optocheck channel configuration
+        optocheck_timepoints: List of global timesteps for optocheck
+        condition: List of conditions (cell lines) per FOV
+
+    Returns:
+        pd.DataFrame: Acquisition dataframe with rotating FOV batches
+
+    Note: Each batch is a phase. The terms are used interchangeably in the code.
+    """
+    n_fovs = len(fovs)
+    n_batches = n_fovs // n_fovs_per_batch
+    frames_per_batch = int(batch_duration / imaging_interval)
+
+    # Create FOV batches
+    fov_batches = []
+    for i in range(n_batches):
+        batch_start = i * n_fovs_per_batch
+        batch_end = batch_start + n_fovs_per_batch
+        fov_batches.append(list(range(batch_start, batch_end)))
+
+    print(f"Created {n_batches} batches with {n_fovs_per_batch} FOVs each")
+    print(
+        f"Each batch will be imaged for {batch_duration/60} minutes ({frames_per_batch} frames)"
+    )
+    print(f"Total cycle duration: {n_batches * batch_duration / 3600} hours")
+    print(f"Repeating {n_cycles} times")
+
+    dfs = []
+    global_timestep = 0
+    current_time = start_time
+
+    for cycle in range(n_cycles):
+        for batch_idx, fov_indices in enumerate(fov_batches):
+            phase_id = (
+                cycle * n_batches + batch_idx
+            )  # phase_id = unique identifier for each batch
+            phase_name = f"cycle{cycle}_batch{batch_idx}"
+
+            # Image this batch for the specified duration
+            for frame_in_batch in range(frames_per_batch):
+                for fov_idx in fov_indices:
+                    fov = fovs[fov_idx]
+
+                    # Determine condition for this FOV
+                    if condition is None or len(condition) == 0:
+                        condition_fov = None
+                    elif len(condition) == 1:
+                        condition_fov = condition[0]
+                    else:
+                        condition_fov = condition[fov_idx]
+
+                    fname = f"{str(fov_idx).zfill(3)}_{str(phase_id).zfill(2)}_{str(global_timestep).zfill(5)}"
+
+                    row = {
+                        "fov_object": fov,
+                        "fov": fov_idx,
+                        "fov_x": fov.x,
+                        "fov_y": fov.y,
+                        "fov_z": fov.z,
+                        "fov_name": fov.name,
+                        "timestep": global_timestep,
+                        "fov_timestep": frame_in_batch,  # Frame within this batch/phase
+                        "time": current_time,
+                        "channels": tuple(
+                            dataclasses.asdict(channel) for channel in channels
+                        ),
+                        "fname": fname,
+                        "phase": phase_name,
+                        "phase_id": phase_id,
+                        "batch": batch_idx,  # batch within current cycle
+                        "cycle": cycle,
+                    }
+
+                    if condition_fov is not None:
+                        row["cell_line"] = condition_fov
+
+                    if channel_optocheck is not None:
+                        if optocheck_timepoints is not None:
+                            row["optocheck"] = global_timestep in optocheck_timepoints
+                        else:
+                            row["optocheck"] = False
+
+                        if isinstance(channel_optocheck, list):
+                            row["optocheck_channels"] = tuple(
+                                dataclasses.asdict(channel)
+                                for channel in channel_optocheck
+                            )
+                        else:
+                            row["optocheck_channels"] = tuple(
+                                [dataclasses.asdict(channel_optocheck)]
+                            )
+
+                    dfs.append(row)
+                    global_timestep += 1
+
+                current_time += imaging_interval
+
+    df_acquire = pd.DataFrame(dfs)
+    df_acquire = df_acquire.sort_values(by=["time", "fov"]).reset_index(drop=True)
+
+    total_hours = df_acquire["time"].max() / 3600
+    print(f"\nTotal Experiment Time: {total_hours:.2f} hours")
+    print(f"Total frames per FOV: {len(df_acquire[df_acquire['fov'] == 0])}")
+    print(f"Total frames: {len(df_acquire)}")
+
+    return df_acquire
+
+
+def apply_stim_to_rotating_fovs(
+    df_acquire,
+    stim_exposures=[50, 250, 500],
+    stim_cell_percentages=[0.1, 0.2, 0.3],
+    stim_edge_distances=[0, 5, 10],
+    stim_patterns=["every_frame", "every_2nd", "every_4th"],
+    stim_power=10,
+    stim_channel_name="CyanStim",
+    stim_channel_group="TTL_ERK",
+    stim_channel_device_name="Spectra",
+    stim_channel_power_property_name="Cyan_Level",
+    use_condition_factor=False,
+):
+    """
+    Apply stimulation conditions to rotating FOV dataframe.
+    Each unique batch (phase) gets a different combination of stimulation parameters.
+
+    Args:
+        df_acquire: DataFrame from generate_df_acquire_rotating_fovs
+        stim_exposures: List of stimulation exposure values in ms (default: [50, 250, 500])
+        stim_cell_percentages: List of cell percentage values 0-1 (default: [0.1, 0.2, 0.3])
+        stim_edge_distances: List of edge distances in pixels (default: [0, 5, 10])
+        stim_patterns: List of stimulation patterns (default: ["every_frame", "every_2nd", "every_4th"])
+                      - "every_frame": stimulate every frame
+                      - "every_2nd": stimulate every 2nd frame (e.g., every 30s if imaging_interval=15s)
+                      - "every_4th": stimulate every 4th frame (e.g., every minute if imaging_interval=15s)
+        stim_power: Stimulation power level (default: 10)
+        stim_channel_name: Name of stimulation channel (default: "CyanStim")
+        stim_channel_group: Channel group (default: "TTL_ERK")
+        stim_channel_device_name: Device name (default: "Spectra")
+        stim_channel_power_property_name: Property name for power (default: "Cyan_Level")
+
+    Returns:
+        pd.DataFrame: DataFrame with stimulation parameters added
+
+    Note: With default parameters (3×3×3×3), there are 81 possible combinations.
+          The function cycles through these combinations for each unique batch/phase.
+    """
+    import itertools
+
+    # Generate base parameter combinations (without condition)
+    base_param_combos = list(
+        itertools.product(
+            stim_exposures, stim_cell_percentages, stim_edge_distances, stim_patterns
+        )
+    )
+
+    unique_phases = sorted(df_acquire["phase_id"].unique())
+    n_phases = len(unique_phases)
+
+    # Optionally incorporate condition as an additional factor
+    if use_condition_factor:
+        if "cell_line" not in df_acquire.columns:
+            raise ValueError(
+                "use_condition_factor=True aber Spalte 'cell_line' fehlt im DataFrame."
+            )
+        unique_conditions = sorted(df_acquire["cell_line"].dropna().unique())
+        n_conditions = len(unique_conditions)
+        # Expand combinations by condition dimension
+        all_combinations = [
+            (*params, cond)
+            for params in base_param_combos
+            for cond in unique_conditions
+        ]
+        print(
+            "Condition-Faktor aktiv: Kombinationen werden über Bedingungen erweitert."
+        )
+    else:
+        unique_conditions = []
+        n_conditions = 0
+        all_combinations = base_param_combos
+
+    n_combinations = len(all_combinations)
+    print(f"Total stimulation combinations: {n_combinations}")
+    print(
+        f"Parameter-Kombinationen: {len(stim_exposures)} exposures × {len(stim_cell_percentages)} cell% × "
+        f"{len(stim_edge_distances)} edge distances × {len(stim_patterns)} patterns"
+        + (f" × {n_conditions} conditions" if use_condition_factor else "")
+    )
+    print(
+        f"Phasen: {n_phases}"
+        + (f", Bedingungen: {n_conditions}" if use_condition_factor else "")
+    )
+
+    # Build assignment groups: either per phase or per (phase, condition)
+    if use_condition_factor:
+        assignment_groups = [
+            (phase_id, cond) for phase_id in unique_phases for cond in unique_conditions
+        ]
+    else:
+        assignment_groups = [(phase_id, None) for phase_id in unique_phases]
+    n_groups = len(assignment_groups)
+    print(f"Zu belegende Gruppen: {n_groups}")
+
+    if n_groups < n_combinations:
+        print(
+            f"WARNING: Weniger Gruppen ({n_groups}) als Kombinationen ({n_combinations})."
+        )
+        print(f"         Nur die ersten {n_groups} Kombinationen werden genutzt.")
+    elif n_groups > n_combinations:
+        print(f"INFO: Mehr Gruppen ({n_groups}) als Kombinationen ({n_combinations}).")
+        print("      Kombinationen werden zyklisch wiederholt.")
+
+    # Initialize columns
+    df_acquire["stim"] = False
+    df_acquire["stim_exposure"] = 0
+    df_acquire["stim_power"] = stim_power
+    df_acquire["stim_channel_name"] = stim_channel_name
+    df_acquire["stim_channel_group"] = stim_channel_group
+    df_acquire["stim_channel_device_name"] = stim_channel_device_name
+    df_acquire["stim_channel_power_property_name"] = stim_channel_power_property_name
+    df_acquire["stim_cell_percentage"] = 0.0
+    df_acquire["stim_edge_distance"] = 0
+    df_acquire["stim_pattern"] = "none"
+    df_acquire["stim_timestep"] = None
+    df_acquire["stim_exposure_list"] = None
+
+    # Assign combinations to each phase
+    for group_idx, (phase_id, cond) in enumerate(assignment_groups):
+        combo_idx = group_idx % n_combinations
+        if use_condition_factor:
+            exposure, cell_pct, edge_dist, pattern, combo_condition = all_combinations[
+                combo_idx
+            ]
+        else:
+            exposure, cell_pct, edge_dist, pattern = all_combinations[combo_idx]
+            combo_condition = cond  # None
+
+        phase_mask = df_acquire["phase_id"] == phase_id
+        if use_condition_factor:
+            group_mask = phase_mask & (df_acquire["cell_line"] == cond)
+        else:
+            group_mask = phase_mask
+
+        if group_mask.sum() == 0:
+            print(
+                f"WARN: Gruppe (phase={phase_id}, condition={cond}) hat keine Zeilen – übersprungen."
+            )
+            continue
+
+        df_acquire.loc[group_mask, "stim_power"] = stim_power
+        df_acquire.loc[group_mask, "stim_channel_name"] = stim_channel_name
+        df_acquire.loc[group_mask, "stim_channel_group"] = stim_channel_group
+        df_acquire.loc[group_mask, "stim_channel_device_name"] = (
+            stim_channel_device_name
+        )
+        df_acquire.loc[group_mask, "stim_channel_power_property_name"] = (
+            stim_channel_power_property_name
+        )
+        df_acquire.loc[group_mask, "stim_cell_percentage"] = cell_pct
+        df_acquire.loc[group_mask, "stim_edge_distance"] = edge_dist
+        df_acquire.loc[group_mask, "stim_pattern"] = pattern
+
+        group_data = df_acquire[group_mask].copy()
+        all_stim_timesteps = []
+        for fov in group_data["fov"].unique():
+            fov_group_mask = group_mask & (df_acquire["fov"] == fov)
+            fov_data = df_acquire[fov_group_mask]
+            fov_timesteps = fov_data["fov_timestep"].values
+            global_timesteps = fov_data["timestep"].values
+            if pattern == "every_frame":
+                stim_indices = range(len(fov_timesteps))
+            elif pattern == "every_2nd":
+                stim_indices = range(0, len(fov_timesteps), 2)
+            elif pattern == "every_4th":
+                stim_indices = range(0, len(fov_timesteps), 4)
+            else:
+                stim_indices = []
+            for idx in stim_indices:
+                fov_ts = fov_timesteps[idx]
+                global_ts = global_timesteps[idx]
+                frame_mask = fov_group_mask & (df_acquire["fov_timestep"] == fov_ts)
+                df_acquire.loc[frame_mask, "stim"] = True
+                df_acquire.loc[frame_mask, "stim_exposure"] = exposure
+                if global_ts not in all_stim_timesteps:
+                    all_stim_timesteps.append(global_ts)
+        all_stim_timesteps.sort()
+        # ensure pure Python int (avoid numpy.int64 leaking into tuple)
+        stim_timestep_tuple = tuple(int(x) for x in all_stim_timesteps)
+        stim_exposure_list_tuple = tuple([exposure] * len(all_stim_timesteps))
+        for idx in df_acquire.index[group_mask]:
+            df_acquire.at[idx, "stim_timestep"] = stim_timestep_tuple
+            df_acquire.at[idx, "stim_exposure_list"] = stim_exposure_list_tuple
+        print(
+            f"Phase {phase_id}, Condition {cond if cond is not None else '-'}: combo={combo_idx}, exposure={exposure}ms, cell%={cell_pct*100:.0f}%, edge_dist={edge_dist}px, pattern={pattern}, stim_frames={len(all_stim_timesteps)}"
+        )
+
+    # Summary statistics
+    n_stim_frames = df_acquire["stim"].sum()
+    n_total_frames = len(df_acquire)
+    print(
+        f"\nTotal frames with stimulation: {n_stim_frames}/{n_total_frames} "
+        f"({n_stim_frames/n_total_frames*100:.1f}%)"
+    )
+
+    return df_acquire
+
+
+def generate_dummy_fovs(n_fovs=20, x_start=0, y_start=0, spacing=500):
+    """
+    Generate dummy FOV objects for testing.
+
+    Args:
+        n_fovs: Number of FOVs to create
+        x_start: Starting X position
+        y_start: Starting Y position
+        spacing: Spacing between FOVs in microns
+
+    Returns:
+        List of Fov objects
+    """
+    fovs = []
+    for i in range(n_fovs):
+        fov_object = Fov(i)
+        fov_object.x = x_start + (i % 5) * spacing  # 5 FOVs per row
+        fov_object.y = y_start + (i // 5) * spacing
+        fov_object.z = None
+        fov_object.name = f"FOV_{i}"
+        fovs.append(fov_object)
+    return fovs
+
+
 def generate_exp_data_from_tracks(path):
     tracks_dir = Path(path) / "tracks"
     all_files = [p.name for p in tracks_dir.glob("*.parquet")]

@@ -12,11 +12,18 @@ class Stim:
     """
 
     def get_stim_mask(
-        self, label_images: dict, metadata: dict, img: np.ndarray
+        self,
+        label_images: dict,
+        metadata: dict,
+        img: np.ndarray,
+        df_tracked: np.ndarray = None,
     ) -> npt.NDArray[np.uint8]:
         """
         Parameters:
-        label_image (np.ndarray): The label image to stimulate.
+        label_images (dict): Dictionary of label images.
+        metadata (dict): Metadata dictionary.
+        img (np.ndarray): The raw image.
+        df_tracked (np.ndarray): DataFrame with tracked cells (optional).
 
         Returns:
         np.ndarray: The stimulation mask.
@@ -31,7 +38,11 @@ class StimWholeFOV(Stim):
     """
 
     def get_stim_mask(
-        self, label_images: dict, metadata: dict = None, img: np.array = None
+        self,
+        label_images: dict,
+        metadata: dict = None,
+        img: np.array = None,
+        df_tracked: np.ndarray = None,
     ) -> npt.NDArray[np.uint8]:
         return np.ones((img.shape[-2], img.shape[-1]), dtype=np.uint8), None
 
@@ -40,7 +51,13 @@ class StimNothing(Stim):
     """Use when you don't want to stimulate. Returns empty stimulation mask."""
 
     def get_stim_mask(
-        self, label_image: np.ndarray, metadata: dict = None, img: np.array = None
+        self,
+        label_images: dict,
+        metadata: dict = None,
+        img: np.array = None,
+        df_tracked: np.ndarray = None,
     ) -> npt.NDArray[np.uint8]:
-        return np.zeros_like(label_image), [1, 2, 3, 4]  # some dummy values
-
+        label_image = list(label_images.values())[0] if label_images else None
+        if label_image is not None:
+            return np.zeros_like(label_image), [1, 2, 3, 4]  # some dummy values
+        return np.zeros((1, 1), dtype=np.uint8), []

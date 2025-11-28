@@ -62,7 +62,11 @@ class StimLine(Stim):
         return spot_mask.astype(bool)
 
     def get_stim_mask(
-        self, label_images: dict, metadata: dict = None, img: np.array = None
+        self,
+        label_images: dict,
+        metadata: dict = None,
+        img: np.array = None,
+        df_tracked: np.ndarray = None,
     ) -> np.ndarray:
 
         time_step = metadata.get("timestep", 0)
