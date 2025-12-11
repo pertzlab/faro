@@ -40,6 +40,7 @@ class ImageProcessingPipeline:
         stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
+        only_save_every_n_frames: int = 1,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
@@ -48,6 +49,7 @@ class ImageProcessingPipeline:
         self.feature_extractor_optocheck = feature_extractor_optocheck
         self.storage_path = storage_path
         folders = ["raw", "tracks"]
+        self.only_save_every_n_frames = only_save_every_n_frames
         if self.stimulator is not None:
             folders.extend(["stim_mask", "stim"])
         if self.tracker is not None:
@@ -139,8 +141,12 @@ class ImageProcessingPipeline:
                 df_old = pd.DataFrame()
                 print("Attention df lost")
 
+        filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" or "phase_name" in metadata:
             metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+            filename_for_parquet = (
+                f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
+            )
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
@@ -239,9 +245,14 @@ class ImageProcessingPipeline:
             print(e)
             print("Error in converting datatypes. df_tracked:")
 
-        df_tracked.to_parquet(
-            os.path.join(self.storage_path, "tracks", f"{metadata['fname']}.parquet")
-        )
+        if (
+            fov_obj.fov_timestep_counter % self.only_save_every_n_frames == 0
+            or fov_obj.fov_timestep_counter == 0
+        ):
+            df_tracked.to_parquet(
+                os.path.join(self.storage_path, "tracks", filename_for_parquet),
+                compression="zstd",
+            )
 
         if self.stimulator is not None:
             if metadata["stim"]:
@@ -278,15 +289,6 @@ class ImageProcessingPipeline:
                 else:
                     store_img(value, metadata, self.storage_path, key)
 
-        # cleanup: delete the previous pickled tracks file
-        if metadata["timestep"] > 0:
-            current_fname = f"{metadata['fname']}.parquet"
-            get_last_frame_number = int(metadata["timestep"]) - 1
-            get_fname_wo_f_number = current_fname.rsplit("_", 1)[0]
-            fname_previous = (
-                f"{get_fname_wo_f_number}_{str(get_last_frame_number).zfill(5)}.parquet"
-            )
-            os.remove(os.path.join(self.storage_path, "tracks", fname_previous))
         return {"result": "STOP"}
 
 
