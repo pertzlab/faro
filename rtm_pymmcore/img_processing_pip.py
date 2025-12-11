@@ -12,7 +12,7 @@ import rtm_pymmcore.segmentation.base_segmentation as base_segmentation
 import rtm_pymmcore.stimulation.base_stimulation as base_stimulation
 import rtm_pymmcore.tracking.abstract_tracker as abstract_tracker
 import rtm_pymmcore.feature_extraction.abstract_fe as abstract_fe
-from rtm_pymmcore.data_structures import Fov, ImgType
+from rtm_pymmcore.data_structures import Fov, ImgType, SegmentationMethod
 from rtm_pymmcore.utils import labels_to_particles, create_folders
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -35,7 +35,7 @@ class ImageProcessingPipeline:
     def __init__(
         self,
         storage_path: str,
-        segmentators: List[base_segmentation.Segmentator] = None,
+        segmentators: List[SegmentationMethod] = None,
         feature_extractor: abstract_fe.FeatureExtractor = None,
         stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
@@ -57,7 +57,7 @@ class ImageProcessingPipeline:
                 folders.extend(self.feature_extractor.extra_folders)
         if self.segmentators is not None:
             for seg in self.segmentators:
-                folders.append(seg["name"])
+                folders.append(seg.name)
         if feature_extractor_optocheck is not None:
             folders.append("optocheck")
             if hasattr(feature_extractor_optocheck, "extra_folders"):
@@ -104,10 +104,14 @@ class ImageProcessingPipeline:
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
+        if self.stimulator.use_labels == False:
+            timeout_time = 60
+        else:
+            timeout_time = 20
 
         try:
             # First attempt: pull from queue
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=15)
+            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
 
         except Exception as e:
             print("Exception", e)
@@ -149,8 +153,8 @@ class ImageProcessingPipeline:
         segmentation_results = {}
         if self.segmentators is not None:
             for seg in self.segmentators:
-                segmentation_results[seg["name"]] = seg["class"].segment(
-                    img[seg["use_channel"], :, :]
+                segmentation_results[seg.name] = seg.segmentation_class.segment(
+                    img[seg.use_channel, :, :]
                 )
 
         # if metadata["stim"] == True:
@@ -265,7 +269,7 @@ class ImageProcessingPipeline:
             for (key, value), segmentator in zip(
                 segmentation_results.items(), self.segmentators
             ):
-                if segmentator.get("save_tracked", False):
+                if segmentator.save_tracked:
                     tracked_label = labels_to_particles(
                         value, df_tracked, metadata=metadata
                     )
@@ -292,7 +296,7 @@ class ImageProcessingPipeline_postExperiment:
         img_storage_path: str,
         out_path: str,
         df_acquire: pd.DataFrame,
-        segmentators: List[base_segmentation.Segmentator] = None,
+        segmentators: List[SegmentationMethod] = None,
         feature_extractor: abstract_fe.FeatureExtractor = None,
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
@@ -319,7 +323,7 @@ class ImageProcessingPipeline_postExperiment:
                 folders.extend(self.feature_extractor.extra_folders)
         if self.segmentators is not None:
             for seg in self.segmentators:
-                folders.append(seg["name"])
+                folders.append(seg.name)
         if feature_extractor_optocheck is not None:
             folders.append("optocheck")
             if hasattr(feature_extractor_optocheck, "extra_folders"):
@@ -427,15 +431,15 @@ class ImageProcessingPipeline_postExperiment:
             segmentation_results = {}
             if self.use_old_segmentations:
                 for seg in self.segmentators:
-                    segmentation_results[seg["name"]] = tifffile.imread(
+                    segmentation_results[seg.name] = tifffile.imread(
                         os.path.join(
-                            self.img_storage_path, seg["name"], row["fname"] + ".tiff"
+                            self.img_storage_path, seg.name, row["fname"] + ".tiff"
                         )
                     )
             else:
                 for seg in self.segmentators:
-                    segmentation_results[seg["name"]] = seg["class"].segment(
-                        img[seg["use_channel"], :, :]
+                    segmentation_results[seg.name] = seg.segmentation_class.segment(
+                        img[seg.use_channel, :, :]
                     )
 
             if self.feature_extractor is not None:
@@ -491,7 +495,7 @@ class ImageProcessingPipeline_postExperiment:
                 for (key, value), segmentator in zip(
                     segmentation_results.items(), self.segmentators
                 ):
-                    if segmentator.get("save_tracked", False):
+                    if segmentator.save_tracked:
                         tracked_label = labels_to_particles(value, df_tracked, metadata)
                         store_img(
                             tracked_label, metadata, self.storage_path, "particles"

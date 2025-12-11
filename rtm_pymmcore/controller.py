@@ -46,7 +46,6 @@ class Analyzer:
     def run(self, img: np.array, event: MDAEvent) -> dict:
         metadata = event.metadata
         img_type = metadata["img_type"]
-
         if img_type == ImgType.IMG_RAW:
             # raw image, send to pipeline and store
             store_img(img, metadata, self.pipeline.storage_path, "raw")
@@ -86,6 +85,7 @@ class Analyzer:
             metadata: Image metadata dict
             folder: Folder where image is stored ("raw" or "optocheck")
         """
+
         with self.task_lock:
             queue_is_full = self.active_tasks >= self.max_queue_size
             if not queue_is_full:

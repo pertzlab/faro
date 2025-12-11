@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import enum
 import numpy as np
 import pandas as pd
+from rtm_pymmcore.segmentation.base_segmentation import Segmentator
 from dataclasses import dataclass, InitVar
 
 
@@ -17,6 +18,14 @@ class Fov:
         self.linker = None
         self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe:
         self.fov_timestep_counter = 0
+
+
+@dataclass
+class SegmentationMethod:
+    name: str
+    segmentation_class: Segmentator
+    use_channel: int = 0
+    save_tracked: bool = False
 
 
 @dataclass

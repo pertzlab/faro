@@ -157,7 +157,7 @@ class Moench(AbstractMicroscope):
 
     def run_experiment(self, df_acquire):
         """Run the experiment."""
-        self.mmc.setProperty("Core", "TimeoutMs", 20000)
+        self.mmc.setProperty("Core", "TimeoutMs", 9000)
         self.register_engine()
         pymmcore_plus.configure_logging(
             stderr_level="CRITICAL",
