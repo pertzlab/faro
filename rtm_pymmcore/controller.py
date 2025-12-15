@@ -612,21 +612,46 @@ class ControllerSimulated(Controller):
         queue,
         use_autofocus_event=False,
         dmd=None,
+        dmd_needs_to_be_waken=False,
         project_path=None,
     ):
-        super().__init__(analyzer, mmc, queue, dmd)
+        super().__init__(
+            analyzer, mmc, queue, use_autofocus_event, dmd, dmd_needs_to_be_waken
+        )
         self._project_path = project_path
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
+        """Override to load images from disk for simulated controller.
+
+        Maintains the same frame aggregation logic as the real Controller but loads
+        images from the project path instead of from the microscope.
+        """
         if event.metadata["last_channel"]:
             fname = event.metadata["fname"]
-            if event.metadata["img_type"] == ImgType.IMG_RAW:
-                frame_complete = tifffile.imread(
+            img_type = event.metadata["img_type"]
+
+            # Load image from disk based on type
+            if img_type == ImgType.IMG_RAW:
+                img_loaded = tifffile.imread(
                     os.path.join(self._project_path, "raw", fname + ".tiff")
                 )
-                self._results = self._analyzer.run(frame_complete, event)
-            elif event.metadata["img_type"] == ImgType.IMG_OPTOCHECK:
-                frame_complete = tifffile.imread(
+                self._results = self._analyzer.run(img_loaded, event)
+
+            elif img_type == ImgType.IMG_OPTOCHECK:
+                img_loaded = tifffile.imread(
                     os.path.join(self._project_path, "optocheck", fname + ".tiff")
                 )
-                self._results = self._analyzer.run(frame_complete, event)
+                self._results = self._analyzer.run(img_loaded, event)
+
+            elif img_type == ImgType.IMG_STIM:
+                pass  # Stim images are not processed in this simulation
+            else:
+                raise ValueError(f"Unknown image type: {img_type}")
+
+            try:
+                md = event.metadata or {}
+                print(
+                    f"[ControllerSimulated] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
+                )
+            except Exception:
+                pass
