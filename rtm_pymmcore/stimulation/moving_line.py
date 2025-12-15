@@ -20,14 +20,16 @@ class StimLine(Stim):
         n_frames_total=360,
         mask_height=1024,
         mask_width=1024,
+        use_labels=False,
     ):
+        super().__init__()
         self.first_stim_frame = first_stim_frame
         self.frames_for_1_loop = frames_for_1_loop
         self.stripe_width = stripe_width
         self.n_frames_total = n_frames_total
         self.mask_height = mask_height
         self.mask_width = mask_width
-        super().__init__()
+        self.use_labels = use_labels
 
     def spot_mask_linescan(
         self,
@@ -62,7 +64,7 @@ class StimLine(Stim):
         return spot_mask.astype(bool)
 
     def get_stim_mask(
-        self, label_images: dict, metadata: dict = None, img: np.array = None
+        self, label_images: dict, metadata: dict, img: np.array = None
     ) -> np.ndarray:
 
         time_step = metadata.get("timestep", 0)

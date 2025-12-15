@@ -14,7 +14,6 @@ class AbstractMicroscope:
     )
 
     def __init__(self):
-        psutil.Process().nice(psutil.IDLE_PRIORITY_CLASS)
         self.dmd = None
         self.queue = Queue()
         self.pipeline = None

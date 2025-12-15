@@ -297,10 +297,9 @@ def apply_stim_treatments_to_df_acquire(
         stim_treatment_tot = []
         random.shuffle(stim_treatments)
         if n_fovs_per_well is None:
-            for fov_index in range(0, n_fovs_per_stim_condition):
+            for fov_index in range(0, n_fovs_per_stim_condition + 1):
                 stim_treatment_tot.extend(stim_treatments)
             random.shuffle(stim_treatment_tot)
-
             if n_fovs % n_stim_treatments != 0:
                 print(
                     f"Warning: Not equal number of fovs per stim condition. {n_fovs % n_stim_treatments} fovs will have repeated treatment"

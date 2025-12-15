@@ -12,10 +12,11 @@ import rtm_pymmcore.segmentation.base_segmentation as base_segmentation
 import rtm_pymmcore.stimulation.base_stimulation as base_stimulation
 import rtm_pymmcore.tracking.abstract_tracker as abstract_tracker
 import rtm_pymmcore.feature_extraction.abstract_fe as abstract_fe
-from rtm_pymmcore.data_structures import Fov, ImgType
+from rtm_pymmcore.data_structures import Fov, ImgType, SegmentationMethod
 from rtm_pymmcore.utils import labels_to_particles, create_folders
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+import queue
 
 
 def store_img(img: np.array, metadata, path: str, folder: str):
@@ -34,11 +35,12 @@ class ImageProcessingPipeline:
     def __init__(
         self,
         storage_path: str,
-        segmentators: List[base_segmentation.Segmentator] = None,
+        segmentators: List[SegmentationMethod] = None,
         feature_extractor: abstract_fe.FeatureExtractor = None,
         stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
+        only_save_every_n_frames: int = 1,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
@@ -47,6 +49,7 @@ class ImageProcessingPipeline:
         self.feature_extractor_optocheck = feature_extractor_optocheck
         self.storage_path = storage_path
         folders = ["raw", "tracks"]
+        self.only_save_every_n_frames = only_save_every_n_frames
         if self.stimulator is not None:
             folders.extend(["stim_mask", "stim"])
         if self.tracker is not None:
@@ -56,20 +59,24 @@ class ImageProcessingPipeline:
                 folders.extend(self.feature_extractor.extra_folders)
         if self.segmentators is not None:
             for seg in self.segmentators:
-                folders.append(seg["name"])
+                folders.append(seg.name)
         if feature_extractor_optocheck is not None:
             folders.append("optocheck")
             if hasattr(feature_extractor_optocheck, "extra_folders"):
                 folders.extend(feature_extractor_optocheck.extra_folders)
         create_folders(self.storage_path, folders)
 
-    def run(self, img: np.ndarray, event: MDAEvent) -> dict:
+    def run(
+        self, img: np.ndarray = None, event: MDAEvent = None, file_path: str = None
+    ) -> dict:
         """
         Runs the image processing pipeline on the input image.
 
         Args:
-            img (np.ndarray): The input image to process.
-            event (MDAEvent): The MDAEvent used to capture the image, which also containins the metadata.
+            img (np.ndarray, optional): The input image to process (loaded in memory).
+            event (MDAEvent, optional): The MDAEvent used to capture the image, which also contains the metadata.
+            file_path (str, optional): Path to a saved image file (TIFF format). If provided, image is loaded from disk.
+                                      Either `img` or `file_path` must be provided, not both.
 
         Returns:
             dict: A dictionary containing the result of the pipeline.
@@ -86,12 +93,45 @@ class ImageProcessingPipeline:
         9. Store the segmented images and labels.
         """
 
+        # Validate inputs: exactly one of img or file_path must be provided
+        if (img is None and file_path is None) or (
+            img is not None and file_path is not None
+        ):
+            raise ValueError("Exactly one of 'img' or 'file_path' must be provided")
+
+        # Load image from file if file_path is provided
+        if file_path is not None:
+            img = tifffile.imread(file_path)
+
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: Fov = metadata["fov_object"]
-        df_old = fov_obj.tracks_queue.get(block=True, timeout=360)
-        if "phase_id" or "phase_name" in metadata:
+
+        filename_for_parquet = f"{metadata['fov']}_latest.parquet"
+        if "phase_id" in metadata or "phase_name" in metadata:
             metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+            filename_for_parquet = (
+                f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
+            )
+
+        if self.stimulator.use_labels == False:
+            timeout_time = 60
+        else:
+            timeout_time = 20
+
+        try:
+            # First attempt: pull from queue
+            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
+
+        except Exception as e:
+            print("Exception", e)
+            # If queue is empty → fallback to file-based recovery
+            file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
+            try:
+                df_old = pd.read_parquet(file_path)
+            except FileNotFoundError:
+                df_old = pd.DataFrame()
+                print("Attention df lost")
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             n_optocheck_channels = len(metadata["optocheck_channels"])
@@ -104,22 +144,21 @@ class ImageProcessingPipeline:
         segmentation_results = {}
         if self.segmentators is not None:
             for seg in self.segmentators:
-                segmentation_results[seg["name"]] = seg["class"].segment(
-                    img[seg["use_channel"], :, :]
+                segmentation_results[seg.name] = seg.segmentation_class.segment(
+                    img[seg.use_channel, :, :]
                 )
-
-        if metadata["stim"] == True:
-            stim_mask, labels_stim = self.stimulator.get_stim_mask(
-                segmentation_results, metadata, img
-            )
-            fov_obj.stim_mask_queue.put_nowait(stim_mask)
-            # if labels_stim is not None:
-            #     labels_stim = np.unique(labels_stim[labels_stim > 0])
-            #     metadata["stim_labels"] = labels_stim
-            # TODO: Reenable, but make exception for stimwholeframe
-            # mark in the df which cells have been stimulated
-            # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
-            # df_tracked.loc[stim_index,'stim']=True
+        # if metadata["stim"] == True:
+        #     stim_mask, labels_stim = self.stimulator.get_stim_mask(
+        #         segmentation_results, metadata, img
+        #     )
+        #     fov_obj.stim_mask_queue.put_nowait(stim_mask)
+        # if labels_stim is not None:
+        #     labels_stim = np.unique(labels_stim[labels_stim > 0])
+        #     metadata["stim_labels"] = labels_stim
+        # TODO: Reenable, but make exception for stimwholeframe
+        # mark in the df which cells have been stimulated
+        # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
+        # df_tracked.loc[stim_index,'stim']=True
 
         if self.feature_extractor is None:
             df_new = pd.DataFrame([metadata])
@@ -141,6 +180,13 @@ class ImageProcessingPipeline:
             df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
         else:
             df_tracked = pd.concat([df_old, df_new], ignore_index=True)
+
+        if metadata["stim"] == True:
+            stim_mask, _ = self.stimulator.get_stim_mask(
+                label_images=segmentation_results, metadata=metadata, img=img
+            )
+            if self.stimulator.use_labels:
+                fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             if (
@@ -183,9 +229,14 @@ class ImageProcessingPipeline:
             print(e)
             print("Error in converting datatypes. df_tracked:")
 
-        df_tracked.to_parquet(
-            os.path.join(self.storage_path, "tracks", f"{metadata['fname']}.parquet")
-        )
+        if (
+            fov_obj.fov_timestep_counter % self.only_save_every_n_frames == 0
+            or fov_obj.fov_timestep_counter == 0
+        ):
+            df_tracked.to_parquet(
+                os.path.join(self.storage_path, "tracks", filename_for_parquet),
+                compression="zstd",
+            )
 
         if self.stimulator is not None:
             if metadata["stim"]:
@@ -213,7 +264,7 @@ class ImageProcessingPipeline:
             for (key, value), segmentator in zip(
                 segmentation_results.items(), self.segmentators
             ):
-                if segmentator.get("save_tracked", False):
+                if segmentator.save_tracked:
                     tracked_label = labels_to_particles(
                         value, df_tracked, metadata=metadata
                     )
@@ -222,15 +273,6 @@ class ImageProcessingPipeline:
                 else:
                     store_img(value, metadata, self.storage_path, key)
 
-        # cleanup: delete the previous pickled tracks file
-        if metadata["timestep"] > 0:
-            current_fname = f"{metadata['fname']}.parquet"
-            get_last_frame_number = int(metadata["timestep"]) - 1
-            get_fname_wo_f_number = current_fname.rsplit("_", 1)[0]
-            fname_previous = (
-                f"{get_fname_wo_f_number}_{str(get_last_frame_number).zfill(5)}.parquet"
-            )
-            os.remove(os.path.join(self.storage_path, "tracks", fname_previous))
         return {"result": "STOP"}
 
 
@@ -240,16 +282,19 @@ class ImageProcessingPipeline_postExperiment:
         img_storage_path: str,
         out_path: str,
         df_acquire: pd.DataFrame,
-        segmentators: List[base_segmentation.Segmentator] = None,
+        segmentators: List[SegmentationMethod] = None,
         feature_extractor: abstract_fe.FeatureExtractor = None,
+        stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
         feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
         use_old_segmentations: bool = False,
+        use_old_stim_masks: bool = False,
         n_jobs: int = 2,
         correct_timestep_jumps: bool = False,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
+        self.stimulator = stimulator
         self.tracker = tracker
         self.df_acquire = df_acquire
         self.feature_extractor_optocheck = feature_extractor_optocheck
@@ -258,8 +303,16 @@ class ImageProcessingPipeline_postExperiment:
         self.use_old_segmentations = use_old_segmentations
         self.n_jobs = n_jobs
         self.correct_timestep_jumps = correct_timestep_jumps
+        self.use_old_stim_masks = use_old_stim_masks
 
         folders = ["raw", "tracks"]
+        self.folders_to_move = folders.copy()
+        stim_folders = ["stim_mask", "stim"]
+        if self.stimulator is not None:
+            folders.extend(stim_folders)
+        if self.use_old_stim_masks:
+            self.folders_to_move.extend(stim_folders)
+            folders.extend(stim_folders)
         if self.tracker is not None:
             folders.append("particles")
         if self.feature_extractor is not None:
@@ -267,7 +320,9 @@ class ImageProcessingPipeline_postExperiment:
                 folders.extend(self.feature_extractor.extra_folders)
         if self.segmentators is not None:
             for seg in self.segmentators:
-                folders.append(seg["name"])
+                folders.append(seg.name)
+                if self.use_old_segmentations:
+                    self.folders_to_move.append(seg.name)
         if feature_extractor_optocheck is not None:
             folders.append("optocheck")
             if hasattr(feature_extractor_optocheck, "extra_folders"):
@@ -371,19 +426,22 @@ class ImageProcessingPipeline_postExperiment:
                 os.path.join(self.img_storage_path, "raw", row["fname"] + ".tiff")
             )
             metadata = row.to_dict()
+            metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
             shape_img = (img.shape[-2], img.shape[-1])
+            masks_for_fe = None
+
             segmentation_results = {}
             if self.use_old_segmentations:
                 for seg in self.segmentators:
-                    segmentation_results[seg["name"]] = tifffile.imread(
+                    segmentation_results[seg.name] = tifffile.imread(
                         os.path.join(
-                            self.img_storage_path, seg["name"], row["fname"] + ".tiff"
+                            self.img_storage_path, seg.name, row["fname"] + ".tiff"
                         )
                     )
             else:
                 for seg in self.segmentators:
-                    segmentation_results[seg["name"]] = seg["class"].segment(
-                        img[seg["use_channel"], :, :]
+                    segmentation_results[seg.name] = seg.segmentation_class.segment(
+                        img[seg.use_channel, :, :]
                     )
 
             if self.feature_extractor is not None:
@@ -398,6 +456,8 @@ class ImageProcessingPipeline_postExperiment:
                             df_new[subkey] = [subvalue] * len(df_new)
                     else:
                         df_new[key] = value
+            else:
+                df_new = pd.DataFrame([metadata])
 
             if self.tracker is not None:
                 df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
@@ -409,7 +469,7 @@ class ImageProcessingPipeline_postExperiment:
                 self.feature_extractor_optocheck is not None
                 and self.tracker is not None
             ):
-                if metadata["optocheck"] == True:
+                if metadata.get("optocheck", False) == True:
                     print(
                         f'Adding optocheck features for timestep {metadata["timestep"]}, fov {fov_id}'
                     )
@@ -418,7 +478,7 @@ class ImageProcessingPipeline_postExperiment:
                             self.img_storage_path, "optocheck", row["fname"] + ".tiff"
                         )
                     )
-                    n_channels = len(metadata["channels"])
+                    n_channels = len(metadata.get("channels", []))
                     img_optocheck = img_optocheck[n_channels:]
                     df_tracked = self.feature_extractor_optocheck.extract_features(
                         segmentation_results,
@@ -432,6 +492,20 @@ class ImageProcessingPipeline_postExperiment:
                     for key, value in mask_fe.items():
                         store_img(value, metadata, self.storage_path, key)
 
+            if not self.use_old_stim_masks and self.stimulator is not None:
+                if metadata.get("stim", False):
+                    stim_mask, _ = self.stimulator.get_stim_mask(
+                        label_images=segmentation_results, metadata=metadata, img=img
+                    )
+                    store_img(stim_mask, metadata, self.storage_path, "stim_mask")
+                else:
+                    store_img(
+                        np.zeros(shape_img, np.uint8),
+                        metadata,
+                        self.storage_path,
+                        "stim_mask",
+                    )
+
             if self.tracker is None:
                 for key, value in segmentation_results.items():
                     store_img(value, metadata, self.storage_path, key)
@@ -439,7 +513,7 @@ class ImageProcessingPipeline_postExperiment:
                 for (key, value), segmentator in zip(
                     segmentation_results.items(), self.segmentators
                 ):
-                    if segmentator.get("save_tracked", False):
+                    if segmentator.save_tracked:
                         tracked_label = labels_to_particles(value, df_tracked, metadata)
                         store_img(
                             tracked_label, metadata, self.storage_path, "particles"
@@ -450,9 +524,28 @@ class ImageProcessingPipeline_postExperiment:
                         if not self.use_old_segmentations:
                             store_img(value, metadata, self.storage_path, key)
 
+            for folder in self.folders_to_move:
+                src_path = os.path.join(
+                    self.img_storage_path, folder, row["fname"] + ".tiff"
+                )
+                dst_path = os.path.join(
+                    self.storage_path, folder, row["fname"] + ".tiff"
+                )
+                if os.path.exists(src_path):
+                    if not os.path.exists(dst_path):
+                        os.link(src_path, dst_path)
+
         df_tracked.drop(columns=["fov_object"], inplace=True)
+        filename_for_parquet = f"{metadata['fov']}_latest.parquet"
+        if "phase_id" in metadata or "phase_name" in metadata:
+            metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+            filename_for_parquet = (
+                f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
+            )
+
         df_tracked.to_parquet(
-            os.path.join(self.storage_path, "tracks", f"{metadata['fname']}.parquet")
+            os.path.join(self.storage_path, "tracks", filename_for_parquet),
+            compression="zstd",
         )
 
         return df_tracked

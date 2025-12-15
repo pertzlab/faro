@@ -52,19 +52,20 @@ The image processing pipeline is designed with modularity in mind. Each step is 
     * The desired segmentation engine(s) and their specific parameters are configured in the Jupyter notebook using a list of dictionaries.
     ```python
     # Example of a segmentation engine configuration
+    from rtm_pymmcore.data_structures SegmentationMethod
     segmentators = [
-        {
-            "name": "labels",
-            "class": SegmentorStardist(),
-            "use_channel": 0,
-            "save_tracked": True,
-        },
-      {
-            "name": "cell_body",
-            "class": SegmentorCellpose(model="cyto3", diameter=75, flow_threshold=0.4),
-            "use_channel": 1,
-            "save_tracked": True,
-        },
+        SegmentationMethod(
+            name="labels",
+            segmentation_class=SegmentorStardist()
+            use_channel=0,
+            save_tracked=True,
+            ),
+        SegmentationMethod(
+            name="cell_body",
+            segmentation_class=SegmentorCellpose(model="cyto3", diameter=75, flow_threshold=0.4),
+            use_channel=1,
+            save_tracked=True,
+            ),
     ]
     ```
 

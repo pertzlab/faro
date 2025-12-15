@@ -11,6 +11,9 @@ class Stim:
     from this class and override the get_stim_mask method.
     """
 
+    def __init__(self):
+        self.use_labels = True
+
     def get_stim_mask(
         self, label_images: dict, metadata: dict, img: np.ndarray
     ) -> npt.NDArray[np.uint8]:
@@ -43,4 +46,3 @@ class StimNothing(Stim):
         self, label_image: np.ndarray, metadata: dict = None, img: np.array = None
     ) -> npt.NDArray[np.uint8]:
         return np.zeros_like(label_image), [1, 2, 3, 4]  # some dummy values
-

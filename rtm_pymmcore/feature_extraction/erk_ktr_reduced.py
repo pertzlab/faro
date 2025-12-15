@@ -8,7 +8,7 @@ from rtm_pymmcore.feature_extraction.abstract_fe import FeatureExtractor
 from rtm_pymmcore.feature_extraction.utils import median_intensity
 
 
-class FE_ErkKtr(FeatureExtractor):
+class FE_ErkKtrReduced(FeatureExtractor):
     """
     Feature extractor for ERK-KTR biosensor.
     This class implements a feature extractor that extracts features from the
@@ -98,6 +98,21 @@ class FE_ErkKtr(FeatureExtractor):
             table["median_intensity_C1_ring"] / table["median_intensity_C1_nuc"]
         )
 
+        table = table.drop(
+            columns=[
+                "mean_intensity_C0_nuc",
+                "mean_intensity_C1_nuc",
+                "mean_intensity_C2_nuc",
+                "median_intensity_C0_nuc",
+                "median_intensity_C1_nuc",
+                "mean_intensity_C0_ring",
+                "mean_intensity_C1_ring",
+                "mean_intensity_C2_ring",
+                "median_intensity_C0_ring",
+                "median_intensity_C1_ring",
+            ],
+            errors="ignore",
+        )
         # TODO add the points from stardist
         # table['x'] = details["points"][:,0]
         # table['y'] = details["points"][:,1]

@@ -46,6 +46,7 @@ class Jungfrau(AbstractMicroscope):
 
     def run_experiment(self, df_acquire):
         """Run the experiment."""
+        # Enable analyzer debug to show live storage/pipeline stats in notebook output
         self.analyzer = Analyzer(self.pipeline)
         # Ensure engine is registered (idempotent).
         self.register_engine()

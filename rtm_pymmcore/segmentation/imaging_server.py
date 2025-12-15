@@ -2,6 +2,7 @@ import numpy as np
 from .base_segmentation import Segmentator
 import skimage
 import imaging_server_kit as sk
+import time
 
 """
 Segmentation module for image processing.
@@ -27,13 +28,24 @@ class SegmentatorImagingServerKit(Segmentator):
         """
         Run the an imagekit model on data and do post-processing (remove small cells)
         """
+        max_attempts = 5
+        for attempt in range(0, max_attempts):
+            try:
+                if self.model_param is None:
+                    labels = self.client.run(img, algorithm=self.algorithm)[0].data
+                else:
+                    labels = self.client.run(
+                        img, algorithm=self.algorithm, **self.model_param
+                    )[0].data
+            except Exception as e:
+                print("Failed attempt ", attempt)
+                if attempt == max_attempts:
+                    print("Give up to connect to segmentation server")
+                else:
+                    time.sleep(0.5)
+            else:
+                break
 
-        if self.model_param is None:
-            labels = self.client.run(img, algorithm=self.algorithm)[0].data
-        else:
-            labels = self.client.run(img, algorithm=self.algorithm, **self.model_param)[
-                0
-            ].data
         if self.min_size > 0:
             # remove cells below threshold
             labels = skimage.morphology.remove_small_objects(
