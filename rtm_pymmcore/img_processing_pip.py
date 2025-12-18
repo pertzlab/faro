@@ -569,12 +569,21 @@ class ImageProcessingPipeline_postExperiment:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
+        df_tracked = self.reduce_df_to_float32(df_tracked)
         df_tracked.to_parquet(
             os.path.join(self.storage_path, "tracks", filename_for_parquet),
             compression="zstd",
         )
 
         return df_tracked
+
+    def reduce_df_to_float32(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Reduce the memory usage of a DataFrame by converting float64 to float32.
+        """
+        float64_cols = df.select_dtypes(include='float64').columns
+        df[float64_cols] = df[float64_cols].astype('float32')
+        return df
 
     def concat_fovs(self):
 
@@ -588,4 +597,6 @@ class ImageProcessingPipeline_postExperiment:
             df = pd.read_parquet(track_file)
             dfs.append(df)
 
-        pd.concat(dfs).to_parquet(os.path.join(self.storage_path, "exp_data.parquet"))
+        dfs = pd.concat(dfs)
+        dfs = self.reduce_df_to_float32(dfs)
+        dfs.to_parquet(os.path.join(self.storage_path, "exp_data.parquet"), compression="zstd")
