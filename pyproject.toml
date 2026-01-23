@@ -37,6 +37,11 @@ cellpose = [
     "torch",
     ]
 
+convpaint = [
+    "napari-convpaint", 
+    "scipy"
+]
+
 
 [tool.uv.sources]
 torch = [
