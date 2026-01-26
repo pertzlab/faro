@@ -44,8 +44,6 @@ class DMD:
             self.name = self.mmc.getSLMDevice()
             self.height = self.mmc.getSLMHeight(self.name)
             self.width = self.mmc.getSLMWidth(self.name)
-            self.camera_height = self.mmc.getImageHeight()
-            self.camera_width = self.mmc.getImageWidth()
             self.bppx = self.mmc.getSLMBytesPerPixel(self.name)
             self.exposure_time = self.mmc.getSLMExposure(self.name)
             self.sample_mask_on = np.full((self.height, self.width), 255).astype(
@@ -166,18 +164,22 @@ class DMD:
 
     def calibrate(
         self,
-        verbous=False,
-        n_points=15,
+        verbose=False,
+        n_points=9,
         radius=4,
         exposure=25,
         marker_style="x",
         calibration_points_DMD=None,
+        dmd_full_border_offset_x1=50,
+        dmd_full_border_offset_x2=50,
+        dmd_full_border_offset_y1=50,
+        dmd_full_border_offset_y2=50,
     ):
         """Calibrate the dmd and camera coordinate systems.
         Projects 3 points in DMD space and detects them in camera space,
         then finds the affine transofmation matrix.
         Args:
-            verbous (bool, optional): Whether to display additional images during calibration. Defaults to False.
+            verbose (bool, optional): Whether to display additional images during calibration. Defaults to False.
             blur (int, optional): Blur size for captured images. Defaults to 10.
             circle_size (int, optional): Size of the calibration circle projected. Defaults to 10.
             marker_style (str, optional): Marker style for calibration points. Defaults to 'x'.
@@ -192,10 +194,10 @@ class DMD:
 
         img_dmd_full = (np.ones((self.height, self.width)) * 255).astype(np.uint8)
         img_dmd_full_w_borders = img_dmd_full.copy()
-        img_dmd_full_w_borders[0:100] = 0
-        img_dmd_full_w_borders[:, 0:340] = 0
-        img_dmd_full_w_borders[-100:] = 0
-        img_dmd_full_w_borders[:, -50:] = 0
+        img_dmd_full_w_borders[0:dmd_full_border_offset_x1] = 0
+        img_dmd_full_w_borders[:, 0:dmd_full_border_offset_y1] = 0
+        img_dmd_full_w_borders[-dmd_full_border_offset_x2:] = 0
+        img_dmd_full_w_borders[:, -dmd_full_border_offset_y2:] = 0
 
         valid_pixels = np.array(np.where(img_dmd_full_w_borders > 0)).T
 
@@ -232,7 +234,7 @@ class DMD:
         @self.mmc.mda.events.frameReady.connect
         def new_frame(img: np.ndarray, event: MDAEvent):
             calibration_images.append(img)
-            if verbous:
+            if verbose:
                 plt.imshow(img, cmap="gray")
                 plt.show()
 
@@ -276,29 +278,35 @@ class DMD:
                 ]
             )
 
-            print(f"Not enough inliers found for calibration. Total inliers: {np.sum(inliers)}, required: 5. Try again. ")
+            print(
+                f"Not enough inliers found for calibration. Total inliers: {np.sum(inliers)}, required: 5. Try again. "
+            )
             self.all_on()
             return
         self.affine = affine_model.params
 
-        if verbous:
+        if True:
             # test the calibration on three new points
             event_p = []
             events = []
             test_image = []
             test_src = []
             test_dst = []
-            p0, p1, p2 = ([200, 500], [500, 100], [700, 800])
-            for p in self.select_well_distributed_points(valid_pixels, 3):
-                img_p = np.zeros((self.camera_height, self.camera_width)).astype(
-                    np.uint8
-                )
-                rr, cc = skimage.draw.disk((p[0], p[1]), 30)
+            p0, p1, p2 = ([300, 500], [650, 200], [500, 800])
+            camera_height = self.mmc.getImageHeight()
+            camera_width = self.mmc.getImageWidth()
+
+            for p in [p0, p1, p2]:
+                img_p = np.zeros((camera_height, camera_width)).astype(np.uint8)
+                rr, cc = skimage.draw.disk((p[0], p[1]), 20)
                 test_src.append((p[1], p[0]))
                 img_p[rr, cc] = 255
                 img_warp = self.affine_transform(img_p)
+
                 event_p = MDAEvent(
-                    slm_image=SLMImage(data=img_warp, device=self.name),
+                    slm_image=SLMImage(
+                        data=img_warp, device=self.name, exposure=exposure
+                    ),
                     exposure=exposure,
                     channel={
                         "config": self.calibration_profile["channel_config"],
@@ -322,7 +330,7 @@ class DMD:
 
             for event in events:
                 self.mmc.mda.run([event])
-                time.sleep(1)
+                time.sleep(0.5)
             calibration_images = np.array(calibration_images)
             for img in test_image:
                 img = skimage.filters.gaussian(img, sigma=1)
@@ -334,15 +342,16 @@ class DMD:
             test_dst = np.array(test_dst)
 
             fig, axs = plt.subplots(figsize=(20, 4), ncols=4, dpi=250)
-            axs[0].imshow(calibration_images[0], cmap="gray")
-            axs[0].scatter(dst[0][0], dst[0][1], marker="x", facecolors="red")
-            axs[1].imshow(calibration_images[1], cmap="gray")
-            axs[1].scatter(dst[1][0], dst[1][1], marker="x", facecolors="red")
 
-            axs[2].imshow(test_image[0], cmap="gray")
-            axs[2].scatter(
-                test_src[0][0], test_src[0][1], marker="x", facecolor="green"
-            )
+            for i in range(3):
+                axs[i].imshow(test_image[i], cmap="gray")
+                axs[i].scatter(
+                    test_dst[i][0], test_dst[i][1], marker="x", facecolors="red"
+                )
+                axs[i].scatter(
+                    test_src[i][0], test_src[i][1], marker="x", facecolors="green"
+                )
+
             for i in range(3):
                 axs[3].scatter(
                     test_src[i][0], test_src[i][1], marker="x", facecolor="red"
@@ -350,8 +359,8 @@ class DMD:
                 axs[3].scatter(
                     test_dst[i][0], test_dst[i][1], marker="x", facecolor="green"
                 )
-            axs[3].set_xlim(0, self.camera_width)
-            axs[3].set_ylim(self.camera_height, 0)
+            axs[3].set_xlim(0, camera_width)
+            axs[3].set_ylim(camera_height, 0)
 
             plt.show()
         self.mmc.mda.events.frameReady.disconnect()
