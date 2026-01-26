@@ -17,6 +17,7 @@ class StimColonyPercentage(Stim):
         self,
         path_to_model: str,
         model_name: str,
+        channel_for_segmentation: int,
         percentage_stimulated: float = 0.5,  # 0..1 fraction by default
     ):
         super().__init__()
@@ -25,6 +26,7 @@ class StimColonyPercentage(Stim):
         self.percentage_stimulated = float(percentage_stimulated)
         self.cpm = ConvpaintModel(model_path=os.path.join(path_to_model, model_name))
         self.use_labels = False
+        self.channel_for_segmentation = channel_for_segmentation
 
     def segment_and_cleanup(self, img) -> np.ndarray:
         seg = self.cpm.segment(img)
@@ -59,7 +61,7 @@ class StimColonyPercentage(Stim):
         return spot_mask.astype(bool)
 
     def get_stim_mask(self, label_images: dict, metadata: dict, img: np.array = None):
-
+        img = img[self.channel_for_segmentation]
         mask = self.segment_and_cleanup(img)
         percentage_stimulated_metadata = metadata.get("percentage_stimulated", None)
         if (

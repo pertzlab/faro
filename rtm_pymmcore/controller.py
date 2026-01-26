@@ -105,8 +105,17 @@ class Analyzer:
                         not self.pipeline.stimulator.use_labels
                         and self.pipeline.stimulator.use_imgs
                     ):
-                        # stim mask does not require to use segmented cell labels.
-                        self._put_stim_mask_if_no_labels({}, metadata=metadata, img=img)
+                        img_type = metadata["img_type"]
+                        if img_type == ImgType.IMG_RAW:
+                            # stim mask does not require to use segmented cell labels.
+                            self._put_stim_mask_if_no_labels(
+                                {}, metadata=metadata, img=img
+                            )
+                        elif img_type == ImgType.IMG_OPTOCHECK:
+                            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
+                            self._put_stim_mask_if_no_labels(
+                                {}, metadata=metadata, img=img_raw
+                            )
 
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
@@ -120,6 +129,10 @@ class Analyzer:
             finally:
                 self._storage_queue.task_done()
 
+    def _optocheck_to_raw_img(self, img: np.array, metadata: dict):
+        len_raw_img = len(metadata["channels"])
+        return img[0:len_raw_img]
+
     def _do_store(self, img: np.array, metadata: dict, folder: str):
         """Actually store image to disk (guaranteed, never skipped)."""
         img_type = metadata["img_type"]
@@ -131,8 +144,7 @@ class Analyzer:
             store_img(img, metadata, self.pipeline.storage_path, "stim")
 
         elif img_type == ImgType.IMG_OPTOCHECK:
-            len_raw_img = len(metadata["channels"])
-            img_raw = img[0:len_raw_img]
+            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
 
             store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
             if not os.path.exists(
@@ -386,13 +398,14 @@ class Controller:
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
         # Analyze the image
         self._frame_buffer.append(img)
-        try:
-            md = event.metadata or {}
-            print(
-                f"[Controller] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
-            )
-        except Exception:
-            pass
+        if self._analyzer.debug:
+            try:
+                md = event.metadata or {}
+                print(
+                    f"[Controller] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
+                )
+            except Exception:
+                pass
         # check if it's the last acquisition for this MDAsequence
         if event.metadata["last_channel"]:
             frame_complete = np.stack(self._frame_buffer, axis=-1)
@@ -591,7 +604,7 @@ class Controller:
                         if self._dmd is not None:
                             if (
                                 not self._analyzer.pipeline.stimulator.use_labels
-                                or not self._analyzer.pipeline.stimulator.use_imgs
+                                and not self._analyzer.pipeline.stimulator.use_imgs
                             ):
                                 stim_mask, _ = (
                                     self._analyzer.pipeline.stimulator.get_stim_mask(
@@ -602,7 +615,7 @@ class Controller:
                             else:
                                 try:
                                     stim_mask = fov_obj.stim_mask_queue.get(
-                                        block=True, timeout=35
+                                        block=True, timeout=80
                                     )
                                     stim_mask = self._dmd.affine_transform(stim_mask)
 
