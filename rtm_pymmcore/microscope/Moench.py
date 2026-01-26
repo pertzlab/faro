@@ -142,11 +142,13 @@ class Moench(AbstractMicroscope):
         marker_style="x",
         calibration_points_DMD=None,
     ):
+        self.disable_log_output()
+
         "Calibrate the DMD if it is not already calibrated." ""
         if self.dmd is not None and self.dmd.affine is None:
             self.wakeup_dmd.stop()
             self.dmd.calibrate(
-                verbous=verbous,
+                verbose=verbous,
                 n_points=n_points,
                 radius=radius,
                 exposure=exposure,
@@ -159,16 +161,7 @@ class Moench(AbstractMicroscope):
         """Run the experiment."""
         self.mmc.setProperty("Core", "TimeoutMs", 9000)
         self.register_engine()
-        pymmcore_plus.configure_logging(
-            stderr_level="CRITICAL",
-            file_level="CRITICAL",
-        )
-        for logger in logging.Logger.manager.loggerDict.values():
-            if isinstance(logger, logging.Logger):
-                logger.setLevel(logging.CRITICAL)
-                logger.propagate = False
-                for h in logger.handlers[:]:
-                    logger.removeHandler(h)
+        self.disable_log_output()
         self.wakeup_dmd.stop()
         time.sleep(2)
         self.analyzer = Analyzer(self.pipeline)
@@ -180,7 +173,6 @@ class Moench(AbstractMicroscope):
             dmd=self.dmd,
             dmd_needs_to_be_waken=self.DMD_NEEDS_TO_BE_WAKEN,
         )
-        pymmcore_plus.configure_logging(stderr_level="WARNING")
         self.controller.run(df_acquire)
 
     def set_roi(self):
@@ -217,6 +209,20 @@ class Moench(AbstractMicroscope):
             logging.getLogger(__name__).exception(
                 "Failed to register MDA engine on mmc.mda"
             )
+
+    def disable_log_output(self):
+        pymmcore_plus.configure_logging(
+            stderr_level="CRITICAL",
+            file_level="CRITICAL",
+        )
+        for logger in logging.Logger.manager.loggerDict.values():
+            if isinstance(logger, logging.Logger):
+                logger.setLevel(logging.CRITICAL)
+                logger.propagate = False
+                for h in logger.handlers[:]:
+                    logger.removeHandler(h)
+
+        pymmcore_plus.configure_logging(stderr_level="WARNING")
 
 
 class MoenchMDAEngine(MDAEngine):
