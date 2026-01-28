@@ -34,6 +34,10 @@ class StimWholeFOV(Stim):
     Stimulate the whole FOV.
     """
 
+    def __init__(self):
+        self.use_labels = False
+        self.use_imgs = False
+
     def get_stim_mask(
         self, label_images: dict, metadata: dict = None, img: np.array = None
     ) -> npt.NDArray[np.uint8]:
