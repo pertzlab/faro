@@ -1,5 +1,5 @@
 import numpy as np
-from .base_segmentation import Segmentator
+from .base import Segmentator
 import skimage
 from napari_convpaint import conv_paint, conv_paint_utils
 

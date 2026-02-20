@@ -1,5 +1,5 @@
 import os
-from .base_stimulation import Stim
+from .base import Stim
 import numpy as np
 from napari_convpaint.conv_paint_model import ConvpaintModel
 from scipy import ndimage as ndi

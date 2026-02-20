@@ -1,13 +1,13 @@
 import threading
 import time
 import requests
-from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
+from rtm_pymmcore.microscope.base import AbstractMicroscope
 import pymmcore_plus
 from useq._mda_event import SLMImage
 from useq import MDAEvent
-from rtm_pymmcore.dmd import DMD
-from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
-from rtm_pymmcore.controller import Controller, Analyzer
+from rtm_pymmcore.core.dmd import DMD
+from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.core.controller import Controller, Analyzer
 
 
 class WakeUpLaser:

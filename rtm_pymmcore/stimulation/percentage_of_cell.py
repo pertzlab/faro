@@ -1,4 +1,4 @@
-from .base_stimulation import Stim
+from .base import Stim
 import numpy as np
 import skimage
 import math

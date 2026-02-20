@@ -5,7 +5,7 @@ import skimage
 from skimage.segmentation import expand_labels
 from skimage.measure import regionprops_table
 import pandas as pd
-from .abstract_fe import FeatureExtractor
+from .base import FeatureExtractor
 
 
 """

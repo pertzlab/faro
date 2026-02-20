@@ -1,5 +1,5 @@
 import numpy as np
-from rtm_pymmcore.segmentation.base_segmentation import Segmentator
+from rtm_pymmcore.segmentation.base import Segmentator
 import skimage
 from cellpose import models
 

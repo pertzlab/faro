@@ -1,12 +1,26 @@
 import numpy as np
 import os
 from skimage.util import map_array
-from rtm_pymmcore.data_structures import Fov
+from rtm_pymmcore.core.data_structures import Fov
 import random
 import pandas as pd
 import dataclasses
 import re
 from pathlib import Path
+
+
+def print_configs(mmc):
+    """Print all available config groups and their configs as a rich tree."""
+    from rich.tree import Tree
+    from rich.console import Console
+
+    tree = Tree("[bold]Config Groups")
+    for group in mmc.getAvailableConfigGroups():
+        configs = list(mmc.getAvailableConfigs(group))
+        branch = tree.add(f"[bold cyan]{group}")
+        for c in configs:
+            branch.add(c)
+    Console().print(tree)
 
 
 def create_folders(path, folders):
@@ -120,6 +134,27 @@ def add_stim_parameters_to_stim_exposures_timesteps(
         )
 
 
+def make_baseline_stim_baseline_treatments(
+    stim_start,
+    stim_end,
+    stim_exposure,
+    treatment_name="baseline-stim-baseline",
+):
+    """Create a baseline->stim->baseline treatment list.
+
+    The stim is applied for timesteps in [stim_start, stim_end).
+    """
+    stim_timestep = tuple(range(stim_start, stim_end))
+    stim_exposure_list = tuple([stim_exposure] * len(stim_timestep))
+    return [
+        {
+            "treatment_name": treatment_name,
+            "stim_timestep": stim_timestep,
+            "stim_exposure_list": stim_exposure_list,
+        }
+    ]
+
+
 def print_stim_exposures_timesteps(
     stim_exposures_timesteps,
 ):
@@ -182,6 +217,16 @@ def _get_mda_from_viewer(viewer):
     data_mda_fovs = data_mda_fovs_dict
     return data_mda_fovs
 
+def generate_fov_objects_from_list(mic, data_mda_fovs):
+    fovs = []
+    for i, fov in enumerate(data_mda_fovs):
+        fov_object = Fov(i)
+        fov_object.x = fov.get("x")
+        fov_object.y = fov.get("y")
+        fov_object.z = None if getattr(mic, "ONLY_USE_PFS", False) else fov.get("z")
+        fov_object.name = str(i) if fov["name"] is None else fov["name"]
+        fovs.append(fov_object)
+    return fovs
 
 def generate_fov_objects(mic, viewer=None, filename=None):
     if filename is not None:
@@ -198,10 +243,31 @@ def generate_fov_objects(mic, viewer=None, filename=None):
         fov_object = Fov(i)
         fov_object.x = fov.get("x")
         fov_object.y = fov.get("y")
-        fov_object.z = fov.get("z") if not mic.USE_ONLY_PFS else None
+        fov_object.z = None if getattr(mic, "ONLY_USE_PFS", False) else fov.get("z")
         fov_object.name = str(i) if fov["name"] is None else fov["name"]
         fovs.append(fov_object)
     return fovs
+
+
+def generate_df_acquire_simple(fovs, n_frames, time_between_timesteps, channels, start_time=0):
+    dfs = []
+    for fov_index, fov in enumerate(fovs):
+        for timestep in range(n_frames):
+            dfs.append({
+                "fov_object": fov,
+                "fov": fov_index,
+                "fov_x": fov.x,
+                "fov_y": fov.y,
+                "fov_z": fov.z,
+                "fov_name": fov.name,
+                "timestep": timestep,
+                "time": start_time + timestep * time_between_timesteps,
+                "channels": tuple(dataclasses.asdict(ch) for ch in channels),
+                "fname": f"{str(fov_index).zfill(3)}_{str(timestep).zfill(5)}",
+            })
+    df_acquire = pd.DataFrame(dfs).sort_values(by=["time", "fov"]).reset_index(drop=True)
+    print(f"Total Experiment Time: {df_acquire['time'].max() / 3600}h")
+    return df_acquire
 
 
 def generate_df_acquire(

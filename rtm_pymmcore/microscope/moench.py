@@ -1,9 +1,9 @@
 import pymmcore_plus
 import weakref
 
-from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
-from rtm_pymmcore.controller import Controller, Analyzer
-from rtm_pymmcore.dmd import DMD
+from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.core.controller import Controller, Analyzer
+from rtm_pymmcore.core.dmd import DMD
 from useq._mda_event import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
 from typing import Optional

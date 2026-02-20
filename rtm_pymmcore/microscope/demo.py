@@ -1,6 +1,6 @@
 import pymmcore_plus
-from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
-from rtm_pymmcore.controller import Controller, ControllerSimulated, Analyzer
+from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.core.controller import Controller, ControllerSimulated, Analyzer
 import os
 
 

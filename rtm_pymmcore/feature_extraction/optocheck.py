@@ -5,8 +5,8 @@ import skimage
 from skimage.segmentation import expand_labels
 from skimage.measure import regionprops_table
 import pandas as pd
-from .abstract_fe_optocheck import FeatureExtractorOptoCheck
-from ..utils import labels_to_particles
+from .base_optocheck import FeatureExtractorOptoCheck
+from ..core.utils import labels_to_particles
 
 """
 Segmentation module for image processing.

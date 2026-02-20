@@ -1,7 +1,7 @@
 from pymmcore_plus import CMMCorePlus
-from rtm_pymmcore.img_processing_pip import store_img, ImageProcessingPipeline
-from rtm_pymmcore.data_structures import Fov, ImgType
-from rtm_pymmcore.dmd import DMD
+from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
+from rtm_pymmcore.core.data_structures import Fov, ImgType
+from rtm_pymmcore.core.dmd import DMD
 
 import threading
 from useq._mda_event import SLMImage
@@ -381,22 +381,20 @@ class Controller:
         dmd=None,
         dmd_needs_to_be_waken=False,
     ):
-        self._queue = queue  # queue of MDAEvents
-        self._analyzer = analyzer  # analyzer object
-        self._results: dict = {}  # results of analysis
+        self._queue = queue
+        self._analyzer = analyzer
+        self._results: dict = {}
         self._current_group = mmc.getChannelGroup()
-        self._frame_buffer = (
-            []
-        )  # buffer to hold the frames until one sequence is complete
+        self._frame_buffer = []
         self._dmd = dmd
         self._mmc = mmc
         self.use_autofocus_event = use_autofocus_event
         self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
-        self._mmc.mda.events.frameReady.disconnect()
+        # Fov objects are not proxy-serializable; stored here and re-attached in _on_frame_ready
+        self._fov_objects: dict = {}
         self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
-        # Analyze the image
         self._frame_buffer.append(img)
         if self._analyzer.debug:
             try:
@@ -406,258 +404,165 @@ class Controller:
                 )
             except Exception:
                 pass
-        # check if it's the last acquisition for this MDAsequence
         if event.metadata["last_channel"]:
-            frame_complete = np.stack(self._frame_buffer, axis=-1)
-            # move new axis to the first position
-            frame_complete = np.moveaxis(frame_complete, -1, 0)
-
+            frame_complete = np.moveaxis(np.stack(self._frame_buffer, axis=-1), -1, 0)
             self._frame_buffer = []
+            # Re-attach Fov object (stripped from MDAEvent metadata for proxy serialization)
+            event.metadata["fov_object"] = self._fov_objects.get(event.metadata.get("fov"))
             self._results = self._analyzer.run(frame_complete, event)
 
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
         self._mmc.mda.cancel()
-        # Shutdown the thread pool executor to allow pending tasks to complete
         self._analyzer.shutdown(wait=True)
+        self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
 
     def is_running(self):
         return self._queue.qsize() > 0
 
+    @staticmethod
+    def _get_power_prop(device_name, property_name, power):
+        if any(v is None for v in (device_name, property_name, power)):
+            return None
+        return (device_name, property_name, power)
+
+    def _make_slm(self, exposure) -> SLMImage | None:
+        if self._dmd is not None and self.dmd_needs_to_be_waken:
+            return SLMImage(data=True, device=self._dmd.name, exposure=exposure)
+        return None
+
+    def _resolve_group(self, config_name: str) -> str:
+        """Return the channel group for *config_name*, auto-detecting if needed."""
+        if self._current_group:
+            return self._current_group
+        # getChannelGroup() was empty — find a group containing this preset
+        for group in self._mmc.getAvailableConfigGroups():
+            if config_name in self._mmc.getAvailableConfigs(group):
+                self._current_group = group
+                return group
+        return ""
+
+    def _put_event(self, event: MDAEvent) -> None:
+        """Queue an MDA event."""
+        self._queue.put(event)
+
+    def _make_metadata(self, row) -> dict:
+        """Serializable base metadata from a DataFrame row (fov_object excluded)."""
+        return {k: v for k, v in row.items() if k != "fov_object"}
+
+    def _queue_channels(self, row, metadata: dict):
+        channels = row["channels"]
+        has_optocheck = bool(row.get("optocheck", False))
+        for i, ch in enumerate(channels):
+            is_last = (not has_optocheck) and (i == len(channels) - 1)
+            power_prop = self._get_power_prop(
+                ch.get("device_name"), ch.get("property_name"), ch.get("power")
+            )
+            self._put_event(useq.MDAEvent(
+                index={"t": row["timestep"], "c": i, "p": row["fov"]},
+                channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
+                metadata={**metadata, "img_type": ImgType.IMG_RAW, "last_channel": is_last},
+                x_pos=row["fov_x"] if i == 0 else None,
+                y_pos=row["fov_y"] if i == 0 else None,
+                z_pos=row.get("fov_z"),
+                min_start_time=float(row["time"]),
+                exposure=ch.get("exposure"),
+                properties=[power_prop] if power_prop else None,
+                slm_image=self._make_slm(ch.get("exposure")),
+            ))
+
+    def _queue_optocheck(self, row, metadata: dict):
+        optocheck_channels = row["optocheck_channels"]
+        meta_base = {**metadata, "img_type": ImgType.IMG_OPTOCHECK}
+        for i, ch in enumerate(optocheck_channels):
+            is_last = i == len(optocheck_channels) - 1
+            power_prop = self._get_power_prop(
+                ch.get("device_name"), ch.get("property_name"), ch.get("power")
+            )
+            self._put_event(useq.MDAEvent(
+                index={"t": row["timestep"], "c": i, "p": row["fov"]},
+                channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
+                metadata={**meta_base, "last_channel": is_last},
+                x_pos=None, y_pos=None,
+                z_pos=row.get("fov_z"),
+                min_start_time=float(row["time"]),
+                exposure=ch.get("exposure"),
+                properties=[power_prop] if power_prop else None,
+                slm_image=self._make_slm(ch.get("exposure")),
+            ))
+
+    def _queue_stim(self, row, metadata: dict, fov_obj: Fov):
+        if not row.get("stim_power") or not row.get("stim_exposure"):
+            return
+        stim_exposure = row.get("stim_exposure")
+        meta = {**metadata, "img_type": ImgType.IMG_STIM, "last_channel": True}
+        slm_image = None
+        if self._dmd is not None:
+            stimulator = self._analyzer.pipeline.stimulator
+            if not stimulator.use_labels and not stimulator.use_imgs:
+                stim_mask, _ = stimulator.get_stim_mask({}, metadata=meta, img=None)
+                stim_mask = self._dmd.affine_transform(stim_mask)
+            else:
+                try:
+                    stim_mask = fov_obj.stim_mask_queue.get(block=True, timeout=80)
+                    stim_mask = self._dmd.affine_transform(stim_mask)
+                except (TimeoutError, QueueEmpty) as e:
+                    print(f"Warning: Stimulation mask not ready (timeout): {str(e)}")
+                    stim_mask = False
+            slm_image = SLMImage(data=stim_mask, device=self._dmd.name, exposure=stim_exposure)
+        power_prop = self._get_power_prop(
+            row.get("stim_channel_device_name"),
+            row.get("stim_channel_power_property_name"),
+            row.get("stim_power"),
+        )
+        self._put_event(useq.MDAEvent(
+            index={"t": row["timestep"], "p": row["fov"]},
+            channel={"config": row["stim_channel_name"], "group": row.get("stim_channel_group") or self._resolve_group(row["stim_channel_name"])},
+            metadata=meta,
+            x_pos=None, y_pos=None,
+            z_pos=row.get("fov_z"),
+            exposure=stim_exposure,
+            min_start_time=float(row["time"]),
+            properties=[power_prop] if power_prop else None,
+            slm_image=slm_image,
+        ))
+
     def run(self, df_acquire: pd.DataFrame):
         queue_sequence = iter(self._queue.get, self.STOP_EVENT)
-        self._mmc.run_mda(queue_sequence)
+        mda_thread = self._mmc.run_mda(queue_sequence)
         try:
-            for exp_time in df_acquire["time"].unique():
-                # extract the lines with the current timestep from the DF
-                current_time_df = df_acquire[df_acquire["time"] == exp_time]
-                for index, row in current_time_df.iterrows():
-                    # Pause if queue is getting too full to allow analyzer to catch up
-                    while self._queue.qsize() >= 3:
-                        time.sleep(0.1)  # Wait 1s before checking again
-                    # Get FOV data directly from the DataFrame
-                    timestep = row["timestep"]
-                    fov_obj = row["fov_object"]
-                    fov_index = row["fov"]
-                    fov_x = row["fov_x"]
-                    fov_y = row["fov_y"]
-                    fov_z = row.get("fov_z", None)
-                    fov_af_offset = row.get("fov_af_offset", None)
+            for _, row in df_acquire.iterrows():
+                while self._queue.qsize() >= 3:
+                    time.sleep(0.1)
 
-                    event_start_time = float(row["time"])
+                fov_obj = row["fov_object"]
+                self._fov_objects[row["fov"]] = fov_obj
+                metadata = self._make_metadata(row)
 
-                    channels = row["channels"]
+                if self.use_autofocus_event:
+                    self._put_event(useq.MDAEvent(
+                        index={"t": row["timestep"], "c": 0, "p": row["fov"]},
+                        x_pos=row["fov_x"], y_pos=row["fov_y"], z_pos=row.get("fov_z"),
+                        min_start_time=float(row["time"]),
+                        action=HardwareAutofocus(autofocus_motor_offset=row.get("fov_af_offset")),
+                    ))
 
-                    metadata_dict = dict(row)
-                    metadata_dict["img_type"] = ImgType.IMG_RAW
-                    metadata_dict["last_channel"] = channels[-1]
+                self._queue_channels(row, metadata)
 
-                    if "stim" not in df_acquire.columns:
-                        stim = False
-                        metadata_dict["stim"] = False
-                    else:
-                        stim = row["stim"]
+                if row.get("optocheck", False):
+                    self._queue_optocheck(row, metadata)
 
-                    if "optocheck" not in df_acquire.columns:
-                        optocheck = False
-                        metadata_dict["optocheck"] = False
-                    else:
-                        optocheck = row["optocheck"]
-
-                    if self.use_autofocus_event:
-                        acquisition_event = useq.MDAEvent(
-                            index={"t": timestep, "c": 0, "p": fov_index},
-                            x_pos=fov_x,
-                            y_pos=fov_y,
-                            z_pos=fov_z,
-                            min_start_time=event_start_time,
-                            action=HardwareAutofocus(
-                                autofocus_motor_offset=fov_af_offset
-                            ),
-                        )
-                        self._queue.put(acquisition_event)
-
-                    slm_image = None
-
-                    for i, channel_i in enumerate(channels):
-                        metadata_dict["last_channel"] = False
-                        if i == 0:
-                            x_pos = fov_x
-                            y_pos = fov_y
-                        else:
-                            x_pos = None
-                            y_pos = None
-                        if not optocheck:
-                            last_channel: bool = i == len(channels) - 1
-                            metadata_dict["last_channel"] = last_channel
-                        power_prop = (
-                            channel_i.get("device_name", None),
-                            channel_i.get("property_name", None),
-                            channel_i.get("power", None),
-                        )
-                        if any(el is None for el in power_prop):
-                            power_prop = None
-
-                        exposure = channel_i.get("exposure")
-                        if self._dmd is not None and self.dmd_needs_to_be_waken:
-                            slm_image = SLMImage(
-                                data=True, device=self._dmd.name, exposure=exposure
-                            )
-                        else:
-                            slm_image = None
-
-                        acquisition_event = useq.MDAEvent(
-                            index={
-                                "t": timestep,
-                                "c": i,
-                                "p": fov_index,
-                            },  # the index of the event in the sequence
-                            channel={
-                                "config": channel_i["name"],
-                                "group": (
-                                    channel_i["group"]
-                                    if channel_i["group"] is not None
-                                    else self._current_group
-                                ),
-                            },
-                            metadata=dict(metadata_dict),
-                            x_pos=x_pos,
-                            y_pos=y_pos,
-                            z_pos=fov_z,
-                            min_start_time=event_start_time,
-                            exposure=exposure,
-                            properties=[power_prop] if power_prop is not None else None,
-                            slm_image=slm_image,
-                        )
-
-                        self._queue.put(acquisition_event)
-
-                    if optocheck:
-                        metadata_dict["img_type"] = ImgType.IMG_OPTOCHECK
-
-                        for i, optocheck_ch in enumerate(row["optocheck_channels"]):
-                            last_channel: bool = i == len(row["optocheck_channels"]) - 1
-                            metadata_dict["last_channel"] = last_channel
-                            exposure = optocheck_ch.get("exposure")
-
-                            power_prop = (
-                                optocheck_ch.get("device_name", None),
-                                optocheck_ch.get("property_name", None),
-                                optocheck_ch.get("power", None),
-                            )
-                            if any(el is None for el in power_prop):
-                                power_prop = None
-
-                            if self._dmd is not None and self.dmd_needs_to_be_waken:
-                                slm_image = SLMImage(
-                                    data=True, device=self._dmd.name, exposure=exposure
-                                )
-                            else:
-                                slm_image = None
-                            acquisition_event = useq.MDAEvent(
-                                index={
-                                    "t": timestep,
-                                    "c": i,
-                                    "p": fov_index,
-                                },  # the index of the event in the sequence
-                                channel={
-                                    "config": optocheck_ch["name"],
-                                    "group": (
-                                        optocheck_ch["group"]
-                                        if optocheck_ch["group"] is not None
-                                        else self._current_group
-                                    ),
-                                },
-                                metadata=dict(metadata_dict),
-                                x_pos=None,
-                                y_pos=None,
-                                z_pos=fov_z,
-                                min_start_time=event_start_time,
-                                exposure=exposure,
-                                properties=(
-                                    [power_prop] if power_prop is not None else None
-                                ),
-                                slm_image=slm_image,
-                            )
-                            self._queue.put(acquisition_event)
-
-                    if stim:
-                        if row["stim_power"] == 0 or row["stim_exposure"] == 0:
-                            continue
-                        metadata_dict["img_type"] = ImgType.IMG_STIM
-                        metadata_dict["last_channel"] = True
-
-                        power_prop = (
-                            row["stim_channel_device_name"],
-                            row["stim_channel_power_property_name"],
-                            row["stim_power"],
-                        )
-                        if any(el is None for el in power_prop):
-                            power_prop = None
-                        stim_channel_name = row["stim_channel_name"]
-                        stim_channel_group = row.get(
-                            "stim_channel_group", self._current_group
-                        )
-                        stim_exposure = row.get("stim_exposure", None)
-                        slm_image = None
-
-                        if self._dmd is not None:
-                            if (
-                                not self._analyzer.pipeline.stimulator.use_labels
-                                and not self._analyzer.pipeline.stimulator.use_imgs
-                            ):
-                                stim_mask, _ = (
-                                    self._analyzer.pipeline.stimulator.get_stim_mask(
-                                        {}, metadata=metadata_dict, img=None
-                                    )
-                                )
-                                stim_mask = self._dmd.affine_transform(stim_mask)
-                            else:
-                                try:
-                                    stim_mask = fov_obj.stim_mask_queue.get(
-                                        block=True, timeout=80
-                                    )
-                                    stim_mask = self._dmd.affine_transform(stim_mask)
-
-                                except (TimeoutError, QueueEmpty) as e:
-                                    print(
-                                        f"Warning: Stimulation mask not ready (timeout): {str(e)}"
-                                    )
-                                    stim_mask = False
-
-                            slm_image = SLMImage(
-                                data=stim_mask,
-                                device=self._dmd.name,
-                                exposure=stim_exposure,
-                            )
-
-                        # Use a per-event copy of metadata to avoid cross-event mutation/race
-                        stimulation_event = useq.MDAEvent(
-                            index={
-                                "t": timestep,
-                                "p": row["fov"],
-                            },
-                            channel={
-                                "config": stim_channel_name,
-                                "group": stim_channel_group,
-                            },
-                            metadata=dict(metadata_dict),
-                            x_pos=None,
-                            y_pos=None,
-                            z_pos=fov_z,
-                            exposure=stim_exposure,
-                            min_start_time=event_start_time,
-                            properties=[power_prop] if power_prop is not None else None,
-                            slm_image=slm_image,
-                        )
-
-                        self._queue.put(stimulation_event)
-
+                if row.get("stim", False):
+                    self._queue_stim(row, metadata, fov_obj)
         finally:
-            # Put the stop event in the queue
             self._queue.put(self.STOP_EVENT)
-            while self._queue.qsize() > 0:
-                time.sleep(1)
+            # Join the streaming thread so the WebSocket connection is fully
+            # closed before returning. Without this, a second run_experiment call
+            # can open a new /mda/stream connection while the previous one is still
+            # alive, causing the server to close the new connection mid-send.
+            if mda_thread is not None:
+                mda_thread.join()
+            self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
 
 
 class ControllerSimulated(Controller):

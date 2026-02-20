@@ -1,5 +1,5 @@
 import os
-from rtm_pymmcore.dmd import DMD
+from rtm_pymmcore.core.dmd import DMD
 from queue import Queue
 import pymmcore_plus
 import psutil

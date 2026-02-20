@@ -57,3 +57,24 @@ class DummySegmentator(Segmentator):
 
     def segment(self, image: np.ndarray) -> np.ndarray:
         return np.ones_like(image)
+    
+class OtsuSegmentator(Segmentator):
+    """
+    Otsu segmentator.
+
+    This class implements a simple Otsu segmentation. It segments an image
+    using Otsu's method to find the optimal threshold.
+    """
+
+    def segment(self, image: np.ndarray) -> np.ndarray:
+        from skimage.filters import threshold_otsu, gaussian
+        from skimage.measure import label
+        from skimage import filters
+
+        image_gaussian = gaussian(image, sigma=1)
+        thresh = threshold_otsu(image_gaussian)
+        binary_image = image_gaussian > thresh
+        label_image = label(binary_image)
+        return label_image
+    
+

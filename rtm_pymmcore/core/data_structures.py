@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import enum
 import numpy as np
 import pandas as pd
-from rtm_pymmcore.segmentation.base_segmentation import Segmentator
+from rtm_pymmcore.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
 
