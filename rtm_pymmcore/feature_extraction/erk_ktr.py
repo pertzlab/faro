@@ -38,12 +38,13 @@ class FE_ErkKtr(FeatureExtractor):
         labels_expanded_rings[labels_expanded_margin != 0] = 0
         return labels_expanded_rings.astype(int)
 
-    def extract_features(self, labels, image):
+    def extract_features(self, labels, image, df_tracked=None, metadata=None):
         """Create a table with features for every detected cell.
         Args:
             labels: frame with labeled nuclei
-            raw: raw frame with dimensions [x,y,c]
-            details: additional info from stardist (e.g. centroids)
+            image: raw frame with dimensions [C,X,Y]
+            df_tracked: tracked dataframe (not used yet, available for future track-based features)
+            metadata: frame metadata (not used yet)
         """
         image = np.moveaxis(image, 0, 2)  # CXY to XYC
         labels = labels[self.used_mask]
@@ -53,9 +54,9 @@ class FE_ErkKtr(FeatureExtractor):
         table_nuc = regionprops_table(
             labels,
             image,
-            ["mean_intensity", "label", "centroid", "area"],
+            ["mean_intensity", "label", "area"],
             extra_properties=[median_intensity],
-        )  # extract features#"centroid"
+        )
 
         table_ring = regionprops_table(
             labels_ring,
@@ -98,19 +99,6 @@ class FE_ErkKtr(FeatureExtractor):
             table["median_intensity_C1_ring"] / table["median_intensity_C1_nuc"]
         )
 
-        # TODO add the points from stardist
-        # table['x'] = details["points"][:,0]
-        # table['y'] = details["points"][:,1]
-        # need to match points by label, as sometimes nb cells can differ between label mask and detected nuclei.
-        # this is very rare and hard to catch:
-        # ValueError: Length of values (291) does not match length of index (290)
-        # for the moment use centroids from label map region props.
-        table = table.rename({"centroid-0": "x", "centroid-1": "y"}, axis="columns")
-
-        # add empty particle column (this will be filled later if there are particles)
-        table["particle"] = pd.Series(dtype=np.uint32)
-        table["x"] = table["x"].astype(np.float32)
-        table["y"] = table["y"].astype(np.float32)
         table["cnr"] = table["cnr"].astype(np.float32)
         table["cnr_median"] = table["cnr_median"].astype(np.float32)
         table["area_nuc"] = table["area_nuc"].astype(np.float32)

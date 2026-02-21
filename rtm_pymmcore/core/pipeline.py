@@ -159,13 +159,9 @@ class ImageProcessingPipeline:
         # stim_index = np.where((df_tracked['frame']==metadata['timestep']) & (df_tracked['label'].isin(labels_stim)))[0]
         # df_tracked.loc[stim_index,'stim']=True
 
-        if self.feature_extractor is None:
-            df_new = pd.DataFrame([metadata])
-            masks_for_fe = None
-        else:
-            df_new, masks_for_fe = self.feature_extractor.extract_features(
-                segmentation_results, img
-            )
+        # 1. Extract positions (label, x, y) for tracking
+        if self.feature_extractor is not None:
+            df_new = self.feature_extractor.extract_positions(segmentation_results)
             for key, value in metadata.items():
                 if isinstance(value, (list, tuple)):
                     df_new[key] = pd.Series([value] * len(df_new))
@@ -174,11 +170,29 @@ class ImageProcessingPipeline:
                         df_new[subkey] = [subvalue] * len(df_new)
                 else:
                     df_new[key] = value
+        else:
+            df_new = pd.DataFrame([metadata])
 
+        # 2. Track
         if self.tracker is not None:
             df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
         else:
             df_tracked = pd.concat([df_old, df_new], ignore_index=True)
+
+        # 3. Feature extraction (now has access to df_tracked)
+        if self.feature_extractor is not None:
+            features_df, masks_for_fe = self.feature_extractor.extract_features(
+                segmentation_results, img, df_tracked, metadata
+            )
+            # Merge features into current frame rows of df_tracked
+            feature_map = features_df.set_index("label")
+            current_mask = df_tracked["fname"] == metadata["fname"]
+            for col in feature_map.columns:
+                df_tracked.loc[current_mask, col] = (
+                    df_tracked.loc[current_mask, "label"].map(feature_map[col])
+                )
+        else:
+            masks_for_fe = None
 
         if metadata["stim"] == True:
             stim_mask, _ = self.stimulator.get_stim_mask(

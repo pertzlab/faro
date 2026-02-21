@@ -22,17 +22,9 @@ class SimpleFE(FeatureExtractor):
         self.used_mask = used_mask
         super().__init__()
 
-    def extract_features(self, labels, image):
+    def extract_features(self, labels, image, df_tracked=None, metadata=None):
         table = skimage.measure.regionprops_table(
-            labels[self.used_mask], properties=["label", "centroid", "area"]
+            labels[self.used_mask], properties=["label", "area"]
         )
         table = pd.DataFrame.from_dict(table)
-        table = table.rename(
-            {
-                "centroid-0": "x",
-                "centroid-1": "y",
-                "area": "area",
-            },
-            axis="columns",
-        )
         return table, None
