@@ -2,6 +2,7 @@ log.txt
 
 .vscode
 .vscode/*
+.claude
 
 # Local History for Visual Studio Code
 .history/
@@ -179,3 +180,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# MacOS
+.DS_Store
+
+
