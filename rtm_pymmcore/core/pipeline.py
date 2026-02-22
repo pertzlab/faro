@@ -203,6 +203,7 @@ class ImageProcessingPipeline:
         # df_tracked.loc[stim_index,'stim']=True
 
         # 1. Extract positions (label, x, y) for tracking
+        fov_obj.n_cells_latest = int(segmentation_results["labels"].max())
         if self.feature_extractor is not None:
             df_new = self.feature_extractor.extract_positions(segmentation_results)
             for key, value in metadata.items():

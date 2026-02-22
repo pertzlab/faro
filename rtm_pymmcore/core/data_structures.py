@@ -16,6 +16,7 @@ class FovState:
         self.linker = None
         self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
+        self.n_cells_latest = 0
 
 
 @dataclass
