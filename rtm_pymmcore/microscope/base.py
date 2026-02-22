@@ -27,7 +27,7 @@ class AbstractMicroscope:
     def set_pipeline(self, pipeline):
         self.pipeline = pipeline
 
-    def run_experiment(self, df_acquire):
+    def run_experiment(self, events=None, *, df_acquire=None, stim_mode="current"):
         """Run the experiment."""
         raise NotImplementedError("This method should be implemented in a subclass.")
 
