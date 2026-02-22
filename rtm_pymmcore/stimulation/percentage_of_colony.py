@@ -13,6 +13,8 @@ class StimColonyPercentage(Stim):
     of it based on percentage_stimulated.
     """
 
+    required_metadata = {"percentage_stimulated"}
+
     def __init__(
         self,
         path_to_model: str,

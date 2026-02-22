@@ -17,6 +17,8 @@ class StimPercentageOfCell(Stim):
     The percentage can be parametrized.
     """
 
+    required_metadata = {"stim_cell_percentage"}
+
     def above_line(self, i, j, x2, y2, x3, y3):
         v1 = (x2 - x3, y2 - y3)
         v2 = (x2 - i, y2 - j)

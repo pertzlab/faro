@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 import numpy as np
 import os
+from collections import namedtuple, defaultdict
 from skimage.util import map_array
-from rtm_pymmcore.core.data_structures import Fov
+from rtm_pymmcore.core.data_structures import FovState
 import random
 import pandas as pd
 import dataclasses
 import re
 from pathlib import Path
+
+FovPosition = namedtuple("FovPosition", ["x", "y", "z", "name"])
 
 
 def print_configs(mmc):
@@ -217,18 +222,20 @@ def _get_mda_from_viewer(viewer):
     data_mda_fovs = data_mda_fovs_dict
     return data_mda_fovs
 
-def generate_fov_objects_from_list(mic, data_mda_fovs):
+def generate_fov_positions_from_list(mic, data_mda_fovs):
+    """Create FovPosition namedtuples from a list of position dicts."""
     fovs = []
     for i, fov in enumerate(data_mda_fovs):
-        fov_object = Fov(i)
-        fov_object.x = fov.get("x")
-        fov_object.y = fov.get("y")
-        fov_object.z = None if getattr(mic, "ONLY_USE_PFS", False) else fov.get("z")
-        fov_object.name = str(i) if fov["name"] is None else fov["name"]
-        fovs.append(fov_object)
+        z = None if getattr(mic, "ONLY_USE_PFS", False) else fov.get("z")
+        name = str(i) if fov.get("name") is None else fov["name"]
+        fovs.append(FovPosition(x=fov.get("x"), y=fov.get("y"), z=z, name=name))
     return fovs
 
-def generate_fov_objects(mic, viewer=None, filename=None):
+# Backwards-compat alias
+generate_fov_objects_from_list = generate_fov_positions_from_list
+
+def generate_fov_positions(mic, viewer=None, filename=None):
+    """Create FovPosition namedtuples from viewer or file."""
     if filename is not None:
         data_mda_fovs = _get_mda_from_file(filename)
     elif viewer is not None:
@@ -238,15 +245,10 @@ def generate_fov_objects(mic, viewer=None, filename=None):
     else:
         assert False, "Either viewer must be provided or from_file must be True"
 
-    fovs = []
-    for i, fov in enumerate(data_mda_fovs):
-        fov_object = Fov(i)
-        fov_object.x = fov.get("x")
-        fov_object.y = fov.get("y")
-        fov_object.z = None if getattr(mic, "ONLY_USE_PFS", False) else fov.get("z")
-        fov_object.name = str(i) if fov["name"] is None else fov["name"]
-        fovs.append(fov_object)
-    return fovs
+    return generate_fov_positions_from_list(mic, data_mda_fovs)
+
+# Backwards-compat alias
+generate_fov_objects = generate_fov_positions
 
 
 def generate_df_acquire_simple(fovs, n_frames, time_between_timesteps, channels, start_time=0):
@@ -254,7 +256,6 @@ def generate_df_acquire_simple(fovs, n_frames, time_between_timesteps, channels,
     for fov_index, fov in enumerate(fovs):
         for timestep in range(n_frames):
             dfs.append({
-                "fov_object": fov,
                 "fov": fov_index,
                 "fov_x": fov.x,
                 "fov_y": fov.y,
@@ -306,7 +307,6 @@ def generate_df_acquire(
             else:
                 fname = f"{str(fov_index).zfill(3)}_{str(timestep).zfill(5)}"
             row = {
-                "fov_object": fov,
                 "fov": fov_index,
                 "fov_x": fov.x,
                 "fov_y": fov.y,
@@ -516,3 +516,141 @@ def generate_exp_data_from_tracks(path):
         df = pd.read_parquet(track_file)
         dfs.append(df)
     pd.concat(dfs).to_parquet(os.path.join(path, "exp_data.parquet"))
+
+
+# ---------------------------------------------------------------------------
+# RTMEvent-based helpers
+# ---------------------------------------------------------------------------
+
+def make_acquisition(
+    n_frames: int,
+    channels: list,
+    positions: list[tuple[float, float, float]],
+    time_interval: float,
+    stim_channels: list | None = None,
+    stim_frames: range | set | None = None,
+    metadata: dict | None = None,
+) -> list:
+    """Generate RTMEvent list for a standard experiment.
+
+    Args:
+        n_frames: Number of timepoints.
+        channels: List of Channel dataclass instances.
+        positions: List of (x, y, z) tuples for FOV positions.
+        time_interval: Time between frames (seconds).
+        stim_channels: Optional list of Channel instances for stimulation.
+        stim_frames: Timepoints where stimulation is active (range or set).
+        metadata: Extra metadata dict broadcast to every event.
+
+    Returns:
+        List of RTMEvent objects.
+    """
+    from rtm_pymmcore.core.data_structures import RTMEvent, Channel
+
+    events = []
+    stim_frames = stim_frames or set()
+    extra_meta = metadata or {}
+    ch_tuple = tuple(channels)
+
+    for t in range(n_frames):
+        for p, (x, y, z) in enumerate(positions):
+            stim = tuple(stim_channels) if stim_channels and t in stim_frames else ()
+            events.append(RTMEvent(
+                index={"t": t, "p": p},
+                channels=ch_tuple,
+                stim_channels=stim,
+                min_start_time=t * time_interval,
+                x_pos=x,
+                y_pos=y,
+                z_pos=z,
+                metadata=extra_meta,
+            ))
+
+    return events
+
+
+def from_mda_sequence(
+    sequence,
+    stim_channels: list | None = None,
+    stim_frames: range | set | None = None,
+    metadata: dict | None = None,
+) -> list:
+    """Convert an MDASequence to RTMEvents.
+
+    Groups events by (t, p) and collects channels per group.
+
+    Args:
+        sequence: useq.MDASequence instance.
+        stim_channels: Optional list of Channel for stimulation.
+        stim_frames: Timepoints where stimulation is active.
+        metadata: Extra metadata dict.
+
+    Returns:
+        List of RTMEvent objects.
+    """
+    from rtm_pymmcore.core.data_structures import RTMEvent, Channel
+
+    stim_frames = stim_frames or set()
+    extra_meta = metadata or {}
+
+    # Group MDASequence events by (t, p)
+    groups: dict[tuple, dict] = {}
+    for mda_ev in sequence:
+        t = mda_ev.index.get("t", 0)
+        p = mda_ev.index.get("p", 0)
+        key = (t, p)
+        if key not in groups:
+            groups[key] = {
+                "channels": [],
+                "x_pos": mda_ev.x_pos,
+                "y_pos": mda_ev.y_pos,
+                "z_pos": mda_ev.z_pos,
+                "min_start_time": mda_ev.min_start_time,
+            }
+        if mda_ev.channel:
+            ch_name = mda_ev.channel.config if hasattr(mda_ev.channel, "config") else str(mda_ev.channel)
+            groups[key]["channels"].append(
+                Channel(name=ch_name, exposure=mda_ev.exposure or 0)
+            )
+
+    events = []
+    for (t, p), grp in sorted(groups.items()):
+        stim = tuple(stim_channels) if stim_channels and t in stim_frames else ()
+        events.append(RTMEvent(
+            index={"t": t, "p": p},
+            channels=tuple(grp["channels"]),
+            stim_channels=stim,
+            x_pos=grp["x_pos"],
+            y_pos=grp["y_pos"],
+            z_pos=grp["z_pos"],
+            min_start_time=grp["min_start_time"],
+            metadata=extra_meta,
+        ))
+
+    return events
+
+
+def events_to_dataframe(events: list) -> pd.DataFrame:
+    """Convert RTMEvent list to summary DataFrame.
+
+    Each row = one timepoint with channels + stim info merged.
+    """
+    rows = []
+    for e in events:
+        row = {
+            "fov": e.index.get("p", 0),
+            "timestep": e.index.get("t", 0),
+            "time": e.min_start_time or 0,
+            "x_pos": e.x_pos,
+            "y_pos": e.y_pos,
+            "z_pos": e.z_pos,
+            "channels": tuple(dataclasses.asdict(ch) for ch in e.channels),
+            "stim_channels": tuple(dataclasses.asdict(ch) for ch in e.stim_channels),
+            "stim": len(e.stim_channels) > 0,
+            **e.metadata,
+        }
+        if e.stim_channels:
+            row["stim_power"] = e.stim_channels[0].power
+            row["stim_exposure"] = e.stim_channels[0].exposure
+        rows.append(row)
+    return pd.DataFrame(rows)

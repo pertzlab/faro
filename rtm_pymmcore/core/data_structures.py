@@ -7,16 +7,14 @@ from rtm_pymmcore.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
 
-class Fov:
-    def __init__(self, index: int):
-        self.index = index
-        self.stim_mask = None
-        self.light_mask = None
+class FovState:
+    """Per-FOV mutable state for tracking and stimulation."""
+
+    def __init__(self):
         self.stim_mask_queue = queue.SimpleQueue()
         self.tracks_queue = queue.SimpleQueue()
-        self.tracks = None
         self.linker = None
-        self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe:
+        self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
 
 
@@ -126,3 +124,108 @@ class ImgType(enum.Enum):
     IMG_RAW = enum.auto()
     IMG_STIM = enum.auto()
     IMG_OPTOCHECK = enum.auto()
+
+
+# ---------------------------------------------------------------------------
+# RTMEvent — extended MDAEvent with multi-channel + stimulation support
+# ---------------------------------------------------------------------------
+from useq import MDAEvent
+from useq._mda_event import SLMImage
+
+
+class RTMEvent(MDAEvent):
+    """Extended acquisition event: imaging channels + optional stim channels.
+
+    Inherits all MDAEvent fields (index, x_pos, y_pos, z_pos, min_start_time,
+    metadata, etc.). Adds multi-channel and stimulation support.
+
+    The parent ``channel``/``exposure`` fields are not used directly — use
+    ``channels`` and ``stim_channels`` instead. Call ``to_mda_events()`` to
+    convert to standard MDAEvents for the microscope.
+    """
+
+    channels: tuple[Channel, ...] = ()
+    stim_channels: tuple[Channel, ...] = ()
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def to_mda_events(self, *, resolve_group=None, dmd=None,
+                      stim_slm_image=None) -> list[MDAEvent]:
+        """Convert to standard useq MDAEvents.
+
+        Args:
+            resolve_group: callable(config_name) -> group name
+            dmd: DMD object for SLM image creation (optional)
+            stim_slm_image: pre-computed SLMImage for stim (optional)
+
+        Returns:
+            List of standard MDAEvents (NOT RTMEvents).
+        """
+        events = []
+        fov = self.index.get("p", 0)
+        timestep = self.index.get("t", 0)
+        has_stim = len(self.stim_channels) > 0
+        fname = f"{fov:03d}_{timestep:05d}"
+
+        base_meta = {
+            **self.metadata,
+            "fov": fov,
+            "timestep": timestep,
+            "fname": fname,
+            "time": self.min_start_time or 0,
+            "stim": has_stim,
+        }
+        if has_stim:
+            sch = self.stim_channels[0]
+            base_meta["stim_power"] = sch.power
+            base_meta["stim_exposure"] = sch.exposure
+
+        # Imaging channels
+        for i, ch in enumerate(self.channels):
+            ch_dict = {"config": ch.name}
+            if ch.group:
+                ch_dict["group"] = ch.group
+            elif resolve_group:
+                ch_dict["group"] = resolve_group(ch.name)
+
+            props = None
+            if ch.device_name and ch.property_name and ch.power is not None:
+                props = [(ch.device_name, ch.property_name, ch.power)]
+
+            events.append(MDAEvent(
+                index={**dict(self.index), "c": i},
+                channel=ch_dict,
+                exposure=ch.exposure,
+                x_pos=self.x_pos if i == 0 else None,
+                y_pos=self.y_pos if i == 0 else None,
+                z_pos=self.z_pos,
+                min_start_time=self.min_start_time,
+                metadata={**base_meta, "img_type": ImgType.IMG_RAW},
+                properties=props,
+            ))
+
+        # Stim channels → separate events with slm_image
+        if has_stim:
+            for ch in self.stim_channels:
+                ch_dict = {"config": ch.name}
+                if ch.group:
+                    ch_dict["group"] = ch.group
+                elif resolve_group:
+                    ch_dict["group"] = resolve_group(ch.name)
+
+                props = None
+                if ch.device_name and ch.property_name and ch.power is not None:
+                    props = [(ch.device_name, ch.property_name, ch.power)]
+
+                events.append(MDAEvent(
+                    index=dict(self.index),  # no "c" for stim
+                    channel=ch_dict,
+                    exposure=ch.exposure,
+                    min_start_time=self.min_start_time,
+                    metadata={**base_meta, "img_type": ImgType.IMG_STIM},
+                    properties=props,
+                    slm_image=stim_slm_image,  # filled by Controller
+                ))
+
+        return events

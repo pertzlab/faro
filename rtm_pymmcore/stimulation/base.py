@@ -11,6 +11,8 @@ class Stim:
     from this class and override the get_stim_mask method.
     """
 
+    required_metadata: set[str] = set()
+
     def __init__(self):
         self.use_labels = True
         self.use_imgs = True

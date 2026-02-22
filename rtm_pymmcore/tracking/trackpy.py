@@ -13,44 +13,44 @@ class TrackerTrackpy(Tracker):
         self.adaptive_step = adaptive_step
 
     def track_cells(
-        self, df_old: pd.DataFrame, df_new: pd.DataFrame, metadata
+        self, df_old: pd.DataFrame, df_new: pd.DataFrame, fov_state
     ) -> pd.DataFrame:
         """Track cells in a dataframe using trackpy library.
         Args:
-            dataframe: dataframe with columns 'x', 'y', 'label'"""
+            df_old: Previous tracking DataFrame.
+            df_new: New detections with columns 'x', 'y', 'label'.
+            fov_state: FovState instance holding linker and counter."""
 
         required_columns = ["x", "y", "label"]
         missing_columns = [col for col in required_columns if col not in df_new.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        fov = metadata["fov_object"]
-
         coordinates = np.array(
             df_new[["x", "y"]]
         )  # Convert the df to an array of shape (shape: N, ndim) for trackpy
         if df_old.empty:  # this is the first frame
-            fov.linker = trackpy.linking.Linker(
+            fov_state.linker = trackpy.linking.Linker(
                 search_range=self.search_range,
                 memory=self.memory,
                 adaptive_stop=self.adaptive_stop,
                 adaptive_step=self.adaptive_step,
             )
 
-            fov.linker.init_level(
-                coordinates, fov.fov_timestep_counter
+            fov_state.linker.init_level(
+                coordinates, fov_state.fov_timestep_counter
             )  # extract positions and convert to horizontal list
-            df_new["particle"] = fov.linker.particle_ids
-            df_new["fov_timestep"] = fov.fov_timestep_counter
+            df_new["particle"] = fov_state.linker.particle_ids
+            df_new["fov_timestep"] = fov_state.fov_timestep_counter
             df_tracked = df_new
 
         else:
             # this is not the first frame
-            fov.linker.next_level(
-                coordinates, fov.fov_timestep_counter
+            fov_state.linker.next_level(
+                coordinates, fov_state.fov_timestep_counter
             )  # extract positions and convert to horizontal list
-            df_new["particle"] = fov.linker.particle_ids
-            df_new["fov_timestep"] = fov.fov_timestep_counter
+            df_new["particle"] = fov_state.linker.particle_ids
+            df_new["fov_timestep"] = fov_state.fov_timestep_counter
             df_tracked = pd.concat([df_old, df_new])
 
         # this is against a in trackpy, where the same ID gets assigned twice in one frame

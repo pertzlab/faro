@@ -1,6 +1,6 @@
 from pymmcore_plus import CMMCorePlus
 from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
-from rtm_pymmcore.core.data_structures import Fov, ImgType
+from rtm_pymmcore.core.data_structures import FovState, ImgType
 from rtm_pymmcore.core.dmd import DMD
 
 import threading
@@ -47,6 +47,9 @@ class Analyzer:
             max_queue_size: Maximum images in executor queue before deferring (default: 60)
         """
         self.pipeline = pipeline
+        if self.pipeline is not None:
+            self.pipeline._analyzer = self
+        self.fov_states: dict[int, FovState] = {}
         # Pipeline executor with fewer workers - low priority
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.max_queue_size = max_queue_size
@@ -80,6 +83,12 @@ class Analyzer:
         self.stored_images = 0
         self.skipped_pipeline = 0
         self.deferred_processed = 0
+
+    def get_fov_state(self, fov_index: int) -> FovState:
+        """Return the FovState for *fov_index*, creating it lazily if needed."""
+        if fov_index not in self.fov_states:
+            self.fov_states[fov_index] = FovState()
+        return self.fov_states[fov_index]
 
     def _storage_worker(self):
         """Worker thread for storage - high priority, never skipped."""
@@ -161,13 +170,11 @@ class Analyzer:
             raise RuntimeError(
                 "No pipeline or stimulator defined for generating stim mask."
             )
-        fov_obj = metadata.get("fov_object", None)
-        if fov_obj is None:
-            raise RuntimeError("No FOV object in metadata for generating stim mask.")
+        fov_state = self.get_fov_state(metadata["fov"])
         stim_mask, _ = self.pipeline.stimulator.get_stim_mask(
             label_images, metadata=metadata, img=img
         )
-        fov_obj.stim_mask_queue.put(stim_mask)
+        fov_state.stim_mask_queue.put(stim_mask)
 
         return
 
@@ -385,31 +392,41 @@ class Controller:
         self._analyzer = analyzer
         self._results: dict = {}
         self._current_group = mmc.getChannelGroup()
-        self._frame_buffer = []
         self._dmd = dmd
         self._mmc = mmc
         self.use_autofocus_event = use_autofocus_event
         self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
-        # Fov objects are not proxy-serializable; stored here and re-attached in _on_frame_ready
-        self._fov_objects: dict = {}
+        self._n_channels: int = 1
+        self._frame_buffers: dict[tuple, list] = {}
         self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
-        self._frame_buffer.append(img)
+        meta = event.metadata or {}
+        img_type = meta.get("img_type", ImgType.IMG_RAW)
+
         if self._analyzer.debug:
             try:
-                md = event.metadata or {}
+                tp = (event.index.get("t", 0), event.index.get("p", 0))
                 print(
-                    f"[Controller] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
+                    f"[Controller] frameReady: img_type={img_type} tp={tp} fname={meta.get('fname')}"
                 )
             except Exception:
                 pass
-        if event.metadata["last_channel"]:
-            frame_complete = np.moveaxis(np.stack(self._frame_buffer, axis=-1), -1, 0)
-            self._frame_buffer = []
-            # Re-attach Fov object (stripped from MDAEvent metadata for proxy serialization)
-            event.metadata["fov_object"] = self._fov_objects.get(event.metadata.get("fov"))
-            self._results = self._analyzer.run(frame_complete, event)
+
+        # Stim frames: process immediately (single image, not multi-channel)
+        if img_type == ImgType.IMG_STIM:
+            self._results = self._analyzer.run(img[np.newaxis, ...], event)
+            return
+
+        # Imaging: buffer by (t, p), submit when all channels received
+        tp = (event.index.get("t", 0), event.index.get("p", 0))
+        buf = self._frame_buffers.setdefault(tp, [])
+        buf.append(img)
+
+        if len(buf) >= self._n_channels:
+            frame = np.stack(buf, axis=0)
+            del self._frame_buffers[tp]
+            self._results = self._analyzer.run(frame, event)
 
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
@@ -447,21 +464,20 @@ class Controller:
         self._queue.put(event)
 
     def _make_metadata(self, row) -> dict:
-        """Serializable base metadata from a DataFrame row (fov_object excluded)."""
+        """Serializable base metadata from a DataFrame row."""
         return {k: v for k, v in row.items() if k != "fov_object"}
 
     def _queue_channels(self, row, metadata: dict):
         channels = row["channels"]
-        has_optocheck = bool(row.get("optocheck", False))
+        self._n_channels = len(channels)
         for i, ch in enumerate(channels):
-            is_last = (not has_optocheck) and (i == len(channels) - 1)
             power_prop = self._get_power_prop(
                 ch.get("device_name"), ch.get("property_name"), ch.get("power")
             )
             self._put_event(useq.MDAEvent(
                 index={"t": row["timestep"], "c": i, "p": row["fov"]},
                 channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
-                metadata={**metadata, "img_type": ImgType.IMG_RAW, "last_channel": is_last},
+                metadata={**metadata, "img_type": ImgType.IMG_RAW},
                 x_pos=row["fov_x"] if i == 0 else None,
                 y_pos=row["fov_y"] if i == 0 else None,
                 z_pos=row.get("fov_z"),
@@ -475,14 +491,13 @@ class Controller:
         optocheck_channels = row["optocheck_channels"]
         meta_base = {**metadata, "img_type": ImgType.IMG_OPTOCHECK}
         for i, ch in enumerate(optocheck_channels):
-            is_last = i == len(optocheck_channels) - 1
             power_prop = self._get_power_prop(
                 ch.get("device_name"), ch.get("property_name"), ch.get("power")
             )
             self._put_event(useq.MDAEvent(
                 index={"t": row["timestep"], "c": i, "p": row["fov"]},
                 channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
-                metadata={**meta_base, "last_channel": is_last},
+                metadata=meta_base,
                 x_pos=None, y_pos=None,
                 z_pos=row.get("fov_z"),
                 min_start_time=float(row["time"]),
@@ -491,11 +506,11 @@ class Controller:
                 slm_image=self._make_slm(ch.get("exposure")),
             ))
 
-    def _queue_stim(self, row, metadata: dict, fov_obj: Fov):
+    def _queue_stim(self, row, metadata: dict, fov_obj: FovState):
         if not row.get("stim_power") or not row.get("stim_exposure"):
             return
         stim_exposure = row.get("stim_exposure")
-        meta = {**metadata, "img_type": ImgType.IMG_STIM, "last_channel": True}
+        meta = {**metadata, "img_type": ImgType.IMG_STIM}
         slm_image = None
         if self._dmd is not None:
             stimulator = self._analyzer.pipeline.stimulator
@@ -527,7 +542,155 @@ class Controller:
             slm_image=slm_image,
         ))
 
-    def run(self, df_acquire: pd.DataFrame):
+    def run(self, events=None, *, df_acquire=None, stim_mode="current"):
+        """Run the acquisition.
+
+        Args:
+            events: Iterable of RTMEvent (primary path).
+            df_acquire: Legacy DataFrame path (backwards compat).
+            stim_mode: How stim masks are resolved when the stimulator needs
+                labels or images (ignored when ``use_labels=False`` and
+                ``use_imgs=False``).
+
+                * ``"current"`` – acquire the imaging frame, wait for the
+                  pipeline to segment it and produce the mask, then stimulate
+                  within the same timepoint.  Higher latency but the mask
+                  matches the exact cell positions.
+                * ``"previous"`` – stimulate using the mask produced from the
+                  *previous* timepoint (for the same FOV).  The pipeline runs
+                  in the background while the next frame is acquired, so
+                  there is no blocking wait.  The first stim-eligible frame
+                  for each FOV is skipped (no previous mask exists).
+        """
+        if events is not None:
+            self._run_from_events(events, stim_mode=stim_mode)
+        elif df_acquire is not None:
+            self._run_from_df(df_acquire)
+        else:
+            raise ValueError("Either events or df_acquire must be provided")
+
+    def _run_from_events(self, events, *, stim_mode="current"):
+        """Primary acquisition path using RTMEvent objects.
+
+        ``stim_mode="current"``
+            acquire → wait for mask → stim  (within the same timepoint)
+
+        ``stim_mode="previous"``
+            stim with mask from *previous* timepoint → acquire
+            (mask was computed in the background; first stim frame is skipped)
+        """
+        from rtm_pymmcore.core.data_structures import ImgType as _IT
+
+        queue_sequence = iter(self._queue.get, self.STOP_EVENT)
+        mda_thread = self._mmc.run_mda(queue_sequence)
+
+        # For "previous" mode: cache the last SLMImage per FOV index
+        # so we can apply it at the *next* stim-eligible timepoint.
+        prev_stim_slm: dict[int, SLMImage] = {}
+
+        try:
+            for rtm_event in events:
+                while self._queue.qsize() >= 3:
+                    time.sleep(0.1)
+                self._n_channels = len(rtm_event.channels)
+
+                has_stim = len(rtm_event.stim_channels) > 0
+                fov_index = rtm_event.index.get("p", 0)
+
+                # Convert to MDAEvents (stim_slm_image=None; we fill it below)
+                mda_events = rtm_event.to_mda_events(
+                    resolve_group=self._resolve_group,
+                    stim_slm_image=None,
+                )
+                img_events = [e for e in mda_events if e.metadata.get("img_type") != _IT.IMG_STIM]
+                stim_events = [e for e in mda_events if e.metadata.get("img_type") == _IT.IMG_STIM]
+
+                if stim_mode == "previous":
+                    # --- "previous" mode ---
+                    # 1. Stim first (using mask from previous frame)
+                    if has_stim and stim_events and fov_index in prev_stim_slm:
+                        slm = prev_stim_slm[fov_index]
+                        for ev in stim_events:
+                            ev = ev.model_copy(update={"slm_image": slm})
+                            self._put_event(ev)
+
+                    # 2. Queue imaging events
+                    for ev in img_events:
+                        self._put_event(ev)
+
+                    # 3. If this frame has stim, kick off mask computation
+                    #    in background — it will be ready by the time we
+                    #    return to this FOV for the next timepoint.
+                    if has_stim and self._dmd:
+                        stimulator = self._analyzer.pipeline.stimulator
+                        if not stimulator.use_labels and not stimulator.use_imgs:
+                            # No pipeline dependency — compute immediately
+                            prev_stim_slm[fov_index] = self._build_stim_slm(rtm_event)
+                        else:
+                            # Pipeline will produce the mask asynchronously.
+                            # Try a non-blocking get: if a mask from the
+                            # *previous* pipeline run is already available,
+                            # grab it.  Otherwise we'll pick it up next time.
+                            fov_state = self._analyzer.get_fov_state(fov_index)
+                            try:
+                                stim_mask = fov_state.stim_mask_queue.get_nowait()
+                                stim_mask = self._dmd.affine_transform(stim_mask)
+                                stim_ch = rtm_event.stim_channels[0]
+                                prev_stim_slm[fov_index] = SLMImage(
+                                    data=stim_mask,
+                                    device=self._dmd.name,
+                                    exposure=stim_ch.exposure,
+                                )
+                            except Exception:
+                                pass  # mask not ready yet — will use it next time
+
+                else:
+                    # --- "current" mode (default) ---
+                    # 1. Queue imaging events first
+                    for ev in img_events:
+                        self._put_event(ev)
+
+                    # 2. Wait for mask, then queue stim events
+                    if has_stim and stim_events:
+                        stim_slm_image = None
+                        if self._dmd:
+                            stim_slm_image = self._build_stim_slm(rtm_event)
+                        for ev in stim_events:
+                            if stim_slm_image is not None:
+                                ev = ev.model_copy(update={"slm_image": stim_slm_image})
+                            self._put_event(ev)
+        finally:
+            self._queue.put(self.STOP_EVENT)
+            if mda_thread is not None:
+                mda_thread.join()
+            self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
+
+    def _build_stim_slm(self, rtm_event) -> SLMImage | None:
+        """Build SLMImage for stimulation from fov_state mask queue or stimulator."""
+        stimulator = self._analyzer.pipeline.stimulator
+        fov_index = rtm_event.index.get("p", 0)
+        fov_state = self._analyzer.get_fov_state(fov_index)
+        stim_ch = rtm_event.stim_channels[0]
+        stim_exposure = stim_ch.exposure
+
+        meta = {**rtm_event.metadata, "fov": fov_index,
+                "timestep": rtm_event.index.get("t", 0)}
+
+        if not stimulator.use_labels and not stimulator.use_imgs:
+            stim_mask, _ = stimulator.get_stim_mask({}, metadata=meta, img=None)
+            stim_mask = self._dmd.affine_transform(stim_mask)
+        else:
+            try:
+                stim_mask = fov_state.stim_mask_queue.get(block=True, timeout=80)
+                stim_mask = self._dmd.affine_transform(stim_mask)
+            except Exception as e:
+                print(f"Warning: Stimulation mask not ready (timeout): {str(e)}")
+                stim_mask = False
+
+        return SLMImage(data=stim_mask, device=self._dmd.name, exposure=stim_exposure)
+
+    def _run_from_df(self, df_acquire: pd.DataFrame):
+        """Legacy acquisition path using df_acquire DataFrame."""
         queue_sequence = iter(self._queue.get, self.STOP_EVENT)
         mda_thread = self._mmc.run_mda(queue_sequence)
         try:
@@ -535,8 +698,6 @@ class Controller:
                 while self._queue.qsize() >= 3:
                     time.sleep(0.1)
 
-                fov_obj = row["fov_object"]
-                self._fov_objects[row["fov"]] = fov_obj
                 metadata = self._make_metadata(row)
 
                 if self.use_autofocus_event:
@@ -553,13 +714,10 @@ class Controller:
                     self._queue_optocheck(row, metadata)
 
                 if row.get("stim", False):
-                    self._queue_stim(row, metadata, fov_obj)
+                    fov_state = self._analyzer.get_fov_state(row["fov"])
+                    self._queue_stim(row, metadata, fov_state)
         finally:
             self._queue.put(self.STOP_EVENT)
-            # Join the streaming thread so the WebSocket connection is fully
-            # closed before returning. Without this, a second run_experiment call
-            # can open a new /mda/stream connection while the previous one is still
-            # alive, causing the server to close the new connection mid-send.
             if mda_thread is not None:
                 mda_thread.join()
             self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
@@ -584,14 +742,24 @@ class ControllerSimulated(Controller):
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
         """Override to load images from disk for simulated controller.
 
-        Maintains the same frame aggregation logic as the real Controller but loads
-        images from the project path instead of from the microscope.
+        Uses channel counting (same as real Controller) but loads images from
+        the project path instead of from the microscope.
         """
-        if event.metadata["last_channel"]:
-            fname = event.metadata["fname"]
-            img_type = event.metadata["img_type"]
+        meta = event.metadata or {}
+        img_type = meta.get("img_type", ImgType.IMG_RAW)
 
-            # Load image from disk based on type
+        if img_type == ImgType.IMG_STIM:
+            return  # Stim images are not processed in this simulation
+
+        # Buffer by (t, p), submit when all channels received
+        tp = (event.index.get("t", 0), event.index.get("p", 0))
+        buf = self._frame_buffers.setdefault(tp, [])
+        buf.append(img)
+
+        if len(buf) >= self._n_channels:
+            del self._frame_buffers[tp]
+            fname = meta["fname"]
+
             if img_type == ImgType.IMG_RAW:
                 img_loaded = tifffile.imread(
                     os.path.join(self._project_path, "raw", fname + ".tiff")
@@ -604,15 +772,12 @@ class ControllerSimulated(Controller):
                 )
                 self._results = self._analyzer.run(img_loaded, event)
 
-            elif img_type == ImgType.IMG_STIM:
-                pass  # Stim images are not processed in this simulation
             else:
                 raise ValueError(f"Unknown image type: {img_type}")
 
             try:
-                md = event.metadata or {}
                 print(
-                    f"[ControllerSimulated] frameReady: last_channel={md.get('last_channel')} img_type={md.get('img_type')} stack_size={len(self._frame_buffer)} fname={md.get('fname')}"
+                    f"[ControllerSimulated] frameReady: img_type={img_type} fname={meta.get('fname')}"
                 )
             except Exception:
                 pass

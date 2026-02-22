@@ -12,7 +12,7 @@ import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
-from rtm_pymmcore.core.data_structures import Fov, ImgType, SegmentationMethod
+from rtm_pymmcore.core.data_structures import FovState, ImgType, SegmentationMethod
 from rtm_pymmcore.core.utils import labels_to_particles, create_folders
 from datetime import datetime
 import queue
@@ -64,6 +64,49 @@ class ImageProcessingPipeline:
             if hasattr(feature_extractor_optocheck, "extra_folders"):
                 folders.extend(feature_extractor_optocheck.extra_folders)
         create_folders(self.storage_path, folders)
+        self._analyzer = None  # set by Analyzer.__init__
+
+    def validate_events(self, events) -> bool:
+        """Validate all events have required metadata before starting.
+
+        Returns True if all events pass validation, False otherwise.
+        Emits warnings for missing metadata.
+        """
+        general_required = set()
+        if self.segmentators:
+            for seg in self.segmentators:
+                general_required |= getattr(seg.segmentation_class, "required_metadata", set())
+        if self.tracker:
+            general_required |= getattr(self.tracker, "required_metadata", set())
+
+        stim_required = set()
+        if self.stimulator:
+            stim_required = getattr(self.stimulator, "required_metadata", set())
+
+        warnings_list = []
+        for event in events:
+            meta_keys = set(event.metadata.keys())
+            # General requirements (all events)
+            missing = general_required - meta_keys
+            if missing:
+                warnings_list.append(
+                    f"Event t={event.index.get('t')} p={event.index.get('p')} "
+                    f"missing metadata: {missing}"
+                )
+            # Stim requirements (only stim events)
+            if event.stim_channels:
+                missing_stim = stim_required - meta_keys
+                if missing_stim:
+                    warnings_list.append(
+                        f"Stim event t={event.index.get('t')} p={event.index.get('p')} "
+                        f"missing stim metadata: {missing_stim}"
+                    )
+
+        if warnings_list:
+            import warnings as w
+            for msg in warnings_list:
+                w.warn(msg, UserWarning)
+        return len(warnings_list) == 0
 
     def run(
         self, img: np.ndarray = None, event: MDAEvent = None, file_path: str = None
@@ -104,7 +147,7 @@ class ImageProcessingPipeline:
 
         metadata = event.metadata
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
-        fov_obj: Fov = metadata["fov_object"]
+        fov_obj: FovState = self._analyzer.get_fov_state(metadata["fov"])
 
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" in metadata or "phase_name" in metadata:
@@ -113,7 +156,7 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
-        if self.stimulator.use_labels == False:
+        if self.stimulator is not None and not self.stimulator.use_labels:
             timeout_time = 60
         else:
             timeout_time = 20
@@ -175,7 +218,7 @@ class ImageProcessingPipeline:
 
         # 2. Track
         if self.tracker is not None:
-            df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
+            df_tracked = self.tracker.track_cells(df_old, df_new, fov_obj)
         else:
             df_tracked = pd.concat([df_old, df_new], ignore_index=True)
 
@@ -198,7 +241,7 @@ class ImageProcessingPipeline:
             stim_mask, _ = self.stimulator.get_stim_mask(
                 label_images=segmentation_results, metadata=metadata, img=img
             )
-            if self.stimulator.use_labels and not self.stimulator.use_imgs:
+            if self.stimulator.use_labels:
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
@@ -217,7 +260,7 @@ class ImageProcessingPipeline:
 
         if not df_tracked.empty:
             df_tracked = df_tracked.drop(
-                columns=["fov_object", "img_type", "last_channel"], errors="ignore"
+                columns=["img_type"], errors="ignore"
             )
 
         df_datatypes = {

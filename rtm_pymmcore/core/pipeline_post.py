@@ -13,7 +13,7 @@ import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
-from rtm_pymmcore.core.data_structures import Fov, SegmentationMethod
+from rtm_pymmcore.core.data_structures import FovState, SegmentationMethod
 from rtm_pymmcore.core.utils import labels_to_particles, create_folders
 from rtm_pymmcore.core.pipeline import store_img
 
@@ -118,8 +118,7 @@ class ImageProcessingPipeline_postExperiment:
             df = df.drop(columns=cell_specific_cols)
 
         df_old = pd.DataFrame()
-        fov_obj = Fov(0)
-        df.loc[:, "fov_object"] = fov_obj
+        fov_obj = FovState()
         df["fov"] = fov_id
         if self.correct_timestep_jumps:
             # ensure missing timesteps are filled for this FOV by backfilling all missing frames
@@ -153,7 +152,7 @@ class ImageProcessingPipeline_postExperiment:
 
                     rep = rep_rows[rep_t].copy()
                     rep["timestep"] = int(target)
-                    rep["fov_object"] = fov_obj
+                    # fov_obj is tracked separately now
                     rep["fname"] = f"{fov:03d}_{int(target):05d}"
                     # point fname to the representative image so reads succeed
                     new_rows.append(rep)
@@ -202,7 +201,7 @@ class ImageProcessingPipeline_postExperiment:
 
             # 2. Track
             if self.tracker is not None:
-                df_tracked = self.tracker.track_cells(df_old, df_new, metadata)
+                df_tracked = self.tracker.track_cells(df_old, df_new, fov_obj)
             else:
                 df_tracked = pd.concat([df_old, df_new], ignore_index=True)
 
@@ -295,7 +294,7 @@ class ImageProcessingPipeline_postExperiment:
 
         if not df_tracked.empty:
             df_tracked = df_tracked.drop(
-                columns=["fov_object", "img_type", "last_channel"], errors="ignore"
+                columns=["img_type"], errors="ignore"
             )
 
         df_datatypes = {
