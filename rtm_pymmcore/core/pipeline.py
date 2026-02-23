@@ -66,24 +66,118 @@ class ImageProcessingPipeline:
         create_folders(self.storage_path, folders)
         self._analyzer = None  # set by Analyzer.__init__
 
-    def validate_events(self, events) -> bool:
-        """Validate all events have required metadata before starting.
+    @staticmethod
+    def _get_method_params(method) -> set[str]:
+        """Return the set of parameter names (excluding ``self``)."""
+        import inspect
+        try:
+            sig = inspect.signature(method)
+        except (ValueError, TypeError):
+            return set()
+        return {
+            name for name, p in sig.parameters.items()
+            if name != "self"
+        }
 
-        Returns True if all events pass validation, False otherwise.
-        Emits warnings for missing metadata.
+    @staticmethod
+    def _check_method_against_base(obj, base_cls, method_name: str) -> list[str]:
+        """Check that *obj.method_name* accepts the params declared by *base_cls*.
+
+        The base class defines the canonical signature.  Subclasses must accept
+        at least the same parameters (extra params are fine, ``**kwargs`` is
+        fine).
+
+        Returns a list of warning strings (empty if OK).
         """
+        import inspect
+
+        base_method = getattr(base_cls, method_name, None)
+        sub_method = getattr(obj, method_name, None)
+        if base_method is None or sub_method is None:
+            return []
+
+        try:
+            base_sig = inspect.signature(base_method)
+            sub_sig = inspect.signature(sub_method)
+        except (ValueError, TypeError):
+            return []
+
+        # If the subclass accepts **kwargs it can handle anything
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD
+               for p in sub_sig.parameters.values()):
+            return []
+
+        base_params = {
+            name for name, p in base_sig.parameters.items()
+            if name != "self"
+        }
+        sub_params = {
+            name for name, p in sub_sig.parameters.items()
+            if name != "self"
+        }
+
+        missing = base_params - sub_params
+        if missing:
+            cls_name = type(obj).__name__
+            return [
+                f"{cls_name}.{method_name}() is missing parameter(s) "
+                f"{missing} declared by {base_cls.__name__}"
+            ]
+        return []
+
+    def validate_events(self, events) -> bool:
+        """Alias for validate_pipeline. Use mic.validate_events() for full validation."""
+        return self.validate_pipeline(events)
+
+    def validate_pipeline(self, events) -> bool:
+        """Validate pipeline components against events.
+
+        Checks:
+        1. Component method signatures match their base class contract.
+        2. Events carry required metadata declared by each component.
+
+        Returns True if all checks pass, False otherwise.
+        Emits warnings for every problem found.
+        """
+        warnings_list = []
+
+        # --- Signature checks: subclass must accept base class params ---
+        if self.segmentators:
+            for seg in self.segmentators:
+                warnings_list.extend(self._check_method_against_base(
+                    seg.segmentation_class,
+                    base_segmentation.Segmentator, "segment",
+                ))
+        if self.tracker:
+            warnings_list.extend(self._check_method_against_base(
+                self.tracker,
+                abstract_tracker.Tracker, "track_cells",
+            ))
+        if self.feature_extractor:
+            warnings_list.extend(self._check_method_against_base(
+                self.feature_extractor,
+                abstract_fe.FeatureExtractor, "extract_features",
+            ))
+        if self.stimulator:
+            warnings_list.extend(self._check_method_against_base(
+                self.stimulator,
+                base_stimulation.Stim, "get_stim_mask",
+            ))
+
+        # --- Required metadata checks ---
         general_required = set()
         if self.segmentators:
             for seg in self.segmentators:
                 general_required |= getattr(seg.segmentation_class, "required_metadata", set())
         if self.tracker:
             general_required |= getattr(self.tracker, "required_metadata", set())
+        if self.feature_extractor:
+            general_required |= getattr(self.feature_extractor, "required_metadata", set())
 
         stim_required = set()
         if self.stimulator:
             stim_required = getattr(self.stimulator, "required_metadata", set())
 
-        warnings_list = []
         for event in events:
             meta_keys = set(event.metadata.keys())
             # General requirements (all events)
@@ -240,7 +334,8 @@ class ImageProcessingPipeline:
 
         if metadata["stim"] == True:
             stim_mask, _ = self.stimulator.get_stim_mask(
-                label_images=segmentation_results, metadata=metadata, img=img
+                label_images=segmentation_results, metadata=metadata, img=img,
+                tracks=df_tracked,
             )
             if self.stimulator.use_labels:
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)

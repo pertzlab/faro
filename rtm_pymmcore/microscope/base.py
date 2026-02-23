@@ -1,14 +1,11 @@
 import os
 from rtm_pymmcore.core.dmd import DMD
 from queue import Queue
-import pymmcore_plus
-import psutil
 
 
 class AbstractMicroscope:
     """Base class for Microscope Init"""
 
-    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     os.environ["QT_LOGGING_RULES"] = (
         "*.debug=false; *.warning=false"  # Fix to suppress PyQT warnings from napari-micromanager when running in a Jupyter notebook
     )
@@ -26,6 +23,29 @@ class AbstractMicroscope:
 
     def set_pipeline(self, pipeline):
         self.pipeline = pipeline
+
+    def validate_events(self, events) -> bool:
+        """Validate events against pipeline components and hardware.
+
+        Combines :meth:`pipeline.validate_pipeline` (signatures + required
+        metadata) with :meth:`validate_hardware` (channel configs + exposure/
+        power limits).
+
+        Returns True if **all** checks pass, False otherwise.
+        """
+        ok = True
+        if self.pipeline is not None:
+            ok = self.pipeline.validate_pipeline(events) and ok
+        ok = self.validate_hardware(events) and ok
+        return ok
+
+    def validate_hardware(self, events) -> bool:
+        """Validate events against hardware capabilities.
+
+        Base implementation is a no-op (returns True). Subclasses override
+        to check channel configs, exposure limits, device properties, etc.
+        """
+        return True
 
     def run_experiment(self, events=None, *, df_acquire=None, stim_mode="current"):
         """Run the experiment."""
