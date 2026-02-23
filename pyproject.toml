@@ -3,7 +3,7 @@ name = "rtm-pymmcore"
 version = "0.1.0"
 description = "Real-time feedback control microscopy using pymmcore as interface "
 readme = "README.md"
-requires-python = ">=3.13, <3.14"
+requires-python = ">=3.12"
 dependencies = [
     "pandas",
     "numpy",
@@ -38,10 +38,12 @@ cellpose = [
     ]
 
 convpaint = [
-    "napari-convpaint", 
+    "napari-convpaint",
     "scipy"
 ]
 
+[tool.setuptools.packages.find]
+include = ["rtm_pymmcore*"]
 
 [tool.uv.sources]
 torch = [

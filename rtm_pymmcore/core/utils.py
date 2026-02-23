@@ -50,7 +50,7 @@ def validate_hardware(events, mmc) -> bool:
             available.setdefault(config, []).append(group)
 
     # Collect unique channels across all events
-    seen: dict[str, tuple] = {}  # name → (Channel, "imaging"|"stim")
+    seen: dict[str, tuple] = {}  # name → (Channel, "imaging"|"stim"|"optocheck")
     for event in events:
         for ch in event.channels:
             if ch.name not in seen:
@@ -58,6 +58,9 @@ def validate_hardware(events, mmc) -> bool:
         for ch in event.stim_channels:
             if ch.name not in seen:
                 seen[ch.name] = (ch, "stim")
+        for ch in event.optocheck_channels:
+            if ch.name not in seen:
+                seen[ch.name] = (ch, "optocheck")
 
     # 1. Check config existence
     for name, (ch, label) in seen.items():
@@ -75,7 +78,7 @@ def validate_hardware(events, mmc) -> bool:
             hi = mmc.getPropertyUpperLimit(camera, "Exposure")
             checked_exposures: set[tuple[str, int]] = set()
             for event in events:
-                for ch in (*event.channels, *event.stim_channels):
+                for ch in (*event.channels, *event.stim_channels, *event.optocheck_channels):
                     if ch.exposure is None:
                         continue
                     key = (ch.name, ch.exposure)
@@ -98,7 +101,7 @@ def validate_hardware(events, mmc) -> bool:
     # 3. Check device property limits (e.g. laser power)
     checked_props: set[tuple] = set()
     for event in events:
-        for ch in (*event.channels, *event.stim_channels):
+        for ch in (*event.channels, *event.stim_channels, *event.optocheck_channels):
             if not (ch.device_name and ch.property_name and ch.power is not None):
                 continue
             key = (ch.device_name, ch.property_name, ch.power)
@@ -630,6 +633,7 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
     """
     rows = []
     for e in events:
+        has_optocheck = len(e.optocheck_channels) > 0
         row = {
             "fov": e.index.get("p", 0),
             "timestep": e.index.get("t", 0),
@@ -640,6 +644,8 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             "channels": tuple(dataclasses.asdict(ch) for ch in e.channels),
             "stim_channels": tuple(dataclasses.asdict(ch) for ch in e.stim_channels),
             "stim": len(e.stim_channels) > 0,
+            "optocheck_channels": tuple(dataclasses.asdict(ch) for ch in e.optocheck_channels),
+            "optocheck": has_optocheck,
             **e.metadata,
         }
         if e.stim_channels:

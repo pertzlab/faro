@@ -594,7 +594,7 @@ class Controller:
             for rtm_event in events:
                 while self._queue.qsize() >= 3:
                     time.sleep(0.1)
-                self._n_channels = len(rtm_event.channels)
+                self._n_channels = len(rtm_event.channels) + len(rtm_event.optocheck_channels)
 
                 has_stim = len(rtm_event.stim_channels) > 0
                 fov_index = rtm_event.index.get("p", 0)
@@ -718,6 +718,7 @@ class Controller:
                 self._queue_channels(row, metadata)
 
                 if row.get("optocheck", False):
+                    self._n_channels += len(row["optocheck_channels"])
                     self._queue_optocheck(row, metadata)
 
                 if row.get("stim", False):

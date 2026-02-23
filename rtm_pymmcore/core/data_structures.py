@@ -152,6 +152,7 @@ class RTMEvent(MDAEvent):
 
     channels: tuple[Channel, ...] = ()
     stim_channels: tuple[Channel, ...] = ()
+    optocheck_channels: tuple[Channel, ...] = ()
 
     class Config:
         arbitrary_types_allowed = True
@@ -172,7 +173,11 @@ class RTMEvent(MDAEvent):
         fov = self.index.get("p", 0)
         timestep = self.index.get("t", 0)
         has_stim = len(self.stim_channels) > 0
+        has_optocheck = len(self.optocheck_channels) > 0
         fname = f"{fov:03d}_{timestep:05d}"
+
+        # Channel name list for pipeline (needed for optocheck splitting)
+        channel_names = [ch.name for ch in self.channels]
 
         base_meta = {
             **self.metadata,
@@ -181,11 +186,15 @@ class RTMEvent(MDAEvent):
             "fname": fname,
             "time": self.min_start_time or 0,
             "stim": has_stim,
+            "channels": channel_names,
         }
         if has_stim:
             sch = self.stim_channels[0]
             base_meta["stim_power"] = sch.power
             base_meta["stim_exposure"] = sch.exposure
+
+        # Determine img_type for imaging channels
+        img_type = ImgType.IMG_OPTOCHECK if has_optocheck else ImgType.IMG_RAW
 
         # Imaging channels
         for i, ch in enumerate(self.channels):
@@ -207,9 +216,35 @@ class RTMEvent(MDAEvent):
                 y_pos=self.y_pos if i == 0 else None,
                 z_pos=self.z_pos,
                 min_start_time=self.min_start_time,
-                metadata={**base_meta, "img_type": ImgType.IMG_RAW},
+                metadata={**base_meta, "img_type": img_type},
                 properties=props,
             ))
+
+        # Optocheck channels → emitted after imaging channels (continuing c index)
+        if has_optocheck:
+            c_offset = len(self.channels)
+            for j, ch in enumerate(self.optocheck_channels):
+                ch_dict = {"config": ch.name}
+                if ch.group:
+                    ch_dict["group"] = ch.group
+                elif resolve_group:
+                    ch_dict["group"] = resolve_group(ch.name)
+
+                props = None
+                if ch.device_name and ch.property_name and ch.power is not None:
+                    props = [(ch.device_name, ch.property_name, ch.power)]
+
+                events.append(MDAEvent(
+                    index={**dict(self.index), "c": c_offset + j},
+                    channel=ch_dict,
+                    exposure=ch.exposure,
+                    x_pos=None,
+                    y_pos=None,
+                    z_pos=self.z_pos,
+                    min_start_time=self.min_start_time,
+                    metadata={**base_meta, "img_type": ImgType.IMG_OPTOCHECK},
+                    properties=props,
+                ))
 
         # Stim channels → separate events with slm_image
         if has_stim:
@@ -251,6 +286,8 @@ class RTMSequence(MDASequence):
 
     stim_channels: tuple[Channel, ...] = ()
     stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
+    optocheck_channels: tuple[Channel, ...] = ()
+    optocheck_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {**MDASequence.model_config, "arbitrary_types_allowed": True}
@@ -283,13 +320,17 @@ class RTMSequence(MDASequence):
         merged_meta = {**self.metadata, **self.rtm_metadata}
         stim_set = set(self.stim_frames)
         stim_tuple = tuple(self.stim_channels)
+        optocheck_set = set(self.optocheck_frames)
+        optocheck_tuple = tuple(self.optocheck_channels)
 
         for (t, p), grp in sorted(groups.items()):
             stim = stim_tuple if stim_tuple and t in stim_set else ()
+            optocheck = optocheck_tuple if optocheck_tuple and t in optocheck_set else ()
             yield RTMEvent(
                 index={"t": t, "p": p},
                 channels=tuple(grp["channels"]),
                 stim_channels=stim,
+                optocheck_channels=optocheck,
                 x_pos=grp["x_pos"],
                 y_pos=grp["y_pos"],
                 z_pos=grp["z_pos"],
