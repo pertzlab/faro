@@ -1,10 +1,10 @@
 import pymmcore_plus
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 from rtm_pymmcore.core.controller import Controller, ControllerSimulated, Analyzer
 import os
 
 
-class MMDemo(AbstractMicroscope):
+class MMDemo(PyMMCoreMicroscope):
     CHANNEL_GROUP = "Channel"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = False

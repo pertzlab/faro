@@ -1,6 +1,6 @@
 import threading
 
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 from rtm_pymmcore.core.controller import Controller, ControllerSimulated, Analyzer
 
 
@@ -19,7 +19,7 @@ class SimDMD:
         return mask
 
 
-class UniMMCoreSimulation(AbstractMicroscope):
+class UniMMCoreSimulation(PyMMCoreMicroscope):
 
     def __init__(
         self,

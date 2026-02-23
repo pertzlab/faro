@@ -1,7 +1,7 @@
 import pymmcore_plus
 import weakref
 
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 from rtm_pymmcore.core.controller import Controller, Analyzer
 from rtm_pymmcore.core.dmd import DMD
 from useq._mda_event import SLMImage
@@ -80,7 +80,7 @@ class KeepDMDAlive:
         self.mmc.displaySLMImage(self.mmc.getSLMDevice())
 
 
-class Moench(AbstractMicroscope):
+class Moench(PyMMCoreMicroscope):
     MICROMANAGER_PATH = "C:\\micromanager_rtm_pymmcore\\Micro-Manager-2.0_api74"
     MICROMANAGER_CONFIG = "C:\\micromanager_rtm_pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench_w_TTL_PrimeBSI.cfg"
     USE_AUTOFOCUS_EVENT = False

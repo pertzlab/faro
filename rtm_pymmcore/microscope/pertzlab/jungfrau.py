@@ -13,11 +13,11 @@ from useq import MDAEvent
 from pymmcore_plus.mda._engine import MDAEngine
 from pymmcore_plus._logger import logger
 
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 from rtm_pymmcore.core.controller import Controller, Analyzer
 
 
-class Jungfrau(AbstractMicroscope):
+class Jungfrau(PyMMCoreMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0_api74"
     MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Jungfrau\\TiFluoroJungfrau_w_TTL_DIGITALIO.cfg"
     USE_AUTOFOCUS_EVENT = False

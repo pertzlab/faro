@@ -1,12 +1,11 @@
 import threading
 import time
 import requests
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 import pymmcore_plus
 from useq._mda_event import SLMImage
 from useq import MDAEvent
 from rtm_pymmcore.core.dmd import DMD
-from rtm_pymmcore.microscope.base import AbstractMicroscope
 from rtm_pymmcore.core.controller import Controller, Analyzer
 
 
@@ -40,7 +39,7 @@ class WakeUpLaser:
         self.thread.join()
 
 
-class Niesen(AbstractMicroscope):
+class Niesen(PyMMCoreMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Niesen\\Ti2CicercoConfig_w_DMD_w_TTL.cfg"
     CHANNEL_GROUP = "Channel"

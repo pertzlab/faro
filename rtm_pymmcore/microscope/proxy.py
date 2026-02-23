@@ -1,11 +1,11 @@
 import threading
 
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
 from rtm_pymmcore.core.controller import Controller, ControllerSimulated, Analyzer
 from pymmcore_proxy import connect
 
 
-class PymmcoreProxyMic(AbstractMicroscope):
+class PymmcoreProxyMic(PyMMCoreMicroscope):
 
     def __init__(
         self,
