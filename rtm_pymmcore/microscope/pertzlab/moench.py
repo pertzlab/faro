@@ -87,6 +87,9 @@ class Moench(PyMMCoreMicroscope):
     USE_ONLY_PFS = True
     DMD_NEEDS_TO_BE_WAKEN = True
     DMD_CHANNEL_GROUP = "TTL_ERK"
+    POWER_PROPERTIES = {
+        "CyanStim": ("Spectra", "Cyan_Level"),
+    }
     DMD_CALIBRATION_PROFILE = {
         "channel_group": "TTL_ERK",
         "channel_config": "CyanStim",
@@ -172,6 +175,7 @@ class Moench(PyMMCoreMicroscope):
             use_autofocus_event=self.USE_AUTOFOCUS_EVENT,
             dmd=self.dmd,
             dmd_needs_to_be_waken=self.DMD_NEEDS_TO_BE_WAKEN,
+            power_properties=self.get_power_properties(),
         )
         self.controller.run(df_acquire)
 

@@ -10,13 +10,44 @@ import warnings
 
 import pytest
 
-from rtm_pymmcore.core.data_structures import Channel, RTMEvent
+from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMEvent
 from rtm_pymmcore.core.utils import validate_hardware
 
 
 # ---------------------------------------------------------------------------
 # Fake CMMCorePlus — just enough API surface for validate_hardware
 # ---------------------------------------------------------------------------
+
+class FakePropertySetting:
+    """Minimal mock of a Micro-Manager PropertySetting."""
+
+    def __init__(self, device, prop, value):
+        self._device = device
+        self._prop = prop
+        self._value = value
+
+    def getDeviceLabel(self):
+        return self._device
+
+    def getPropertyName(self):
+        return self._prop
+
+    def getPropertyValue(self):
+        return self._value
+
+
+class FakeConfigData:
+    """Minimal mock of a Micro-Manager Configuration (list of PropertySettings)."""
+
+    def __init__(self, settings: list[FakePropertySetting]):
+        self._settings = settings
+
+    def size(self):
+        return len(self._settings)
+
+    def getSetting(self, i):
+        return self._settings[i]
+
 
 class FakeMMCore:
     """Minimal mock of CMMCorePlus for hardware validation tests."""
@@ -27,6 +58,9 @@ class FakeMMCore:
         config_groups: dict[str, list[str]] | None = None,
         camera: str = "Camera",
         property_limits: dict[tuple[str, str], tuple[float, float]] | None = None,
+        devices: dict[str, list[str]] | None = None,
+        config_data: dict[tuple[str, str], list[tuple[str, str, str]]] | None = None,
+        channel_group: str = "",
     ):
         self._config_groups = config_groups or {
             "Channel": ["phase-contrast", "DAPI", "membrane"],
@@ -34,6 +68,11 @@ class FakeMMCore:
         self._camera = camera
         # (device, property) → (lo, hi)
         self._property_limits = property_limits or {}
+        # device_name → [property_names]
+        self._devices = devices or {}
+        # (group, config) → [(device, property, value), ...]
+        self._config_data = config_data or {}
+        self._channel_group = channel_group
 
     def getAvailableConfigGroups(self):
         return list(self._config_groups.keys())
@@ -43,6 +82,19 @@ class FakeMMCore:
 
     def getCameraDevice(self):
         return self._camera
+
+    def getChannelGroup(self):
+        return self._channel_group
+
+    def getLoadedDevices(self):
+        return list(self._devices.keys())
+
+    def getDevicePropertyNames(self, device):
+        return self._devices.get(device, [])
+
+    def getConfigData(self, group, config):
+        settings = self._config_data.get((group, config), [])
+        return FakeConfigData([FakePropertySetting(*s) for s in settings])
 
     def hasPropertyLimits(self, device, prop):
         return (device, prop) in self._property_limits
@@ -216,36 +268,36 @@ class TestDevicePropertyLimits:
 
     def test_power_within_range_passes(self):
         mmc = FakeMMCore(property_limits={("LED", "Intensity"): (0.0, 100.0)})
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("phase-contrast", 50, power=50,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("phase-contrast", 50, power=50)],
         )
-        assert validate_hardware(events, mmc) is True
+        assert validate_hardware(events, mmc, power_properties=power_props) is True
 
     def test_power_exceeds_max_fails(self):
         mmc = FakeMMCore(property_limits={("LED", "Intensity"): (0.0, 100.0)})
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("phase-contrast", 50, power=150,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("phase-contrast", 50, power=150)],
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = validate_hardware(events, mmc)
+            result = validate_hardware(events, mmc, power_properties=power_props)
 
         assert result is False
         assert any("exceeds device maximum" in str(x.message) for x in w)
 
     def test_power_below_min_fails(self):
         mmc = FakeMMCore(property_limits={("LED", "Intensity"): (10.0, 100.0)})
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("phase-contrast", 50, power=5,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("phase-contrast", 50, power=5)],
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = validate_hardware(events, mmc)
+            result = validate_hardware(events, mmc, power_properties=power_props)
 
         assert result is False
         assert any("below device minimum" in str(x.message) for x in w)
@@ -253,29 +305,29 @@ class TestDevicePropertyLimits:
     def test_no_device_limits_skips_check(self):
         """When device has no limits for the property, any value passes."""
         mmc = FakeMMCore()  # no property_limits
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("phase-contrast", 50, power=9999,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("phase-contrast", 50, power=9999)],
         )
-        assert validate_hardware(events, mmc) is True
+        assert validate_hardware(events, mmc, power_properties=power_props) is True
 
     def test_channel_without_power_skips_check(self):
-        """Channels without power/device info skip the property check."""
+        """Channels without power skip the property check."""
         mmc = FakeMMCore(property_limits={("LED", "Intensity"): (0.0, 100.0)})
         events = _make_events(channels=[Channel("phase-contrast", 50)])
         assert validate_hardware(events, mmc) is True
 
     def test_stim_channel_power_checked(self):
         mmc = FakeMMCore(property_limits={("LED", "Intensity"): (0.0, 100.0)})
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
             channels=[Channel("phase-contrast", 50)],
-            stim_channels=[Channel("phase-contrast", 50, power=200,
-                                   device_name="LED", property_name="Intensity")],
+            stim_channels=[PowerChannel("phase-contrast", 50, power=200)],
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = validate_hardware(events, mmc)
+            result = validate_hardware(events, mmc, power_properties=power_props)
 
         assert result is False
         assert any("200" in str(x.message) for x in w)
@@ -292,11 +344,11 @@ class TestCombinedHardwareValidation:
             ("Camera", "Exposure"): (0.0, 100.0),
             ("LED", "Intensity"): (0.0, 100.0),
         })
+        power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("phase-contrast", 50, power=50,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("phase-contrast", 50, power=50)],
         )
-        assert validate_hardware(events, mmc) is True
+        assert validate_hardware(events, mmc, power_properties=power_props) is True
 
     def test_multiple_problems_all_reported(self):
         """Bad config + bad exposure + bad power → three warnings."""
@@ -304,14 +356,14 @@ class TestCombinedHardwareValidation:
             ("Camera", "Exposure"): (0.0, 100.0),
             ("LED", "Intensity"): (0.0, 50.0),
         })
+        power_props = {"MISSING-CHANNEL": ("LED", "Intensity")}
         events = _make_events(
-            channels=[Channel("MISSING-CHANNEL", 200, power=999,
-                              device_name="LED", property_name="Intensity")],
+            channels=[PowerChannel("MISSING-CHANNEL", 200, power=999)],
         )
 
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = validate_hardware(events, mmc)
+            result = validate_hardware(events, mmc, power_properties=power_props)
 
         assert result is False
         messages = " ".join(str(x.message) for x in w)

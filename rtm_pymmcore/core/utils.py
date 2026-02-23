@@ -4,7 +4,7 @@ import numpy as np
 import os
 from collections import namedtuple, defaultdict
 from skimage.util import map_array
-from rtm_pymmcore.core.data_structures import FovState
+from rtm_pymmcore.core.data_structures import Channel, PowerChannel, FovState
 import random
 import pandas as pd
 import dataclasses
@@ -28,7 +28,7 @@ def print_configs(mmc):
     Console().print(tree)
 
 
-def validate_hardware(events, mmc) -> bool:
+def validate_hardware(events, mmc, *, power_properties=None) -> bool:
     """Validate that event channels exist on the microscope and params are in range.
 
     Checks:
@@ -49,18 +49,18 @@ def validate_hardware(events, mmc) -> bool:
         for config in mmc.getAvailableConfigs(group):
             available.setdefault(config, []).append(group)
 
-    # Collect unique channels across all events
-    seen: dict[str, tuple] = {}  # name → (Channel, "imaging"|"stim"|"optocheck")
+    # Collect unique channels across all events (compatible with MDAEvent too)
+    seen: dict[str, tuple] = {}  # config → (Channel, "imaging"|"stim"|"optocheck")
     for event in events:
-        for ch in event.channels:
-            if ch.name not in seen:
-                seen[ch.name] = (ch, "imaging")
-        for ch in event.stim_channels:
-            if ch.name not in seen:
-                seen[ch.name] = (ch, "stim")
-        for ch in event.optocheck_channels:
-            if ch.name not in seen:
-                seen[ch.name] = (ch, "optocheck")
+        for ch in getattr(event, "channels", ()):
+            if ch.config not in seen:
+                seen[ch.config] = (ch, "imaging")
+        for ch in getattr(event, "stim_channels", ()):
+            if ch.config not in seen:
+                seen[ch.config] = (ch, "stim")
+        for ch in getattr(event, "optocheck_channels", ()):
+            if ch.config not in seen:
+                seen[ch.config] = (ch, "optocheck")
 
     # 1. Check config existence
     for name, (ch, label) in seen.items():
@@ -78,49 +78,57 @@ def validate_hardware(events, mmc) -> bool:
             hi = mmc.getPropertyUpperLimit(camera, "Exposure")
             checked_exposures: set[tuple[str, int]] = set()
             for event in events:
-                for ch in (*event.channels, *event.stim_channels, *event.optocheck_channels):
+                for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "optocheck_channels", ())):
                     if ch.exposure is None:
                         continue
-                    key = (ch.name, ch.exposure)
+                    key = (ch.config, ch.exposure)
                     if key in checked_exposures:
                         continue
                     checked_exposures.add(key)
                     if ch.exposure < lo:
                         problems.append(
-                            f"Channel '{ch.name}' exposure {ch.exposure} ms "
+                            f"Channel '{ch.config}' exposure {ch.exposure} ms "
                             f"is below camera minimum ({lo} ms)"
                         )
                     if hi > 0 and ch.exposure > hi:
                         problems.append(
-                            f"Channel '{ch.name}' exposure {ch.exposure} ms "
+                            f"Channel '{ch.config}' exposure {ch.exposure} ms "
                             f"exceeds camera maximum ({hi} ms)"
                         )
     except Exception:
         pass  # camera not set or property unavailable
 
     # 3. Check device property limits (e.g. laser power)
+    # PowerChannel has .power; the mapping config→(device, property) comes
+    # from the microscope via power_properties.
+    _pprops = power_properties or {}
     checked_props: set[tuple] = set()
     for event in events:
-        for ch in (*event.channels, *event.stim_channels, *event.optocheck_channels):
-            if not (ch.device_name and ch.property_name and ch.power is not None):
+        for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "optocheck_channels", ())):
+            power = getattr(ch, "power", None)
+            if power is None:
                 continue
-            key = (ch.device_name, ch.property_name, ch.power)
+            mapping = _pprops.get(ch.config)
+            if mapping is None:
+                continue
+            device_name, property_name = mapping
+            key = (device_name, property_name, power)
             if key in checked_props:
                 continue
             checked_props.add(key)
             try:
-                if not mmc.hasPropertyLimits(ch.device_name, ch.property_name):
+                if not mmc.hasPropertyLimits(device_name, property_name):
                     continue
-                lo = mmc.getPropertyLowerLimit(ch.device_name, ch.property_name)
-                hi = mmc.getPropertyUpperLimit(ch.device_name, ch.property_name)
-                if ch.power < lo:
+                lo = mmc.getPropertyLowerLimit(device_name, property_name)
+                hi = mmc.getPropertyUpperLimit(device_name, property_name)
+                if power < lo:
                     problems.append(
-                        f"Channel '{ch.name}': {ch.property_name}={ch.power} "
+                        f"Channel '{ch.config}': {property_name}={power} "
                         f"is below device minimum ({lo})"
                     )
-                if hi > 0 and ch.power > hi:
+                if hi > 0 and power > hi:
                     problems.append(
-                        f"Channel '{ch.name}': {ch.property_name}={ch.power} "
+                        f"Channel '{ch.config}': {property_name}={power} "
                         f"exceeds device maximum ({hi})"
                     )
             except Exception:
@@ -130,6 +138,65 @@ def validate_hardware(events, mmc) -> bool:
         for msg in problems:
             warnings.warn(msg, UserWarning)
     return len(problems) == 0
+
+
+def detect_power_properties(mmc, group=None) -> dict[str, tuple[str, str]]:
+    """Auto-detect per-channel power properties from the loaded Micro-Manager config.
+
+    Scans for devices with ``*_Level`` properties (e.g. Spectra, LedDMD) and
+    matches channel config presets to their corresponding power level property
+    by matching the LED color activated in each preset.
+
+    For example, with this config::
+
+        ConfigGroup,TTL_ERK,CyanStim,...,DA TTL LED,Label,Cyan
+        Property,Spectra,Cyan_Level,99
+
+    the function returns ``{"CyanStim": ("Spectra", "Cyan_Level")}``.
+
+    Parameters
+    ----------
+    mmc : CMMCorePlus
+        Initialized core instance with a config loaded.
+    group : str, optional
+        Channel group to inspect. If *None*, all config groups are scanned.
+
+    Returns
+    -------
+    dict[str, tuple[str, str]]
+        Mapping of config name to ``(device_name, property_name)``.
+    """
+    # 1. Find devices with *_Level properties (light sources like Spectra, LedDMD)
+    level_lookup: dict[str, tuple[str, str]] = {}  # color_lower → (device, prop)
+    for dev in mmc.getLoadedDevices():
+        for prop in mmc.getDevicePropertyNames(dev):
+            if prop.endswith("_Level"):
+                color = prop[:-6].lower()  # "Cyan_Level" → "cyan"
+                level_lookup[color] = (str(dev), prop)
+
+    if not level_lookup:
+        return {}
+
+    # 2. Determine which config groups to scan
+    groups = [group] if group else list(mmc.getAvailableConfigGroups())
+
+    # 3. For each channel config, check if any setting value matches a known LED color
+    result: dict[str, tuple[str, str]] = {}
+    for g in groups:
+        for config_name in mmc.getAvailableConfigs(g):
+            if config_name in result:
+                continue
+            config_data = mmc.getConfigData(g, config_name)
+            for i in range(config_data.size()):
+                value = config_data.getSetting(i).getPropertyValue().lower()
+                for color, dev_prop in level_lookup.items():
+                    if value == color or (len(color) >= 3 and value.startswith(color)):
+                        result[config_name] = dev_prop
+                        break
+                if config_name in result:
+                    break
+
+    return result
 
 
 def create_folders(path, folders):
@@ -627,13 +694,21 @@ def generate_exp_data_from_tracks(path):
 # ---------------------------------------------------------------------------
 
 def events_to_dataframe(events: list) -> pd.DataFrame:
-    """Convert RTMEvent list to summary DataFrame.
+    """Convert RTMEvent (or MDAEvent) list to summary DataFrame.
 
     Each row = one timepoint with channels + stim info merged.
+    Compatible with both RTMEvent and plain useq.MDAEvent objects.
     """
     rows = []
     for e in events:
-        has_optocheck = len(e.optocheck_channels) > 0
+        channels = getattr(e, "channels", ())
+        stim_channels = getattr(e, "stim_channels", ())
+        optocheck_channels = getattr(e, "optocheck_channels", ())
+
+        # Fallback for plain MDAEvent: build from .channel + .exposure
+        if not channels and getattr(e, "channel", None):
+            channels = (Channel(config=e.channel.config, exposure=e.exposure or 0),)
+
         row = {
             "fov": e.index.get("p", 0),
             "timestep": e.index.get("t", 0),
@@ -641,15 +716,15 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             "x_pos": e.x_pos,
             "y_pos": e.y_pos,
             "z_pos": e.z_pos,
-            "channels": tuple(dataclasses.asdict(ch) for ch in e.channels),
-            "stim_channels": tuple(dataclasses.asdict(ch) for ch in e.stim_channels),
-            "stim": len(e.stim_channels) > 0,
-            "optocheck_channels": tuple(dataclasses.asdict(ch) for ch in e.optocheck_channels),
-            "optocheck": has_optocheck,
+            "channels": tuple(dataclasses.asdict(ch) for ch in channels),
+            "stim_channels": tuple(dataclasses.asdict(ch) for ch in stim_channels),
+            "stim": len(stim_channels) > 0,
+            "optocheck_channels": tuple(dataclasses.asdict(ch) for ch in optocheck_channels),
+            "optocheck": len(optocheck_channels) > 0,
             **e.metadata,
         }
-        if e.stim_channels:
-            row["stim_power"] = e.stim_channels[0].power
-            row["stim_exposure"] = e.stim_channels[0].exposure
+        if stim_channels:
+            row["stim_power"] = stim_channels[0].power
+            row["stim_exposure"] = stim_channels[0].exposure
         rows.append(row)
     return pd.DataFrame(rows)

@@ -387,6 +387,7 @@ class Controller:
         use_autofocus_event=False,
         dmd=None,
         dmd_needs_to_be_waken=False,
+        power_properties=None,
     ):
         self._queue = queue
         self._analyzer = analyzer
@@ -396,6 +397,7 @@ class Controller:
         self._mmc = mmc
         self.use_autofocus_event = use_autofocus_event
         self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
+        self._power_properties: dict = power_properties or {}
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
         self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
@@ -448,6 +450,17 @@ class Controller:
             return SLMImage(data=True, device=self._dmd.name, exposure=exposure)
         return None
 
+    def _resolve_power(self, ch):
+        """Return (device, property, power) for a PowerChannel, or None."""
+        power = getattr(ch, "power", None)
+        if power is None:
+            return None
+        mapping = self._power_properties.get(ch.config)
+        if mapping is None:
+            return None
+        device_name, property_name = mapping
+        return (device_name, property_name, power)
+
     def _resolve_group(self, config_name: str) -> str:
         """Return the channel group for *config_name*, auto-detecting if needed."""
         if self._current_group:
@@ -476,7 +489,7 @@ class Controller:
             )
             self._put_event(useq.MDAEvent(
                 index={"t": row["timestep"], "c": i, "p": row["fov"]},
-                channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
+                channel={"config": ch["config"], "group": ch.get("group") or self._resolve_group(ch["config"])},
                 metadata={**metadata, "img_type": ImgType.IMG_RAW},
                 x_pos=row["fov_x"] if i == 0 else None,
                 y_pos=row["fov_y"] if i == 0 else None,
@@ -496,7 +509,7 @@ class Controller:
             )
             self._put_event(useq.MDAEvent(
                 index={"t": row["timestep"], "c": i, "p": row["fov"]},
-                channel={"config": ch["name"], "group": ch.get("group") or self._resolve_group(ch["name"])},
+                channel={"config": ch["config"], "group": ch.get("group") or self._resolve_group(ch["config"])},
                 metadata=meta_base,
                 x_pos=None, y_pos=None,
                 z_pos=row.get("fov_z"),
@@ -602,6 +615,7 @@ class Controller:
                 # Convert to MDAEvents (stim_slm_image=None; we fill it below)
                 mda_events = rtm_event.to_mda_events(
                     resolve_group=self._resolve_group,
+                    resolve_power=self._resolve_power,
                     stim_slm_image=None,
                 )
                 img_events = [e for e in mda_events if e.metadata.get("img_type") != _IT.IMG_STIM]

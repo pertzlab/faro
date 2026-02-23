@@ -33,21 +33,20 @@ class SegmentationMethod:
 
 @dataclass
 class Channel:
-    name: str
-    exposure: int
+    """Acquisition channel (useq-compatible field names)."""
+    config: str
+    exposure: float = None
     group: str = None
-    power: int = None
-    device_name: str = None
-    property_name: str = None
 
 
 @dataclass
-class StimChannel:
-    name: str
-    group: str
+class PowerChannel(Channel):
+    """Channel with light-source power control.
+
+    Only ``power`` is needed — the microscope resolves which device/property
+    to set based on its hardware configuration.
+    """
     power: int = None
-    device_name: str = None
-    power_property_name: str = None
 
 
 @dataclass
@@ -157,12 +156,13 @@ class RTMEvent(MDAEvent):
     class Config:
         arbitrary_types_allowed = True
 
-    def to_mda_events(self, *, resolve_group=None, dmd=None,
-                      stim_slm_image=None) -> list[MDAEvent]:
+    def to_mda_events(self, *, resolve_group=None, resolve_power=None,
+                      dmd=None, stim_slm_image=None) -> list[MDAEvent]:
         """Convert to standard useq MDAEvents.
 
         Args:
             resolve_group: callable(config_name) -> group name
+            resolve_power: callable(channel) -> (device, property, power) or None
             dmd: DMD object for SLM image creation (optional)
             stim_slm_image: pre-computed SLMImage for stim (optional)
 
@@ -176,8 +176,8 @@ class RTMEvent(MDAEvent):
         has_optocheck = len(self.optocheck_channels) > 0
         fname = f"{fov:03d}_{timestep:05d}"
 
-        # Channel name list for pipeline (needed for optocheck splitting)
-        channel_names = [ch.name for ch in self.channels]
+        # Channel config list for pipeline (needed for optocheck splitting)
+        channel_names = [ch.config for ch in self.channels]
 
         base_meta = {
             **self.metadata,
@@ -190,24 +190,29 @@ class RTMEvent(MDAEvent):
         }
         if has_stim:
             sch = self.stim_channels[0]
-            base_meta["stim_power"] = sch.power
+            base_meta["stim_power"] = getattr(sch, "power", None)
             base_meta["stim_exposure"] = sch.exposure
 
         # Determine img_type for imaging channels
         img_type = ImgType.IMG_OPTOCHECK if has_optocheck else ImgType.IMG_RAW
 
-        # Imaging channels
-        for i, ch in enumerate(self.channels):
-            ch_dict = {"config": ch.name}
+        def _resolve_ch(ch):
+            """Build channel dict and properties for a Channel or PowerChannel."""
+            ch_dict = {"config": ch.config}
             if ch.group:
                 ch_dict["group"] = ch.group
             elif resolve_group:
-                ch_dict["group"] = resolve_group(ch.name)
-
+                ch_dict["group"] = resolve_group(ch.config)
             props = None
-            if ch.device_name and ch.property_name and ch.power is not None:
-                props = [(ch.device_name, ch.property_name, ch.power)]
+            if resolve_power:
+                props = resolve_power(ch)
+                if props is not None:
+                    props = [props]
+            return ch_dict, props
 
+        # Imaging channels
+        for i, ch in enumerate(self.channels):
+            ch_dict, props = _resolve_ch(ch)
             events.append(MDAEvent(
                 index={**dict(self.index), "c": i},
                 channel=ch_dict,
@@ -224,16 +229,7 @@ class RTMEvent(MDAEvent):
         if has_optocheck:
             c_offset = len(self.channels)
             for j, ch in enumerate(self.optocheck_channels):
-                ch_dict = {"config": ch.name}
-                if ch.group:
-                    ch_dict["group"] = ch.group
-                elif resolve_group:
-                    ch_dict["group"] = resolve_group(ch.name)
-
-                props = None
-                if ch.device_name and ch.property_name and ch.power is not None:
-                    props = [(ch.device_name, ch.property_name, ch.power)]
-
+                ch_dict, props = _resolve_ch(ch)
                 events.append(MDAEvent(
                     index={**dict(self.index), "c": c_offset + j},
                     channel=ch_dict,
@@ -249,16 +245,7 @@ class RTMEvent(MDAEvent):
         # Stim channels → separate events with slm_image
         if has_stim:
             for ch in self.stim_channels:
-                ch_dict = {"config": ch.name}
-                if ch.group:
-                    ch_dict["group"] = ch.group
-                elif resolve_group:
-                    ch_dict["group"] = resolve_group(ch.name)
-
-                props = None
-                if ch.device_name and ch.property_name and ch.power is not None:
-                    props = [(ch.device_name, ch.property_name, ch.power)]
-
+                ch_dict, props = _resolve_ch(ch)
                 events.append(MDAEvent(
                     index=dict(self.index),  # no "c" for stim
                     channel=ch_dict,
@@ -314,7 +301,7 @@ class RTMSequence(MDASequence):
             if mda_ev.channel:
                 ch_name = mda_ev.channel.config
                 groups[key]["channels"].append(
-                    Channel(name=ch_name, exposure=mda_ev.exposure or 0)
+                    Channel(config=ch_name, exposure=mda_ev.exposure or 0)
                 )
 
         merged_meta = {**self.metadata, **self.rtm_metadata}

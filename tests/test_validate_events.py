@@ -19,6 +19,7 @@ import pytest
 
 from rtm_pymmcore.core.data_structures import (
     Channel,
+    PowerChannel,
     RTMEvent,
     RTMSequence,
     SegmentationMethod,
@@ -174,7 +175,7 @@ def _make_events(*, stim=False, metadata=None):
         stage_positions=[(0, 0, 0)],
         channels=[{"config": "phase-contrast", "exposure": 50}],
         stim_channels=(
-            (Channel("phase-contrast", 100, power=10),) if stim else ()
+            (PowerChannel("phase-contrast", 100, power=10),) if stim else ()
         ),
         stim_frames=range(3) if stim else range(0),
         rtm_metadata=metadata or {},

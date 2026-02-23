@@ -46,6 +46,9 @@ class Niesen(PyMMCoreMicroscope):
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = False
     DMD_CHANNEL_GROUP = "WF_DMD"
+    POWER_PROPERTIES = {
+        "CyanStim": ("LedDMD", "Cyan_Level"),
+    }
     DMD_CALIBRATION_PROFILE = {
         "channel_group": "WF_DMD",
         "channel_config": "CyanStim",
@@ -110,7 +113,8 @@ class Niesen(PyMMCoreMicroscope):
         self.wl.run(wait_for_warmup=False)
         self.analyzer = Analyzer(self.pipeline)
         self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT, dmd=self.dmd
+            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT,
+            dmd=self.dmd, power_properties=self.get_power_properties(),
         )
         self.controller.run(df_acquire)
 

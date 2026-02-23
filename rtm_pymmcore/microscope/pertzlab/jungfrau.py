@@ -22,6 +22,9 @@ class Jungfrau(PyMMCoreMicroscope):
     MICROMANAGER_CONFIG = "E:\\pertzlab_mic_configs\\micromanager\\Jungfrau\\TiFluoroJungfrau_w_TTL_DIGITALIO.cfg"
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = True
+    POWER_PROPERTIES = {
+        "CyanStim": ("Spectra", "Cyan_Level"),
+    }
 
     def __init__(self):
 
@@ -52,7 +55,8 @@ class Jungfrau(PyMMCoreMicroscope):
         self.register_engine()
 
         self.controller = Controller(
-            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT
+            self.analyzer, self.mmc, self.queue, self.USE_AUTOFOCUS_EVENT,
+            power_properties=self.get_power_properties(),
         )
         self.controller.run(df_acquire)
 
