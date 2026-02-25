@@ -724,7 +724,7 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             **e.metadata,
         }
         if stim_channels:
-            row["stim_power"] = stim_channels[0].power
+            row["stim_power"] = getattr(stim_channels[0], "power", None)
             row["stim_exposure"] = stim_channels[0].exposure
         rows.append(row)
     return pd.DataFrame(rows)
