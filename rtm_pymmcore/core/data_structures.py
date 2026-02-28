@@ -174,7 +174,7 @@ class RTMEvent(MDAEvent):
         timestep = self.index.get("t", 0)
         has_stim = len(self.stim_channels) > 0
         has_optocheck = len(self.optocheck_channels) > 0
-        fname = f"{fov:03d}_{timestep:05d}"
+        fname = self.metadata.get("fname", f"{fov:03d}_{timestep:05d}")
 
         # Channel config list for pipeline (needed for optocheck splitting)
         channel_names = [ch.config for ch in self.channels]

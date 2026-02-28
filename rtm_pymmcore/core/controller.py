@@ -1,16 +1,11 @@
-from pymmcore_plus import CMMCorePlus
 from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
 from rtm_pymmcore.core.data_structures import FovState, ImgType
-from rtm_pymmcore.core.dmd import DMD
 
 import threading
 from useq._mda_event import SLMImage
-from useq import HardwareAutofocus
-import useq
 from useq import MDAEvent
 from queue import Queue, Empty as QueueEmpty
 import numpy as np
-import pandas as pd
 import time
 import tifffile
 import os
@@ -18,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 class Analyzer:
-    """Image analyzer with priority: Get → Store >> Pipeline.
+    """Image analyzer with priority: Get -> Store >> Pipeline.
 
     Priority order:
     1. get(img) - immediate return to MDA (< 1ms)
@@ -203,7 +198,7 @@ class Analyzer:
                     self._deferred_queue.put_nowait((event, metadata, folder))
                     if self.debug:
                         print(
-                            f"[Analyzer] Pipeline overloaded → defer (active={self.active_pipeline_tasks}, max={self.max_queue_size}, pending_deferred={self._deferred_queue.qsize()})"
+                            f"[Analyzer] Pipeline overloaded -> defer (active={self.active_pipeline_tasks}, max={self.max_queue_size}, pending_deferred={self._deferred_queue.qsize()})"
                         )
                 except Exception:
                     pass  # Deferred queue also full - metadata lost (acceptable, storage is priority)
@@ -249,7 +244,7 @@ class Analyzer:
                         if self.debug:
                             pass
                             print(
-                                f"[Analyzer] Still overloaded → requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
+                                f"[Analyzer] Still overloaded -> requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
                             )
                         time.sleep(0.5)
                         continue
@@ -377,36 +372,178 @@ class Analyzer:
 
 
 class Controller:
+    """Experiment orchestrator.
+
+    Converts RTMEvents to MDAEvents, queues them through the microscope's
+    MDA runner, and dispatches acquired frames to the Analyzer.
+
+    The Controller accesses hardware exclusively through the microscope's
+    abstract interface (run_mda, connect/disconnect_frame, cancel_mda,
+    resolve_group, resolve_power) and never imports pymmcore-plus.
+    """
+
     STOP_EVENT = object()
 
-    def __init__(
-        self,
-        analyzer: Analyzer,
-        mmc,
-        queue,
-        use_autofocus_event=False,
-        dmd=None,
-        dmd_needs_to_be_waken=False,
-        power_properties=None,
-    ):
-        self._queue = queue
-        self._analyzer = analyzer
+    def __init__(self, mic, pipeline):
+        """
+        Args:
+            mic: AbstractMicroscope instance (hardware + config).
+            pipeline: ImageProcessingPipeline instance.
+        """
+        self._mic = mic
+        self._pipeline = pipeline
+        self._queue: Queue = Queue()
+        self._analyzer: Analyzer | None = None
         self._results: dict = {}
-        self._current_group = mmc.getChannelGroup()
-        self._dmd = dmd
-        self._mmc = mmc
-        self.use_autofocus_event = use_autofocus_event
-        self.dmd_needs_to_be_waken = dmd_needs_to_be_waken
-        self._power_properties: dict = power_properties or {}
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
-        self._mmc.mda.events.frameReady.connect(self._on_frame_ready)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def validate_events(self, events) -> bool:
+        """Validate events against both pipeline and hardware.
+
+        Combines ``pipeline.validate_pipeline(events)`` (signatures +
+        required metadata) with ``mic.validate_hardware(events)`` (channel
+        configs, exposure/power limits).
+
+        Returns True if **all** checks pass, False otherwise.
+        """
+        ok = True
+        if self._pipeline is not None:
+            ok = self._pipeline.validate_pipeline(events) and ok
+        ok = self._mic.validate_hardware(events) and ok
+        return ok
+
+    def run_experiment(self, events, *, stim_mode="current", validate=True):
+        """Run an acquisition from a list of RTMEvents.
+
+        Args:
+            events: Iterable of RTMEvent.  Will be materialised to a list
+                when ``validate=True`` so it can be iterated twice.
+            stim_mode: How stim masks are resolved when the stimulator needs
+                labels or images.
+
+                * ``"current"`` -- acquire the imaging frame, wait for the
+                  pipeline to segment it and produce the mask, then stimulate
+                  within the same timepoint.
+                * ``"previous"`` -- stimulate using the mask produced from the
+                  *previous* timepoint (for the same FOV).
+            validate: Run :meth:`validate_events` before starting.  Set to
+                ``False`` to skip (e.g. if you already validated manually).
+        """
+        if validate:
+            events = list(events)
+            if not self.validate_events(events):
+                raise ValueError(
+                    "Event validation failed (see warnings above). "
+                    "Fix the issues or pass validate=False to skip."
+                )
+
+        self._analyzer = Analyzer(self._pipeline)
+        self._mic.connect_frame(self._on_frame_ready)
+
+        queue_sequence = iter(self._queue.get, self.STOP_EVENT)
+        mda_thread = self._mic.run_mda(queue_sequence)
+
+        # For "previous" mode: track which FOVs have had a stim frame
+        _stim_pending: set[int] = set()
+
+        try:
+            for rtm_event in events:
+                while self._queue.qsize() >= 3:
+                    time.sleep(0.1)
+                self._n_channels = len(rtm_event.channels) + len(rtm_event.optocheck_channels)
+
+                has_stim = len(rtm_event.stim_channels) > 0
+                fov_index = rtm_event.index.get("p", 0)
+
+                # Convert to MDAEvents (stim_slm_image=None; we fill it below)
+                mda_events = rtm_event.to_mda_events(
+                    resolve_group=self._mic.resolve_group,
+                    resolve_power=self._mic.resolve_power,
+                    stim_slm_image=None,
+                )
+                img_events = [e for e in mda_events if e.metadata.get("img_type") != ImgType.IMG_STIM]
+                stim_events = [e for e in mda_events if e.metadata.get("img_type") == ImgType.IMG_STIM]
+
+                if stim_mode == "previous":
+                    # --- "previous" mode ---
+                    # Stim with mask from t-1, then acquire t.
+
+                    # 1. Stim (mask from previous frame)
+                    if has_stim and stim_events and self._mic.dmd:
+                        stimulator = self._analyzer.pipeline.stimulator
+                        if not stimulator.use_labels and not stimulator.use_imgs:
+                            slm = self._build_stim_slm(rtm_event)
+                            for ev in stim_events:
+                                ev = ev.model_copy(update={"slm_image": slm})
+                                self._put_event(ev)
+                        elif fov_index in _stim_pending:
+                            fov_state = self._analyzer.get_fov_state(fov_index)
+                            try:
+                                stim_mask = fov_state.stim_mask_queue.get(
+                                    block=True, timeout=80
+                                )
+                                stim_mask = self._mic.dmd.affine_transform(stim_mask)
+                                stim_ch = rtm_event.stim_channels[0]
+                                slm = SLMImage(
+                                    data=stim_mask,
+                                    device=self._mic.dmd.name,
+                                    exposure=stim_ch.exposure,
+                                )
+                                for ev in stim_events:
+                                    ev = ev.model_copy(update={"slm_image": slm})
+                                    self._put_event(ev)
+                            except Exception as e:
+                                print(f"Warning: Stimulation mask not ready (timeout): {e}")
+
+                    # 2. Queue imaging events (never blocks)
+                    for ev in img_events:
+                        self._put_event(ev)
+
+                    if has_stim:
+                        _stim_pending.add(fov_index)
+
+                else:
+                    # --- "current" mode (default) ---
+                    # 1. Queue imaging events first
+                    for ev in img_events:
+                        self._put_event(ev)
+
+                    # 2. Wait for mask, then queue stim events
+                    if has_stim and stim_events:
+                        stim_slm_image = None
+                        if self._mic.dmd:
+                            stim_slm_image = self._build_stim_slm(rtm_event)
+                        for ev in stim_events:
+                            if stim_slm_image is not None:
+                                ev = ev.model_copy(update={"slm_image": stim_slm_image})
+                            self._put_event(ev)
+        finally:
+            self._queue.put(self.STOP_EVENT)
+            if mda_thread is not None:
+                mda_thread.join()
+            self._mic.disconnect_frame(self._on_frame_ready)
+
+    def stop_run(self):
+        self._queue.put(self.STOP_EVENT)
+        self._mic.cancel_mda()
+        if self._analyzer is not None:
+            self._analyzer.shutdown(wait=True)
+        self._mic.disconnect_frame(self._on_frame_ready)
+
+    # ------------------------------------------------------------------
+    # Frame handling
+    # ------------------------------------------------------------------
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
         meta = event.metadata or {}
         img_type = meta.get("img_type", ImgType.IMG_RAW)
 
-        if self._analyzer.debug:
+        if self._analyzer and self._analyzer.debug:
             try:
                 tp = (event.index.get("t", 0), event.index.get("p", 0))
                 print(
@@ -430,261 +567,9 @@ class Controller:
             del self._frame_buffers[tp]
             self._results = self._analyzer.run(frame, event)
 
-    def stop_run(self):
-        self._queue.put(self.STOP_EVENT)
-        self._mmc.mda.cancel()
-        self._analyzer.shutdown(wait=True)
-        self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
-
-    def is_running(self):
-        return self._queue.qsize() > 0
-
-    @staticmethod
-    def _get_power_prop(device_name, property_name, power):
-        if any(v is None for v in (device_name, property_name, power)):
-            return None
-        return (device_name, property_name, power)
-
-    def _make_slm(self, exposure) -> SLMImage | None:
-        if self._dmd is not None and self.dmd_needs_to_be_waken:
-            return SLMImage(data=True, device=self._dmd.name, exposure=exposure)
-        return None
-
-    def _resolve_power(self, ch):
-        """Return (device, property, power) for a PowerChannel, or None."""
-        power = getattr(ch, "power", None)
-        if power is None:
-            return None
-        mapping = self._power_properties.get(ch.config)
-        if mapping is None:
-            return None
-        device_name, property_name = mapping
-        return (device_name, property_name, power)
-
-    def _resolve_group(self, config_name: str) -> str:
-        """Return the channel group for *config_name*, auto-detecting if needed."""
-        if self._current_group:
-            return self._current_group
-        # getChannelGroup() was empty — find a group containing this preset
-        for group in self._mmc.getAvailableConfigGroups():
-            if config_name in self._mmc.getAvailableConfigs(group):
-                self._current_group = group
-                return group
-        return ""
-
-    def _put_event(self, event: MDAEvent) -> None:
-        """Queue an MDA event."""
-        self._queue.put(event)
-
-    def _make_metadata(self, row) -> dict:
-        """Serializable base metadata from a DataFrame row."""
-        return {k: v for k, v in row.items() if k != "fov_object"}
-
-    def _queue_channels(self, row, metadata: dict):
-        channels = row["channels"]
-        self._n_channels = len(channels)
-        for i, ch in enumerate(channels):
-            power_prop = self._get_power_prop(
-                ch.get("device_name"), ch.get("property_name"), ch.get("power")
-            )
-            self._put_event(useq.MDAEvent(
-                index={"t": row["timestep"], "c": i, "p": row["fov"]},
-                channel={"config": ch["config"], "group": ch.get("group") or self._resolve_group(ch["config"])},
-                metadata={**metadata, "img_type": ImgType.IMG_RAW},
-                x_pos=row["fov_x"] if i == 0 else None,
-                y_pos=row["fov_y"] if i == 0 else None,
-                z_pos=row.get("fov_z"),
-                min_start_time=float(row["time"]),
-                exposure=ch.get("exposure"),
-                properties=[power_prop] if power_prop else None,
-                slm_image=self._make_slm(ch.get("exposure")),
-            ))
-
-    def _queue_optocheck(self, row, metadata: dict):
-        optocheck_channels = row["optocheck_channels"]
-        meta_base = {**metadata, "img_type": ImgType.IMG_OPTOCHECK}
-        for i, ch in enumerate(optocheck_channels):
-            power_prop = self._get_power_prop(
-                ch.get("device_name"), ch.get("property_name"), ch.get("power")
-            )
-            self._put_event(useq.MDAEvent(
-                index={"t": row["timestep"], "c": i, "p": row["fov"]},
-                channel={"config": ch["config"], "group": ch.get("group") or self._resolve_group(ch["config"])},
-                metadata=meta_base,
-                x_pos=None, y_pos=None,
-                z_pos=row.get("fov_z"),
-                min_start_time=float(row["time"]),
-                exposure=ch.get("exposure"),
-                properties=[power_prop] if power_prop else None,
-                slm_image=self._make_slm(ch.get("exposure")),
-            ))
-
-    def _queue_stim(self, row, metadata: dict, fov_obj: FovState):
-        if not row.get("stim_power") or not row.get("stim_exposure"):
-            return
-        stim_exposure = row.get("stim_exposure")
-        meta = {**metadata, "img_type": ImgType.IMG_STIM}
-        slm_image = None
-        if self._dmd is not None:
-            stimulator = self._analyzer.pipeline.stimulator
-            if not stimulator.use_labels and not stimulator.use_imgs:
-                stim_mask, _ = stimulator.get_stim_mask({}, metadata=meta, img=None)
-                stim_mask = self._dmd.affine_transform(stim_mask)
-            else:
-                try:
-                    stim_mask = fov_obj.stim_mask_queue.get(block=True, timeout=80)
-                    stim_mask = self._dmd.affine_transform(stim_mask)
-                except (TimeoutError, QueueEmpty) as e:
-                    print(f"Warning: Stimulation mask not ready (timeout): {str(e)}")
-                    stim_mask = False
-            slm_image = SLMImage(data=stim_mask, device=self._dmd.name, exposure=stim_exposure)
-        power_prop = self._get_power_prop(
-            row.get("stim_channel_device_name"),
-            row.get("stim_channel_power_property_name"),
-            row.get("stim_power"),
-        )
-        self._put_event(useq.MDAEvent(
-            index={"t": row["timestep"], "p": row["fov"]},
-            channel={"config": row["stim_channel_name"], "group": row.get("stim_channel_group") or self._resolve_group(row["stim_channel_name"])},
-            metadata=meta,
-            x_pos=None, y_pos=None,
-            z_pos=row.get("fov_z"),
-            exposure=stim_exposure,
-            min_start_time=float(row["time"]),
-            properties=[power_prop] if power_prop else None,
-            slm_image=slm_image,
-        ))
-
-    def run(self, events=None, *, df_acquire=None, stim_mode="current"):
-        """Run the acquisition.
-
-        Args:
-            events: Iterable of RTMEvent (primary path).
-            df_acquire: Legacy DataFrame path (backwards compat).
-            stim_mode: How stim masks are resolved when the stimulator needs
-                labels or images (ignored when ``use_labels=False`` and
-                ``use_imgs=False``).
-
-                * ``"current"`` – acquire the imaging frame, wait for the
-                  pipeline to segment it and produce the mask, then stimulate
-                  within the same timepoint.  Higher latency but the mask
-                  matches the exact cell positions.
-                * ``"previous"`` – stimulate using the mask produced from the
-                  *previous* timepoint (for the same FOV).  The pipeline runs
-                  in the background while the next frame is acquired, so
-                  there is no blocking wait.  The first stim-eligible frame
-                  for each FOV is skipped (no previous mask exists).
-        """
-        if events is not None:
-            self._run_from_events(events, stim_mode=stim_mode)
-        elif df_acquire is not None:
-            self._run_from_df(df_acquire)
-        else:
-            raise ValueError("Either events or df_acquire must be provided")
-
-    def _run_from_events(self, events, *, stim_mode="current"):
-        """Primary acquisition path using RTMEvent objects.
-
-        ``stim_mode="current"``
-            acquire → wait for mask → stim  (within the same timepoint)
-
-        ``stim_mode="previous"``
-            stim (mask from t-1) → acquire t  (pipeline processes t in background)
-            When revisiting the FOV at t+1, the mask from t is collected
-            (blocking if not yet ready).  The first stim frame per FOV is
-            skipped (no previous mask exists).
-        """
-        from rtm_pymmcore.core.data_structures import ImgType as _IT
-
-        queue_sequence = iter(self._queue.get, self.STOP_EVENT)
-        mda_thread = self._mmc.run_mda(queue_sequence)
-
-        # For "previous" mode: track which FOVs have had a stim frame
-        # queued so we know when to expect a mask from the pipeline.
-        _stim_pending: set[int] = set()
-
-        try:
-            for rtm_event in events:
-                while self._queue.qsize() >= 3:
-                    time.sleep(0.1)
-                self._n_channels = len(rtm_event.channels) + len(rtm_event.optocheck_channels)
-
-                has_stim = len(rtm_event.stim_channels) > 0
-                fov_index = rtm_event.index.get("p", 0)
-
-                # Convert to MDAEvents (stim_slm_image=None; we fill it below)
-                mda_events = rtm_event.to_mda_events(
-                    resolve_group=self._resolve_group,
-                    resolve_power=self._resolve_power,
-                    stim_slm_image=None,
-                )
-                img_events = [e for e in mda_events if e.metadata.get("img_type") != _IT.IMG_STIM]
-                stim_events = [e for e in mda_events if e.metadata.get("img_type") == _IT.IMG_STIM]
-
-                if stim_mode == "previous":
-                    # --- "previous" mode ---
-                    # Stim with mask from t-1, then acquire t.
-                    # The pipeline processes t in the background; its mask
-                    # is collected the next time we visit this FOV.
-
-                    # 1. Stim (mask from previous frame)
-                    if has_stim and stim_events and self._dmd:
-                        stimulator = self._analyzer.pipeline.stimulator
-                        if not stimulator.use_labels and not stimulator.use_imgs:
-                            # No pipeline dependency — compute immediately
-                            slm = self._build_stim_slm(rtm_event)
-                            for ev in stim_events:
-                                ev = ev.model_copy(update={"slm_image": slm})
-                                self._put_event(ev)
-                        elif fov_index in _stim_pending:
-                            # A previous frame was queued for this FOV —
-                            # block until its mask is ready (must be from t-1).
-                            fov_state = self._analyzer.get_fov_state(fov_index)
-                            try:
-                                stim_mask = fov_state.stim_mask_queue.get(
-                                    block=True, timeout=80
-                                )
-                                stim_mask = self._dmd.affine_transform(stim_mask)
-                                stim_ch = rtm_event.stim_channels[0]
-                                slm = SLMImage(
-                                    data=stim_mask,
-                                    device=self._dmd.name,
-                                    exposure=stim_ch.exposure,
-                                )
-                                for ev in stim_events:
-                                    ev = ev.model_copy(update={"slm_image": slm})
-                                    self._put_event(ev)
-                            except Exception as e:
-                                print(f"Warning: Stimulation mask not ready (timeout): {e}")
-                        # else: first stim frame for this FOV — skip (no previous mask)
-
-                    # 2. Queue imaging events (never blocks)
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    if has_stim:
-                        _stim_pending.add(fov_index)
-
-                else:
-                    # --- "current" mode (default) ---
-                    # 1. Queue imaging events first
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    # 2. Wait for mask, then queue stim events
-                    if has_stim and stim_events:
-                        stim_slm_image = None
-                        if self._dmd:
-                            stim_slm_image = self._build_stim_slm(rtm_event)
-                        for ev in stim_events:
-                            if stim_slm_image is not None:
-                                ev = ev.model_copy(update={"slm_image": stim_slm_image})
-                            self._put_event(ev)
-        finally:
-            self._queue.put(self.STOP_EVENT)
-            if mda_thread is not None:
-                mda_thread.join()
-            self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
+    # ------------------------------------------------------------------
+    # Stim helpers
+    # ------------------------------------------------------------------
 
     def _build_stim_slm(self, rtm_event) -> SLMImage | None:
         """Build SLMImage for stimulation from fov_state mask queue or stimulator."""
@@ -699,74 +584,37 @@ class Controller:
 
         if not stimulator.use_labels and not stimulator.use_imgs:
             stim_mask, _ = stimulator.get_stim_mask({}, metadata=meta, img=None)
-            stim_mask = self._dmd.affine_transform(stim_mask)
+            stim_mask = self._mic.dmd.affine_transform(stim_mask)
         else:
             try:
                 stim_mask = fov_state.stim_mask_queue.get(block=True, timeout=80)
-                stim_mask = self._dmd.affine_transform(stim_mask)
+                stim_mask = self._mic.dmd.affine_transform(stim_mask)
             except Exception as e:
                 print(f"Warning: Stimulation mask not ready (timeout): {str(e)}")
                 stim_mask = False
 
-        return SLMImage(data=stim_mask, device=self._dmd.name, exposure=stim_exposure)
+        return SLMImage(data=stim_mask, device=self._mic.dmd.name, exposure=stim_exposure)
 
-    def _run_from_df(self, df_acquire: pd.DataFrame):
-        """Legacy acquisition path using df_acquire DataFrame."""
-        queue_sequence = iter(self._queue.get, self.STOP_EVENT)
-        mda_thread = self._mmc.run_mda(queue_sequence)
-        try:
-            for _, row in df_acquire.iterrows():
-                while self._queue.qsize() >= 3:
-                    time.sleep(0.1)
+    @staticmethod
+    def _make_slm(dmd, exposure, dmd_needs_to_be_waken) -> SLMImage | None:
+        if dmd is not None and dmd_needs_to_be_waken:
+            return SLMImage(data=True, device=dmd.name, exposure=exposure)
+        return None
 
-                metadata = self._make_metadata(row)
-
-                if self.use_autofocus_event:
-                    self._put_event(useq.MDAEvent(
-                        index={"t": row["timestep"], "c": 0, "p": row["fov"]},
-                        x_pos=row["fov_x"], y_pos=row["fov_y"], z_pos=row.get("fov_z"),
-                        min_start_time=float(row["time"]),
-                        action=HardwareAutofocus(autofocus_motor_offset=row.get("fov_af_offset")),
-                    ))
-
-                self._queue_channels(row, metadata)
-
-                if row.get("optocheck", False):
-                    self._n_channels += len(row["optocheck_channels"])
-                    self._queue_optocheck(row, metadata)
-
-                if row.get("stim", False):
-                    fov_state = self._analyzer.get_fov_state(row["fov"])
-                    self._queue_stim(row, metadata, fov_state)
-        finally:
-            self._queue.put(self.STOP_EVENT)
-            if mda_thread is not None:
-                mda_thread.join()
-            self._mmc.mda.events.frameReady.disconnect(self._on_frame_ready)
+    def _put_event(self, event: MDAEvent) -> None:
+        """Queue an MDA event."""
+        self._queue.put(event)
 
 
 class ControllerSimulated(Controller):
-    def __init__(
-        self,
-        analyzer,
-        mmc,
-        queue,
-        use_autofocus_event=False,
-        dmd=None,
-        dmd_needs_to_be_waken=False,
-        project_path=None,
-    ):
-        super().__init__(
-            analyzer, mmc, queue, use_autofocus_event, dmd, dmd_needs_to_be_waken
-        )
-        self._project_path = project_path
+    """Controller that loads images from disk instead of from the camera."""
+
+    def __init__(self, mic, pipeline, old_data_project_path: str):
+        super().__init__(mic, pipeline)
+        self._project_path = old_data_project_path
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
-        """Override to load images from disk for simulated controller.
-
-        Uses channel counting (same as real Controller) but loads images from
-        the project path instead of from the microscope.
-        """
+        """Override to load images from disk for simulated controller."""
         meta = event.metadata or {}
         img_type = meta.get("img_type", ImgType.IMG_RAW)
 
