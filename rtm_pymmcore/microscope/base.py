@@ -1,4 +1,12 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Callable, Iterator
+from threading import Thread
+
+import numpy as np
+from useq import MDAEvent
+
 from rtm_pymmcore.core.dmd import DMD
 
 
@@ -30,19 +38,19 @@ class AbstractMicroscope:
     # MDA interface — used by Controller
     # ------------------------------------------------------------------
 
-    def run_mda(self, event_iter):
+    def run_mda(self, event_iter: Iterator[MDAEvent]) -> Thread:
         """Start MDA acquisition. Returns thread/handle."""
         raise NotImplementedError
 
-    def connect_frame(self, callback):
+    def connect_frame(self, callback: Callable[[np.ndarray, MDAEvent], None]) -> None:
         """Connect frameReady callback: callback(img, event)."""
         raise NotImplementedError
 
-    def disconnect_frame(self, callback):
+    def disconnect_frame(self, callback: Callable[[np.ndarray, MDAEvent], None]) -> None:
         """Disconnect frameReady callback."""
         raise NotImplementedError
 
-    def cancel_mda(self):
+    def cancel_mda(self) -> None:
         """Cancel running MDA."""
         raise NotImplementedError
 
