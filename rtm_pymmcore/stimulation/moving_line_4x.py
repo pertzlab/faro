@@ -1,7 +1,5 @@
 from .base import Stim
 import numpy as np
-import skimage
-import math
 
 
 class StimLine4x(Stim):
@@ -22,9 +20,7 @@ class StimLine4x(Stim):
         mask_width=1024,
         stim_height=205,
         stim_width=205,
-        use_labels=False,
     ):
-        super().__init__()
         self.first_stim_frame = first_stim_frame
         self.frames_for_1_loop = frames_for_1_loop
         self.stripe_width = stripe_width
@@ -33,7 +29,6 @@ class StimLine4x(Stim):
         self.mask_width = mask_width
         self.stim_height = stim_height
         self.stim_width = stim_width
-        self.use_labels = use_labels
 
     def spot_mask_linescan(
         self,
@@ -78,19 +73,12 @@ class StimLine4x(Stim):
 
         return spot_mask.astype(bool)
 
-    def get_stim_mask(
-        self, label_images: dict, metadata: dict, img: np.array = None
-    ) -> np.ndarray:
+    def get_stim_mask(self, metadata: dict) -> np.ndarray:
 
         time_step = metadata.get("timestep", 0)
         is_a_stim_timestep = metadata.get("stim", False)
-        # guard against empty dict: next(iter(...)) would raise StopIteration
-        if label_images and len(label_images) > 0:
-            label_image = label_images[next(iter(label_images))]
-            height, width = label_image.shape
-        else:
-            height = self.mask_height
-            width = self.mask_width
+        height = metadata.get("img_shape", (self.mask_height, self.mask_width))[0]
+        width = metadata.get("img_shape", (self.mask_height, self.mask_width))[1]
 
         spot_mask = np.zeros((height, width))
 

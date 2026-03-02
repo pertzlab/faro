@@ -1,5 +1,6 @@
 from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
 from rtm_pymmcore.core.data_structures import FovState, ImgType
+from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
 from useq._mda_event import SLMImage
@@ -105,20 +106,17 @@ class Analyzer:
                     )
 
                 if metadata.get("stim", False):
-                    if (
-                        not self.pipeline.stimulator.use_labels
-                        and self.pipeline.stimulator.use_imgs
-                    ):
+                    if isinstance(self.pipeline.stimulator, StimWithImage):
                         img_type = metadata["img_type"]
                         if img_type == ImgType.IMG_RAW:
                             # stim mask does not require to use segmented cell labels.
                             self._put_stim_mask_if_no_labels(
-                                {}, metadata=metadata, img=img
+                                metadata=metadata, img=img
                             )
                         elif img_type == ImgType.IMG_OPTOCHECK:
                             img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
                             self._put_stim_mask_if_no_labels(
-                                {}, metadata=metadata, img=img_raw
+                                metadata=metadata, img=img_raw
                             )
 
                 # PRIORITY 2: Pipeline only if resources available
@@ -158,17 +156,21 @@ class Analyzer:
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
 
     def _put_stim_mask_if_no_labels(
-        self, label_images: dict, metadata: dict, img: np.array
-    ) -> np.ndarray:
+        self, metadata: dict, img: np.ndarray = None,
+    ) -> None:
         """Generate stimulation mask if stim mask does not use cell labels."""
         if self.pipeline is None or self.pipeline.stimulator is None:
             raise RuntimeError(
                 "No pipeline or stimulator defined for generating stim mask."
             )
+        stimulator = self.pipeline.stimulator
         fov_state = self.get_fov_state(metadata["fov"])
-        stim_mask, _ = self.pipeline.stimulator.get_stim_mask(
-            label_images, metadata=metadata, img=img
-        )
+        if isinstance(stimulator, StimWithImage):
+            stim_mask, _ = stimulator.get_stim_mask(metadata=metadata, img=img)
+        else:
+            # Base Stim — needs nothing
+            metadata["img_shape"] = (img.shape[-2], img.shape[-1])
+            stim_mask, _ = stimulator.get_stim_mask(metadata=metadata)
         fov_state.stim_mask_queue.put(stim_mask)
 
         return
@@ -476,7 +478,7 @@ class Controller:
                     # 1. Stim (mask from previous frame)
                     if has_stim and stim_events and self._mic.dmd:
                         stimulator = self._analyzer.pipeline.stimulator
-                        if not stimulator.use_labels and not stimulator.use_imgs:
+                        if not isinstance(stimulator, (StimWithImage, StimWithPipeline)):
                             slm = self._build_stim_slm(rtm_event)
                             for ev in stim_events:
                                 ev = ev.model_copy(update={"slm_image": slm})
@@ -582,8 +584,9 @@ class Controller:
         meta = {**rtm_event.metadata, "fov": fov_index,
                 "timestep": rtm_event.index.get("t", 0)}
 
-        if not stimulator.use_labels and not stimulator.use_imgs:
-            stim_mask, _ = stimulator.get_stim_mask({}, metadata=meta, img=None)
+        if not isinstance(stimulator, (StimWithImage, StimWithPipeline)):
+            meta["img_shape"] = meta.get("img_shape", (1024, 1024))
+            stim_mask, _ = stimulator.get_stim_mask(metadata=meta)
             stim_mask = self._mic.dmd.affine_transform(stim_mask)
         else:
             try:

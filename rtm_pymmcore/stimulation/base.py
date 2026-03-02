@@ -1,59 +1,57 @@
+from abc import ABC, abstractmethod
+
 import numpy as np
 import numpy.typing as npt
-from skimage.draw import disk
-from skimage.measure import regionprops
 import pandas as pd
+from skimage.measure import regionprops
 
 
-# TODO return also labels_stim, list in which the stimulated cells are marked
-class Stim:
-    """
-    Base class for all stimulators. Specific implementations should inherit
-    from this class and override the get_stim_mask method.
+class Stim(ABC):
+    """Stimulator that needs no pipeline data (only metadata).
+
+    Subclasses receive ``metadata`` which includes ``"img_shape"``
+    (height, width) so they can create masks of the correct size.
     """
 
     required_metadata: set[str] = set()
 
-    def __init__(self):
-        self.use_labels = True
-        self.use_imgs = True
-
+    @abstractmethod
     def get_stim_mask(
-        self, label_images: dict, metadata: dict, img: np.ndarray,
-        tracks: "pd.DataFrame | None" = None,
-    ) -> npt.NDArray[np.uint8]:
-        """
-        Parameters:
-        label_images (dict): Segmentation results (e.g. {"labels": np.ndarray}).
-        metadata (dict): Event metadata.
-        img (np.ndarray): Raw image.
-        tracks (pd.DataFrame, optional): Tracked cells for the current FOV.
-            Contains columns like 'label', 'particle', 'x', 'y', 'timestep'.
-            Use to make per-cell stimulation decisions based on tracking.
+        self, metadata: dict,
+    ) -> tuple[npt.NDArray[np.uint8], object]:
+        ...
 
-        Returns:
-        np.ndarray: The stimulation mask.
-        list: A list of labels that were stimulated.
-        """
-        raise NotImplementedError("Subclasses should implement this!")
+
+class StimWithImage(Stim):
+    """Stimulator that needs the raw image (but not segmentation labels)."""
+
+    @abstractmethod
+    def get_stim_mask(
+        self, metadata: dict, img: np.ndarray,
+    ) -> tuple[npt.NDArray[np.uint8], object]:
+        ...
+
+
+class StimWithPipeline(Stim):
+    """Stimulator that needs segmentation labels (and optionally image/tracks)."""
+
+    @abstractmethod
+    def get_stim_mask(
+        self, label_images: dict, metadata: dict,
+        img: np.ndarray = None, tracks: "pd.DataFrame | None" = None,
+    ) -> tuple[npt.NDArray[np.uint8], object]:
+        ...
 
 
 class StimWholeFOV(Stim):
-    """
-    Stimulate the whole FOV.
-    """
+    """Stimulate the whole FOV."""
 
-    def __init__(self):
-        self.use_labels = False
-        self.use_imgs = False
-
-    def get_stim_mask(
-        self, label_images: dict, metadata: dict = None, img: np.array = None
-    ) -> npt.NDArray[np.uint8]:
-        return np.ones((img.shape[-2], img.shape[-1]), dtype=np.uint8), None
+    def get_stim_mask(self, metadata: dict) -> tuple[npt.NDArray[np.uint8], object]:
+        h, w = metadata["img_shape"]
+        return np.ones((h, w), dtype=np.uint8), None
 
 
-class StimTopEdgeMeta(Stim):
+class StimTopEdgeMeta(StimWithPipeline):
     """Illuminate the top *fraction* of each cell's y-extent.
 
     Unlike ``StimTopEdge`` (in the notebook), the fraction is read from
@@ -64,11 +62,6 @@ class StimTopEdgeMeta(Stim):
     """
 
     required_metadata: set[str] = {"stim_fraction"}
-
-    def __init__(self):
-        super().__init__()
-        self.use_labels = True
-        self.use_imgs = False
 
     def get_stim_mask(self, label_images, metadata=None, img=None, tracks=None):
         from skimage.morphology import disk as _disk, dilation
@@ -99,7 +92,6 @@ class StimTopEdgeMeta(Stim):
 class StimNothing(Stim):
     """Use when you don't want to stimulate. Returns empty stimulation mask."""
 
-    def get_stim_mask(
-        self, label_image: np.ndarray, metadata: dict = None, img: np.array = None
-    ) -> npt.NDArray[np.uint8]:
-        return np.zeros_like(label_image), [1, 2, 3, 4]  # some dummy values
+    def get_stim_mask(self, metadata: dict) -> tuple[npt.NDArray[np.uint8], object]:
+        h, w = metadata["img_shape"]
+        return np.zeros((h, w), dtype=np.uint8), [1, 2, 3, 4]  # some dummy values

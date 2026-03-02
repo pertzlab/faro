@@ -26,7 +26,7 @@ from rtm_pymmcore.core.data_structures import (
 )
 from rtm_pymmcore.core.pipeline import ImageProcessingPipeline
 from rtm_pymmcore.segmentation.base import Segmentator
-from rtm_pymmcore.stimulation.base import Stim
+from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
 from rtm_pymmcore.tracking.base import Tracker
 from rtm_pymmcore.feature_extraction.base import FeatureExtractor
 
@@ -50,12 +50,7 @@ class GoodFeatureExtractor(FeatureExtractor):
         return pd.DataFrame(), None
 
 
-class GoodStimulator(Stim):
-    def __init__(self):
-        super().__init__()
-        self.use_labels = True
-        self.use_imgs = False
-
+class GoodStimulator(StimWithPipeline):
     def get_stim_mask(self, label_images, metadata=None, img=None, tracks=None):
         return np.zeros((10, 10), dtype=np.uint8), None
 
@@ -64,13 +59,8 @@ class GoodStimulator(Stim):
 # Helpers: broken implementations (missing params)
 # ---------------------------------------------------------------------------
 
-class StimMissingTracks(Stim):
+class StimMissingTracks(StimWithPipeline):
     """Forgot to add the ``tracks`` kwarg."""
-    def __init__(self):
-        super().__init__()
-        self.use_labels = True
-        self.use_imgs = False
-
     def get_stim_mask(self, label_images, metadata=None, img=None):
         return np.zeros((10, 10), dtype=np.uint8), None
 
@@ -97,12 +87,7 @@ class FEMissingMetadata(FeatureExtractor):
 # Helpers: implementations that accept **kwargs (should always pass)
 # ---------------------------------------------------------------------------
 
-class StimWithKwargs(Stim):
-    def __init__(self):
-        super().__init__()
-        self.use_labels = True
-        self.use_imgs = False
-
+class StimWithKwargs(StimWithPipeline):
     def get_stim_mask(self, label_images, **kwargs):
         return np.zeros((10, 10), dtype=np.uint8), None
 
@@ -111,13 +96,8 @@ class StimWithKwargs(Stim):
 # Helpers: implementations with required_metadata
 # ---------------------------------------------------------------------------
 
-class StimNeedsFraction(Stim):
+class StimNeedsFraction(StimWithPipeline):
     required_metadata: set[str] = {"stim_fraction"}
-
-    def __init__(self):
-        super().__init__()
-        self.use_labels = True
-        self.use_imgs = False
 
     def get_stim_mask(self, label_images, metadata=None, img=None, tracks=None):
         return np.zeros((10, 10), dtype=np.uint8), None
@@ -261,12 +241,7 @@ class TestSignatureValidation:
     def test_extra_params_are_fine(self, tmp_path_cleanup):
         """Subclass may accept MORE params than the base class."""
 
-        class StimExtra(Stim):
-            def __init__(self):
-                super().__init__()
-                self.use_labels = True
-                self.use_imgs = False
-
+        class StimExtra(StimWithPipeline):
             def get_stim_mask(
                 self, label_images, metadata=None, img=None,
                 tracks=None, extra_param=None,

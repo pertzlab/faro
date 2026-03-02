@@ -11,6 +11,7 @@ from datetime import datetime
 
 import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
+from rtm_pymmcore.stimulation.base import StimWithImage, StimWithPipeline
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
 from rtm_pymmcore.core.data_structures import FovState, SegmentationMethod
@@ -169,6 +170,7 @@ class ImageProcessingPipeline_postExperiment:
             metadata = row.to_dict()
             metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
             shape_img = (img.shape[-2], img.shape[-1])
+            metadata["img_shape"] = shape_img
             masks_for_fe = None
 
             segmentation_results = {}
@@ -251,9 +253,18 @@ class ImageProcessingPipeline_postExperiment:
 
             if not self.use_old_stim_masks and self.stimulator is not None:
                 if metadata.get("stim", False):
-                    stim_mask, _ = self.stimulator.get_stim_mask(
-                        label_images=segmentation_results, metadata=metadata, img=img
-                    )
+                    if isinstance(self.stimulator, StimWithPipeline):
+                        stim_mask, _ = self.stimulator.get_stim_mask(
+                            label_images=segmentation_results, metadata=metadata, img=img,
+                        )
+                    elif isinstance(self.stimulator, StimWithImage):
+                        stim_mask, _ = self.stimulator.get_stim_mask(
+                            metadata=metadata, img=img,
+                        )
+                    else:
+                        stim_mask, _ = self.stimulator.get_stim_mask(
+                            metadata=metadata,
+                        )
                     store_img(stim_mask, metadata, self.storage_path, "stim_mask")
                 else:
                     store_img(

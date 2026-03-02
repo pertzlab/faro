@@ -1,23 +1,16 @@
-from .base import Stim
+from .base import StimWithPipeline
 import numpy as np
-import skimage
-import math
 
 
-class CenterCircle(Stim):
+class CenterCircle(StimWithPipeline):
     """
     Stimulate a circle in the center of the field of view. (basic example for testing)
     """
 
-    def __init__(
-        self,
-    ):
-        super().__init__()
-
-
     def get_stim_mask(
-        self, label_images: dict, metadata: dict, img: np.array = None
-    ) -> np.ndarray:
+        self, label_images: dict, metadata: dict, img: np.ndarray = None,
+        tracks=None,
+    ) -> tuple[np.ndarray, object]:
 
         height = label_images['labels'].shape[0]
         width = label_images['labels'].shape[1]

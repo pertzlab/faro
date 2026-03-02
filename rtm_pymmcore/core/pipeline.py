@@ -10,6 +10,7 @@ from useq import MDAEvent
 
 import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
+from rtm_pymmcore.stimulation.base import StimWithImage, StimWithPipeline
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
 from rtm_pymmcore.core.data_structures import FovState, ImgType, SegmentationMethod
@@ -159,9 +160,15 @@ class ImageProcessingPipeline:
                 abstract_fe.FeatureExtractor, "extract_features",
             ))
         if self.stimulator:
+            if isinstance(self.stimulator, StimWithPipeline):
+                stim_base = StimWithPipeline
+            elif isinstance(self.stimulator, StimWithImage):
+                stim_base = StimWithImage
+            else:
+                stim_base = base_stimulation.Stim
             warnings_list.extend(self._check_method_against_base(
                 self.stimulator,
-                base_stimulation.Stim, "get_stim_mask",
+                stim_base, "get_stim_mask",
             ))
 
         # --- Required metadata checks ---
@@ -250,7 +257,7 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
-        if self.stimulator is not None and not self.stimulator.use_labels:
+        if self.stimulator is not None and not isinstance(self.stimulator, StimWithPipeline):
             timeout_time = 60
         else:
             timeout_time = 20
@@ -276,6 +283,7 @@ class ImageProcessingPipeline:
             img = img[:n_channels]
 
         shape_img = (img.shape[-2], img.shape[-1])
+        metadata["img_shape"] = shape_img
 
         segmentation_results = {}
         if self.segmentators is not None:
@@ -333,12 +341,20 @@ class ImageProcessingPipeline:
             masks_for_fe = None
 
         if metadata["stim"] == True:
-            stim_mask, _ = self.stimulator.get_stim_mask(
-                label_images=segmentation_results, metadata=metadata, img=img,
-                tracks=df_tracked,
-            )
-            if self.stimulator.use_labels:
+            if isinstance(self.stimulator, StimWithPipeline):
+                stim_mask, _ = self.stimulator.get_stim_mask(
+                    label_images=segmentation_results, metadata=metadata,
+                    img=img, tracks=df_tracked,
+                )
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
+            elif isinstance(self.stimulator, StimWithImage):
+                stim_mask, _ = self.stimulator.get_stim_mask(
+                    metadata=metadata, img=img,
+                )
+            else:
+                stim_mask, _ = self.stimulator.get_stim_mask(
+                    metadata=metadata,
+                )
 
         if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
             if (

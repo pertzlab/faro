@@ -1,4 +1,4 @@
-from .base import Stim
+from .base import StimWithPipeline
 import numpy as np
 import skimage
 import math
@@ -9,7 +9,7 @@ from skimage.morphology import binary_dilation as skimage_binary_dilation
 from scipy.ndimage import binary_dilation as scipy_binary_dilation
 
 
-class StimPercentageOfCell(Stim):
+class StimPercentageOfCell(StimWithPipeline):
     """
     Stimulate a percentage of the cell.
 
@@ -26,7 +26,8 @@ class StimPercentageOfCell(Stim):
         return xp > 0
 
     def get_stim_mask(
-        self, label_images, metadata: dict = None, img: np.array = None
+        self, label_images, metadata: dict = None, img: np.ndarray = None,
+        tracks=None,
     ) -> np.ndarray:
         label_image = label_images["labels"]
         h, w = label_image.shape
