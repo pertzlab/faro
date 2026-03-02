@@ -13,6 +13,7 @@ Pipeline   ◀──▶  Controller   ◀──▶   Microscope
 - track            experiment        - camera
 - extract                            - DMD/SLM
   features                           - live cells
+- stim mask                           
 ```
 **Microscope**: hardware interface. Any microscope that speaks implements [useq-schema](https://github.com/pymmcore-plus/useq-schema) can be used. Works great with µManger / [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus).
 
@@ -22,7 +23,7 @@ Pipeline   ◀──▶  Controller   ◀──▶   Microscope
 
 ## Quickstart
 
-Try **`experiments/demo_sim_optogenetic/`** notebook to runs a complete optogenetic feedback experiment on a simulated microscope, no hardware required.
+Try **`experiments/demo_sim_optogenetic/`** notebook to run a complete optogenetic feedback experiment on a simulated microscope, no hardware required.
 
 ```python
 # 1. Set microscope
@@ -126,16 +127,16 @@ The microscope provides the hardware interface. Any microscope that implements t
 ### Class Hierarchy
 
 ```
-AbstractMicroscope                   # useq MDA interface
-  ├─ PyMMCoreMicroscope              # implements via pymmcore-plus / CMMCorePlus
-  │    ├─ MMDemo                     # Micro-Manager demo hardware
-  │    ├─ UniMMCoreSimulation        # simulated microscope
-  │    ├─ PymmcoreProxyMic           # remote via pymmcore-proxy
+AbstractMicroscope                # useq MDA interface
+  ├─ PyMMCoreMicroscope           # implements via pymmcore-plus / CMMCorePlus
+  │    ├─ MMDemo                  # Micro-Manager demo hardware
+  │    ├─ UniMMCoreSimulation     # simulated microscope
+  │    ├─ PymmcoreProxyMic        # remote via pymmcore-proxy
   │    └─ pertzlab/
   │         ├─ Jungfrau
   │         ├─ Moench
   │         └─ Niesen
-  └─ InscoperMicroscope              # implements via Inscoper SDK (planned)
+  └─ InscoperMicroscope           # implements via Inscoper SDK (planned)
 ```
 
 ### Interface
