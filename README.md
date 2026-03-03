@@ -120,6 +120,43 @@ ctrl.run_experiment(events, stim_mode="current")
 * `"current"`: acquire frame, wait for segmentation mask, then stimulate in the same timepoint
 * `"previous"`: stimulate using the mask from the previous timepoint, then acquire
 
+### Experiment Continuation
+
+Call `run_experiment()` once, then `continue_experiment()` to append more phases. The Analyzer (and all per-FOV tracking state) is reused, so timesteps, filenames, and particle IDs continue seamlessly.
+
+```python
+ctrl = Controller(mic, pipeline)
+
+# Phase 1: baseline — find cells, measure growth rate
+phase1 = RTMSequence(time_plan={"interval": 10, "loops": 60}, ...)
+ctrl.run_experiment(phase1, validate=False)
+
+# Analyse phase-1 results to decide what to do next
+df = pd.read_parquet("tracks/000_latest.parquet")
+fast_growers = df.groupby("particle")["area"].apply(lambda x: x.diff().mean())
+
+# Phase 2: stimulate based on analysis
+phase2 = RTMSequence(time_plan={"interval": 10, "loops": 120}, ...)
+ctrl.continue_experiment(phase2)
+
+# Always call finish_experiment() when done
+ctrl.finish_experiment()
+```
+
+To add events while an experiment is still running, use `extend_experiment()`:
+
+```python
+ctrl.run_experiment(baseline_events, validate=False)  # runs in background thread
+ctrl.extend_experiment(extra_events)                   # non-blocking, appends to running acquisition
+```
+
+| Method | When to use |
+|--------|-------------|
+| `run_experiment()` | First acquisition — creates a fresh Analyzer |
+| `continue_experiment()` | Subsequent phases — reuses Analyzer, offsets timesteps |
+| `extend_experiment()` | Mid-run additions — pushes events into the running loop |
+| `finish_experiment()` | Cleanup — shuts down Analyzer, resets state |
+
 ## Microscope
 
 The microscope provides the hardware interface. Any microscope that implements the useq-schema MDA protocol can be used, the Controller never depends on pymmcore-plus directly.
