@@ -910,3 +910,170 @@ class TestCrashingFeatureExtractor:
         labels_dir = os.path.join(self.path, "labels")
         files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
         assert len(files) == 0
+
+
+# ===================================================================
+# Continuation / extension helpers
+# ===================================================================
+
+
+def wait_for_pipeline(analyzer: Analyzer, timeout: float = 30):
+    """Block until all storage and pipeline work finishes (no shutdown)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        storage_empty = analyzer._storage_queue.qsize() == 0
+        with analyzer.task_lock:
+            pipeline_idle = analyzer.active_pipeline_tasks == 0
+        deferred_empty = analyzer._deferred_queue.qsize() == 0
+        if storage_empty and pipeline_idle and deferred_empty:
+            break
+        time.sleep(0.1)
+
+
+# ===================================================================
+# Test Class 14: Continue experiment — sequential continuation
+# ===================================================================
+
+
+N_PHASE1_FRAMES = 3
+N_PHASE2_FRAMES = 3
+N_TOTAL_FRAMES = N_PHASE1_FRAMES + N_PHASE2_FRAMES
+
+
+class TestContinueExperiment:
+    """Run 3 frames, continue with 3 more, verify seamless continuation."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline(self.path, with_stim=False)
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+
+        # Phase 1
+        phase1_events = make_events(N_PHASE1_FRAMES)
+        self.ctrl.run_experiment(phase1_events, validate=False)
+        wait_for_pipeline(self.ctrl._analyzer)
+
+        # Phase 2 — continue (reuses Analyzer)
+        phase2_events = make_events(N_PHASE2_FRAMES)
+        self.ctrl.continue_experiment(phase2_events, validate=False)
+        wait_for_pipeline(self.ctrl._analyzer)
+
+        self.ctrl.finish_experiment()
+
+    def test_correct_number_of_raw_images(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_TOTAL_FRAMES, (
+            f"Expected {N_TOTAL_FRAMES} raw TIFFs, got {len(files)}"
+        )
+
+    def test_continuous_filenames(self):
+        """Filenames should be 000_00000 through 000_00005."""
+        raw_dir = os.path.join(self.path, "raw")
+        files = sorted(os.listdir(raw_dir))
+        expected = [f"000_{t:05d}.tiff" for t in range(N_TOTAL_FRAMES)]
+        assert files == expected, f"Expected {expected}, got {files}"
+
+    def test_segmentation_masks_for_all_frames(self):
+        labels_dir = os.path.join(self.path, "labels")
+        files = [f for f in os.listdir(labels_dir) if f.endswith(".tiff")]
+        assert len(files) == N_TOTAL_FRAMES
+
+    def test_tracking_across_continuation_boundary(self):
+        """Particles should be tracked across the continuation boundary."""
+        tracks_dir = os.path.join(self.path, "tracks")
+        parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        assert len(parquet_files) >= 1
+        df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
+        particles = df["particle"].unique()
+        assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
+        for pid in particles:
+            rows = df[df["particle"] == pid]
+            assert len(rows) == N_TOTAL_FRAMES, (
+                f"Particle {pid} tracked {len(rows)} times, expected {N_TOTAL_FRAMES}"
+            )
+
+    def test_t_offset_after_finish(self):
+        """After finish_experiment(), offsets should be reset."""
+        assert self.ctrl._t_offset == 0
+        assert self.ctrl._experiment_start is None
+
+
+# ===================================================================
+# Test Class 15: Extend experiment — dynamic extension mid-run
+# ===================================================================
+
+
+N_INITIAL_FRAMES = 3
+N_EXTEND_FRAMES = 3
+N_EXTENDED_TOTAL = N_INITIAL_FRAMES + N_EXTEND_FRAMES
+
+
+class TestExtendExperiment:
+    """Start 3 frames, extend with 3 more mid-run, verify all processed."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline(self.path, with_stim=False)
+        self.mic = CircleMicroscope()
+        self.ctrl = Controller(self.mic, self.pipeline)
+
+        initial_events = make_events(N_INITIAL_FRAMES)
+        extend_events = make_events(N_EXTEND_FRAMES)
+
+        # Use _pre_loop_hook to call extend_experiment after the event queue
+        # is set up but before the loop starts draining it.
+        def inject_extension():
+            self.ctrl.extend_experiment(extend_events)
+
+        self.ctrl._pre_loop_hook = inject_extension
+        self.ctrl.run_experiment(initial_events, validate=False)
+
+        wait_for_pipeline(self.ctrl._analyzer)
+        self.ctrl.finish_experiment()
+
+    def test_correct_number_of_raw_images(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = [f for f in os.listdir(raw_dir) if f.endswith(".tiff")]
+        assert len(files) == N_EXTENDED_TOTAL, (
+            f"Expected {N_EXTENDED_TOTAL} raw TIFFs, got {len(files)}"
+        )
+
+    def test_continuous_filenames(self):
+        raw_dir = os.path.join(self.path, "raw")
+        files = sorted(os.listdir(raw_dir))
+        expected = [f"000_{t:05d}.tiff" for t in range(N_EXTENDED_TOTAL)]
+        assert files == expected, f"Expected {expected}, got {files}"
+
+    def test_tracking_covers_all_frames(self):
+        tracks_dir = os.path.join(self.path, "tracks")
+        parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        assert len(parquet_files) >= 1
+        df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
+        particles = df["particle"].unique()
+        assert len(particles) == 2
+        for pid in particles:
+            rows = df[df["particle"] == pid]
+            assert len(rows) == N_EXTENDED_TOTAL, (
+                f"Particle {pid} tracked {len(rows)} times, expected {N_EXTENDED_TOTAL}"
+            )
+
+
+# ===================================================================
+# Test Class 16: continue_experiment without prior run raises error
+# ===================================================================
+
+
+class TestContinueWithoutRunRaises:
+    """Calling continue_experiment without run_experiment should raise."""
+
+    def test_raises_runtime_error(self, tmp_dir):
+        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+        mic = CircleMicroscope()
+        ctrl = Controller(mic, pipeline)
+        events = make_events(3)
+        with pytest.raises(RuntimeError, match="No experiment to continue"):
+            ctrl.continue_experiment(events, validate=False)

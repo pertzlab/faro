@@ -400,6 +400,15 @@ class Controller:
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
 
+        # Continuation state
+        self._t_offset: int = 0
+        self._time_offset: float = 0.0
+        self._experiment_start: float | None = None
+        self._event_queue: Queue | None = None  # for extend_experiment
+        self._pending_sentinels: int = 0  # number of None sentinels yet to consume
+        self._fov_positions: dict[int, tuple[float, float, float]] = {}
+        self._pre_loop_hook: callable | None = None  # testing hook
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -444,8 +453,165 @@ class Controller:
                     "Fix the issues or pass validate=False to skip."
                 )
 
+        events = list(events)
+        if self._experiment_start is None:
+            self._experiment_start = time.monotonic()
+
+        # Pre-compute offset so extend_experiment can use it during the run
+        if events:
+            self._t_offset = max(e.index.get("t", 0) for e in events) + 1
+
         self._analyzer = Analyzer(self._pipeline)
+        self._validate_fov_positions(events)
+        self._run_mda_with_events(events, stim_mode=stim_mode)
+
+        # Update wall-clock offset for continuation
+        self._time_offset = time.monotonic() - self._experiment_start
+
+    def continue_experiment(self, events, *, stim_mode="current", validate=True):
+        """Continue acquisition with new events, preserving all pipeline state.
+
+        Reuses the existing ``Analyzer`` (and its ``FovState`` objects) so
+        that tracking, timestep counters, and filenames continue seamlessly
+        from the previous ``run_experiment()`` or ``continue_experiment()``
+        call.
+
+        Args:
+            events: Iterable of RTMEvent.  Timesteps and metadata will be
+                offset automatically.
+            stim_mode: Same as :meth:`run_experiment`.
+            validate: Same as :meth:`run_experiment`.
+
+        Raises:
+            RuntimeError: If no previous experiment exists to continue.
+        """
+        if self._analyzer is None:
+            raise RuntimeError(
+                "No experiment to continue. Call run_experiment() first."
+            )
+
+        if validate:
+            events = list(events)
+            if not self.validate_events(events):
+                raise ValueError(
+                    "Event validation failed (see warnings above). "
+                    "Fix the issues or pass validate=False to skip."
+                )
+
+        events = list(events)
+        offset_events = self._offset_events(events)
+
+        # Pre-compute offset so extend_experiment can use it during the run
+        if offset_events:
+            self._t_offset = max(e.index.get("t", 0) for e in offset_events) + 1
+
+        self._validate_fov_positions(offset_events)
+        self._run_mda_with_events(offset_events, stim_mode=stim_mode)
+
+        # Update wall-clock offset for continuation
+        self._time_offset = time.monotonic() - self._experiment_start
+
+    def extend_experiment(self, events):
+        """Add more events to a running experiment (non-blocking).
+
+        The events are offset and pushed into the internal event queue so
+        the running event loop picks them up.
+
+        Raises:
+            RuntimeError: If no experiment is currently running.
+        """
+        if self._event_queue is None:
+            raise RuntimeError("No running experiment to extend.")
+
+        events = list(events)
+        offset_events = self._offset_events(events)
+        # Add events + sentinel; bump counter so the loop keeps going
+        self._pending_sentinels += 1
+        for ev in offset_events:
+            self._event_queue.put(ev)
+        self._event_queue.put(None)  # sentinel for this batch
+
+        # Update offset for future extensions
+        if offset_events:
+            self._t_offset = max(e.index.get("t", 0) for e in offset_events) + 1
+
+    def finish_experiment(self):
+        """Shutdown the Analyzer and reset continuation state.
+
+        Call after all ``run_experiment`` / ``continue_experiment`` calls
+        are done.
+        """
+        if self._analyzer is not None:
+            self._analyzer.shutdown(wait=True)
+            self._analyzer = None
+        self._t_offset = 0
+        self._time_offset = 0.0
+        self._experiment_start = None
+        self._event_queue = None
+        self._fov_positions.clear()
+
+    def stop_run(self):
+        self._queue.put(self.STOP_EVENT)
+        self._mic.cancel_mda()
+        if self._analyzer is not None:
+            self._analyzer.shutdown(wait=True)
+        self._mic.disconnect_frame(self._on_frame_ready)
+
+    # ------------------------------------------------------------------
+    # Internal helpers for continuation
+    # ------------------------------------------------------------------
+
+    def _offset_events(self, events):
+        """Offset event timesteps and metadata for continuation."""
+        offset_events = []
+        for ev in events:
+            new_t = ev.index.get("t", 0) + self._t_offset
+            offset_events.append(
+                ev.model_copy(
+                    update={
+                        "index": {**dict(ev.index), "t": new_t},
+                        "metadata": {
+                            **ev.metadata,
+                            "time_offset": self._time_offset,
+                        },
+                    }
+                )
+            )
+        return offset_events
+
+    def _validate_fov_positions(self, events):
+        """Warn if FOV positions changed between continuations."""
+        import warnings
+
+        for ev in events:
+            fov = ev.index.get("p", 0)
+            pos = (ev.x_pos, ev.y_pos, ev.z_pos)
+            if fov in self._fov_positions:
+                old = self._fov_positions[fov]
+                if pos != old:
+                    warnings.warn(
+                        f"FOV {fov} position changed: {old} -> {pos}. "
+                        f"Tracking continuity may be broken.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+            self._fov_positions[fov] = pos
+
+    def _run_mda_with_events(self, events, *, stim_mode):
+        """Run the MDA event loop — shared by run/continue_experiment."""
         self._mic.connect_frame(self._on_frame_ready)
+
+        # Set up event queue for extend_experiment support.
+        # _pending_sentinels tracks how many extra batches (from
+        # extend_experiment) still need to be drained.
+        self._event_queue = Queue()
+        self._pending_sentinels = 0
+        for ev in events:
+            self._event_queue.put(ev)
+        self._event_queue.put(None)  # sentinel for this initial batch
+
+        if self._pre_loop_hook is not None:
+            self._pre_loop_hook()
 
         queue_sequence = iter(self._queue.get, self.STOP_EVENT)
         mda_thread = self._mic.run_mda(queue_sequence)
@@ -454,7 +620,15 @@ class Controller:
         _stim_pending: set[int] = set()
 
         try:
-            for rtm_event in events:
+            while True:
+                rtm_event = self._event_queue.get()
+                if rtm_event is None:
+                    # Sentinel consumed — stop only if no extension pending
+                    if self._pending_sentinels > 0:
+                        self._pending_sentinels -= 1
+                        continue
+                    break
+
                 while self._queue.qsize() >= 3:
                     time.sleep(0.1)
                 self._n_channels = len(rtm_event.channels) + len(rtm_event.optocheck_channels)
@@ -525,17 +699,11 @@ class Controller:
                                 ev = ev.model_copy(update={"slm_image": stim_slm_image})
                             self._put_event(ev)
         finally:
+            self._event_queue = None
             self._queue.put(self.STOP_EVENT)
             if mda_thread is not None:
                 mda_thread.join()
             self._mic.disconnect_frame(self._on_frame_ready)
-
-    def stop_run(self):
-        self._queue.put(self.STOP_EVENT)
-        self._mic.cancel_mda()
-        if self._analyzer is not None:
-            self._analyzer.shutdown(wait=True)
-        self._mic.disconnect_frame(self._on_frame_ready)
 
     # ------------------------------------------------------------------
     # Frame handling
