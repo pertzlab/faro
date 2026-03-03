@@ -3,6 +3,7 @@ from rtm_pymmcore.core.data_structures import FovState, ImgType
 from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
+import traceback
 from useq._mda_event import SLMImage
 from useq import MDAEvent
 from queue import Queue, Empty as QueueEmpty
@@ -96,11 +97,10 @@ class Analyzer:
 
             try:
                 # PRIORITY 1: Always store the image
-                self._do_store(img, metadata, folder)
+                img_raw = self._do_store(img, metadata, folder)
                 self.stored_images += 1
 
                 if self.debug:
-                    pass
                     print(
                         f"[Analyzer] Stored image type={metadata.get('img_type')} t={metadata.get('timestep')} fov={metadata.get('fov')} pending_storage={self._storage_queue.qsize()}"
                     )
@@ -114,7 +114,6 @@ class Analyzer:
                                 metadata=metadata, img=img
                             )
                         elif img_type == ImgType.IMG_OPTOCHECK:
-                            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
                             self._put_stim_mask_if_no_labels(
                                 metadata=metadata, img=img_raw
                             )
@@ -135,25 +134,28 @@ class Analyzer:
         len_raw_img = len(metadata["channels"])
         return img[0:len_raw_img]
 
-    def _do_store(self, img: np.array, metadata: dict, folder: str):
-        """Actually store image to disk (guaranteed, never skipped)."""
+    def _do_store(self, img: np.array, metadata: dict, folder: str) -> np.ndarray | None:
+        """Actually store image to disk (guaranteed, never skipped).
+
+        Returns the raw sub-image for IMG_OPTOCHECK (to avoid recomputing), else None.
+        """
         img_type = metadata["img_type"]
 
         if img_type == ImgType.IMG_RAW:
             store_img(img, metadata, self.pipeline.storage_path, "raw")
+            return None
 
         elif img_type == ImgType.IMG_STIM:
             store_img(img, metadata, self.pipeline.storage_path, "stim")
+            return None
 
         elif img_type == ImgType.IMG_OPTOCHECK:
             img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
 
             store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
-            if not os.path.exists(
-                os.path.join(self.pipeline.storage_path, "optocheck")
-            ):
-                os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"))
+            os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"), exist_ok=True)
             store_img(img, metadata, self.pipeline.storage_path, "optocheck")
+            return img_raw
 
     def _put_stim_mask_if_no_labels(
         self, metadata: dict, img: np.ndarray = None,
@@ -244,7 +246,6 @@ class Analyzer:
                         # Still overloaded - put back in queue and wait
                         self._deferred_queue.put_nowait((event, metadata, folder))
                         if self.debug:
-                            pass
                             print(
                                 f"[Analyzer] Still overloaded -> requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
                             )
@@ -321,8 +322,6 @@ class Analyzer:
             try:
                 future.result()  # This will re-raise any exception that occurred
             except Exception as e:
-                import traceback
-
                 print(f"[Analyzer] Pipeline task FAILED with exception:")
                 print(f"Exception type: {type(e).__name__}")
                 print(f"Exception message: {str(e)}")
@@ -396,7 +395,6 @@ class Controller:
         self._pipeline = pipeline
         self._queue: Queue = Queue()
         self._analyzer: Analyzer | None = None
-        self._results: dict = {}
         self._n_channels: int = 1
         self._frame_buffers: dict[tuple, list] = {}
 
@@ -445,15 +443,14 @@ class Controller:
             validate: Run :meth:`validate_events` before starting.  Set to
                 ``False`` to skip (e.g. if you already validated manually).
         """
+        events = list(events)
         if validate:
-            events = list(events)
             if not self.validate_events(events):
                 raise ValueError(
                     "Event validation failed (see warnings above). "
                     "Fix the issues or pass validate=False to skip."
                 )
 
-        events = list(events)
         if self._experiment_start is None:
             self._experiment_start = time.monotonic()
 
@@ -490,15 +487,14 @@ class Controller:
                 "No experiment to continue. Call run_experiment() first."
             )
 
+        events = list(events)
         if validate:
-            events = list(events)
             if not self.validate_events(events):
                 raise ValueError(
                     "Event validation failed (see warnings above). "
                     "Fix the issues or pass validate=False to skip."
                 )
 
-        events = list(events)
         offset_events = self._offset_events(events)
 
         # Pre-compute offset so extend_experiment can use it during the run
@@ -549,6 +545,7 @@ class Controller:
         self._experiment_start = None
         self._event_queue = None
         self._fov_positions.clear()
+        self._frame_buffers.clear()
 
     def stop_run(self):
         self._queue.put(self.STOP_EVENT)
@@ -556,6 +553,7 @@ class Controller:
         if self._analyzer is not None:
             self._analyzer.shutdown(wait=True)
         self._mic.disconnect_frame(self._on_frame_ready)
+        self._frame_buffers.clear()
 
     # ------------------------------------------------------------------
     # Internal helpers for continuation
@@ -724,7 +722,7 @@ class Controller:
 
         # Stim frames: process immediately (single image, not multi-channel)
         if img_type == ImgType.IMG_STIM:
-            self._results = self._analyzer.run(img[np.newaxis, ...], event)
+            self._analyzer.run(img[np.newaxis, ...], event)
             return
 
         # Imaging: buffer by (t, p), submit when all channels received
@@ -735,7 +733,7 @@ class Controller:
         if len(buf) >= self._n_channels:
             frame = np.stack(buf, axis=0)
             del self._frame_buffers[tp]
-            self._results = self._analyzer.run(frame, event)
+            self._analyzer.run(frame, event)
 
     # ------------------------------------------------------------------
     # Stim helpers
@@ -805,13 +803,13 @@ class ControllerSimulated(Controller):
                 img_loaded = tifffile.imread(
                     os.path.join(self._project_path, "raw", fname + ".tiff")
                 )
-                self._results = self._analyzer.run(img_loaded, event)
+                self._analyzer.run(img_loaded, event)
 
             elif img_type == ImgType.IMG_OPTOCHECK:
                 img_loaded = tifffile.imread(
                     os.path.join(self._project_path, "optocheck", fname + ".tiff")
                 )
-                self._results = self._analyzer.run(img_loaded, event)
+                self._analyzer.run(img_loaded, event)
 
             else:
                 raise ValueError(f"Unknown image type: {img_type}")

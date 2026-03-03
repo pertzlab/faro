@@ -1,5 +1,6 @@
 # combines a segmentor, stimulator and tracker into a image processing pipeline.
 
+import inspect
 import os
 from typing import List
 
@@ -69,19 +70,6 @@ class ImageProcessingPipeline:
         self._queue_timeout: float = 20  # seconds; override in tests
 
     @staticmethod
-    def _get_method_params(method) -> set[str]:
-        """Return the set of parameter names (excluding ``self``)."""
-        import inspect
-        try:
-            sig = inspect.signature(method)
-        except (ValueError, TypeError):
-            return set()
-        return {
-            name for name, p in sig.parameters.items()
-            if name != "self"
-        }
-
-    @staticmethod
     def _check_method_against_base(obj, base_cls, method_name: str) -> list[str]:
         """Check that *obj.method_name* accepts the params declared by *base_cls*.
 
@@ -91,8 +79,6 @@ class ImageProcessingPipeline:
 
         Returns a list of warning strings (empty if OK).
         """
-        import inspect
-
         base_method = getattr(base_cls, method_name, None)
         sub_method = getattr(obj, method_name, None)
         if base_method is None or sub_method is None:
@@ -282,7 +268,7 @@ class ImageProcessingPipeline:
         if self.feature_extractor is not None:
             df_new = self.feature_extractor.extract_positions(segmentation_results)
             for key, value in metadata.items():
-                if isinstance(value, (list, tuple)):
+                if isinstance(value, (list, tuple, np.ndarray)):
                     df_new[key] = pd.Series([value] * len(df_new))
                 elif isinstance(value, dict):
                     for subkey, subvalue in value.items():
