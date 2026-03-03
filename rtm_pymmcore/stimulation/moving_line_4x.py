@@ -83,33 +83,22 @@ class StimLine4x(Stim):
         spot_mask = np.zeros((height, width))
 
         if is_a_stim_timestep:
-            if (time_step) < (self.frames_for_1_loop / 2 + self.first_stim_frame):
-                offset = self.first_stim_frame
-                spot_mask = self.spot_mask_linescan(
-                    self.frames_for_1_loop,
-                    time_step,
-                    offset,
-                    self.stripe_width,
-                    height=height,
-                    width=width,
-                    direction="left",
-                )
-            else:
-                offset = self.first_stim_frame
-                spot_mask = self.spot_mask_linescan(
-                    self.frames_for_1_loop,
-                    time_step,
-                    offset,
-                    self.stripe_width,
-                    height=height,
-                    width=width,
-                    direction="left",
-                )
-                offset = self.first_stim_frame + (self.frames_for_1_loop / 2)
+            offset = self.first_stim_frame
+            spot_mask = self.spot_mask_linescan(
+                self.frames_for_1_loop,
+                time_step,
+                offset,
+                self.stripe_width,
+                height=height,
+                width=width,
+                direction="left",
+            )
+            if time_step >= (self.frames_for_1_loop / 2 + self.first_stim_frame):
+                offset2 = self.first_stim_frame + (self.frames_for_1_loop / 2)
                 spot_mask2 = self.spot_mask_linescan(
                     self.frames_for_1_loop,
                     time_step,
-                    offset,
+                    offset2,
                     self.stripe_width,
                     height=height,
                     width=width,

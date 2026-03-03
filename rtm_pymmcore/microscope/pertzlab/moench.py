@@ -21,6 +21,19 @@ from contextlib import suppress
 os.environ["PYMM_PARALLEL_INIT"] = "0"
 
 
+def _set_c_numeric_locale():
+    """Set locale to C/POSIX to ensure period as decimal separator."""
+    try:
+        locale.setlocale(locale.LC_NUMERIC, "C")
+    except locale.Error:
+        for loc in ["en_US.UTF-8", "en_US", "English_United States.1252"]:
+            try:
+                locale.setlocale(locale.LC_NUMERIC, loc)
+                break
+            except locale.Error:
+                continue
+
+
 class KeepDMDAlive:
     def __init__(self, mmc):
         self.mmc = mmc
@@ -34,18 +47,7 @@ class KeepDMDAlive:
         self.mmc.displaySLMImage(self.mmc.getSLMDevice())
 
     def run(self):
-        # Set locale to C/POSIX to ensure period as decimal separator
-        try:
-            locale.setlocale(locale.LC_NUMERIC, "C")
-        except locale.Error:
-            # If 'C' is not available, try 'en_US.UTF-8' or 'en_US'
-            for loc in ["en_US.UTF-8", "en_US", "English_United States.1252"]:
-                try:
-                    locale.setlocale(locale.LC_NUMERIC, loc)
-                    break
-                except locale.Error:
-                    continue
-
+        _set_c_numeric_locale()
         self.is_running = True
         self.last_wakeup = 0
         self.thread = threading.Thread(target=self._run)
@@ -60,18 +62,7 @@ class KeepDMDAlive:
             time.sleep(5)
 
     def stop(self):
-        # Set locale to C/POSIX to ensure period as decimal separator
-        try:
-            locale.setlocale(locale.LC_NUMERIC, "C")
-        except locale.Error:
-            # If 'C' is not available, try 'en_US.UTF-8' or 'en_US'
-            for loc in ["en_US.UTF-8", "en_US", "English_United States.1252"]:
-                try:
-                    locale.setlocale(locale.LC_NUMERIC, loc)
-                    break
-                except locale.Error:
-                    continue
-
+        _set_c_numeric_locale()
         self.is_running = False
         self.thread.join()
         time.sleep(5)
