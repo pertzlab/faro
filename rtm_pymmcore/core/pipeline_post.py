@@ -11,12 +11,19 @@ from datetime import datetime
 
 import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
-from rtm_pymmcore.stimulation.base import StimWithImage, StimWithPipeline
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
 from rtm_pymmcore.core.data_structures import FovState, SegmentationMethod
-from rtm_pymmcore.core.utils import labels_to_particles, create_folders
-from rtm_pymmcore.core.pipeline import store_img
+from rtm_pymmcore.core.utils import create_folders
+from rtm_pymmcore.core.pipeline import (
+    store_img,
+    build_frame_dataframe,
+    run_tracking,
+    extract_and_merge_features,
+    dispatch_stim_mask,
+    convert_track_dtypes,
+    save_segmentation_results,
+)
 
 
 class ImageProcessingPipeline_postExperiment:
@@ -188,39 +195,15 @@ class ImageProcessingPipeline_postExperiment:
                     )
 
             # 1. Extract positions (label, x, y) for tracking
-            if self.feature_extractor is not None:
-                df_new = self.feature_extractor.extract_positions(segmentation_results)
-                for key, value in metadata.items():
-                    if isinstance(value, (list, tuple, np.ndarray)):
-                        df_new[key] = pd.Series([value] * len(df_new))
-                    elif isinstance(value, dict):
-                        for subkey, subvalue in value.items():
-                            df_new[subkey] = [subvalue] * len(df_new)
-                    else:
-                        df_new[key] = value
-            else:
-                df_new = pd.DataFrame([metadata])
+            df_new = build_frame_dataframe(self.feature_extractor, segmentation_results, metadata)
 
             # 2. Track
-            if self.tracker is not None:
-                df_tracked = self.tracker.track_cells(df_old, df_new, fov_obj)
-            else:
-                df_tracked = pd.concat([df_old, df_new], ignore_index=True)
+            df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
             # 3. Feature extraction (now has access to df_tracked)
-            if self.feature_extractor is not None:
-                features_df, masks_for_fe = self.feature_extractor.extract_features(
-                    segmentation_results, img, df_tracked, metadata
-                )
-                # Merge features into current frame rows of df_tracked
-                feature_map = features_df.set_index("label")
-                current_mask = df_tracked["fname"] == metadata["fname"]
-                for col in feature_map.columns:
-                    df_tracked.loc[current_mask, col] = (
-                        df_tracked.loc[current_mask, "label"].map(feature_map[col])
-                    )
-            else:
-                masks_for_fe = None
+            masks_for_fe = extract_and_merge_features(
+                self.feature_extractor, segmentation_results, img, df_tracked, metadata
+            )
             df_old = df_tracked
             fov_obj.fov_timestep_counter += 1
 
@@ -253,18 +236,9 @@ class ImageProcessingPipeline_postExperiment:
 
             if not self.use_old_stim_masks and self.stimulator is not None:
                 if metadata.get("stim", False):
-                    if isinstance(self.stimulator, StimWithPipeline):
-                        stim_mask, _ = self.stimulator.get_stim_mask(
-                            label_images=segmentation_results, metadata=metadata, img=img,
-                        )
-                    elif isinstance(self.stimulator, StimWithImage):
-                        stim_mask, _ = self.stimulator.get_stim_mask(
-                            metadata=metadata, img=img,
-                        )
-                    else:
-                        stim_mask, _ = self.stimulator.get_stim_mask(
-                            metadata=metadata,
-                        )
+                    stim_mask = dispatch_stim_mask(
+                        self.stimulator, segmentation_results, metadata, img=img,
+                    )
                     store_img(stim_mask, metadata, self.storage_path, "stim_mask")
                 else:
                     store_img(
@@ -274,23 +248,11 @@ class ImageProcessingPipeline_postExperiment:
                         "stim_mask",
                     )
 
-            if self.tracker is None:
-                for key, value in segmentation_results.items():
-                    store_img(value, metadata, self.storage_path, key)
-            else:
-                for (key, value), segmentator in zip(
-                    segmentation_results.items(), self.segmentators
-                ):
-                    if segmentator.save_tracked:
-                        tracked_label = labels_to_particles(value, df_tracked, metadata)
-                        store_img(
-                            tracked_label, metadata, self.storage_path, "particles"
-                        )
-                        if not self.use_old_segmentations:
-                            store_img(value, metadata, self.storage_path, key)
-                    else:
-                        if not self.use_old_segmentations:
-                            store_img(value, metadata, self.storage_path, key)
+            save_segmentation_results(
+                segmentation_results, self.segmentators, self.tracker,
+                df_tracked, metadata, self.storage_path,
+                save_labels=not self.use_old_segmentations,
+            )
 
             for folder in self.folders_to_move:
                 src_path = os.path.join(
@@ -303,31 +265,7 @@ class ImageProcessingPipeline_postExperiment:
                     if not os.path.exists(dst_path):
                         os.link(src_path, dst_path)
 
-        if not df_tracked.empty:
-            df_tracked = df_tracked.drop(
-                columns=["img_type"], errors="ignore"
-            )
-
-        df_datatypes = {
-            "timestep": np.uint32,
-            "particle": np.uint32,
-            "label": np.uint32,
-            "time": np.float32,
-            "fov": np.uint16,
-            "stim_exposure": np.float32,
-        }
-
-        existing_columns = {
-            col: dtype
-            for col, dtype in df_datatypes.items()
-            if col in df_tracked.columns
-        }
-
-        try:
-            df_tracked = df_tracked.astype(existing_columns)
-        except ValueError as e:
-            print(e)
-            print("Error in converting datatypes. df_tracked:")
+        df_tracked = convert_track_dtypes(df_tracked)
 
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" in metadata or "phase_name" in metadata:
