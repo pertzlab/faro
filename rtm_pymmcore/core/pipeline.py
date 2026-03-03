@@ -420,24 +420,26 @@ class ImageProcessingPipeline:
                     metadata,
                 )
 
-        # --- Parquet save (shared filename — must finish before unblocking next frame) ---
+        # --- Unblock the next frame ---
+        # df_tracked is fully populated (features, stim, optocheck).
+        # Parquet + TIFF saves below use their own data and unique filenames,
+        # so they're safe to run concurrently with the next frame.
+        fov_obj.tracks_queue.put(df_tracked)
+        frame_counter = fov_obj.fov_timestep_counter
+        fov_obj.fov_timestep_counter += 1
+
+        # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
         df_to_save = convert_track_dtypes(df_tracked)
 
         if (
-            fov_obj.fov_timestep_counter % self.only_save_every_n_frames == 0
-            or fov_obj.fov_timestep_counter == 0
+            frame_counter % self.only_save_every_n_frames == 0
+            or frame_counter == 0
         ):
-            df_to_save.to_parquet(
-                os.path.join(self.storage_path, "tracks", filename_for_parquet),
-                compression="zstd",
-            )
-
-        # --- Unblock the next frame ---
-        # Parquet is saved above (shared filename can't race).
-        # TIFF saves below use unique per-frame filenames, so they're safe
-        # to run concurrently with the next frame.
-        fov_obj.tracks_queue.put(df_tracked)
-        fov_obj.fov_timestep_counter += 1
+            with fov_obj.parquet_lock:
+                df_to_save.to_parquet(
+                    os.path.join(self.storage_path, "tracks", filename_for_parquet),
+                    compression="zstd",
+                )
 
         if self.stimulator is not None:
             if metadata["stim"]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 from dataclasses import dataclass
 import enum
 from typing import Any, Iterator
@@ -17,6 +18,7 @@ class FovState:
     def __init__(self):
         self.stim_mask_queue = queue.SimpleQueue()
         self.tracks_queue = queue.SimpleQueue()
+        self.parquet_lock = threading.Lock()
         self.linker = None
         self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
