@@ -13,7 +13,7 @@ import rtm_pymmcore.segmentation.base as base_segmentation
 import rtm_pymmcore.stimulation.base as base_stimulation
 import rtm_pymmcore.tracking.base as abstract_tracker
 import rtm_pymmcore.feature_extraction.base as abstract_fe
-from rtm_pymmcore.core.data_structures import FovState, SegmentationMethod
+from rtm_pymmcore.core.data_structures import FovState, ImgType, SegmentationMethod
 from rtm_pymmcore.core.utils import create_folders
 from rtm_pymmcore.core.pipeline import (
     store_img,
@@ -36,7 +36,7 @@ class ImageProcessingPipeline_postExperiment:
         feature_extractor: abstract_fe.FeatureExtractor = None,
         stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
-        feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
+        feature_extractor_ref: abstract_fe.FeatureExtractor = None,
         use_old_segmentations: bool = False,
         use_old_stim_masks: bool = False,
         n_jobs: int = 2,
@@ -47,7 +47,7 @@ class ImageProcessingPipeline_postExperiment:
         self.stimulator = stimulator
         self.tracker = tracker
         self.df_acquire = df_acquire
-        self.feature_extractor_optocheck = feature_extractor_optocheck
+        self.feature_extractor_ref = feature_extractor_ref
         self.storage_path = out_path
         self.img_storage_path = img_storage_path
         self.use_old_segmentations = use_old_segmentations
@@ -73,10 +73,10 @@ class ImageProcessingPipeline_postExperiment:
                 folders.append(seg.name)
                 if self.use_old_segmentations:
                     self.folders_to_move.append(seg.name)
-        if feature_extractor_optocheck is not None:
-            folders.append("optocheck")
-            if hasattr(feature_extractor_optocheck, "extra_folders"):
-                folders.extend(feature_extractor_optocheck.extra_folders)
+        if feature_extractor_ref is not None:
+            folders.append("ref")
+            if hasattr(feature_extractor_ref, "extra_folders"):
+                folders.extend(feature_extractor_ref.extra_folders)
         create_folders(self.storage_path, folders)
 
     def run(self):
@@ -119,8 +119,8 @@ class ImageProcessingPipeline_postExperiment:
             or c.startswith("norm_")
             or c.startswith("mean_")
             or c in ["x", "y", "area", "label", "particle"]
-            or c.startswith("optocheck_mean_intensity_")
-            or c.startswith("optocheck_median_intensity_")
+            or c.startswith("ref_mean_intensity_")
+            or c.startswith("ref_median_intensity_")
         ]
         if cell_specific_cols:
             df = df.drop(columns=cell_specific_cols)
@@ -208,23 +208,21 @@ class ImageProcessingPipeline_postExperiment:
             fov_obj.fov_timestep_counter += 1
 
             if (
-                self.feature_extractor_optocheck is not None
+                self.feature_extractor_ref is not None
                 and self.tracker is not None
             ):
-                if metadata.get("optocheck", False) == True:
+                if metadata.get("img_type") == ImgType.IMG_REF or metadata.get("ref", False):
                     print(
-                        f'Adding optocheck features for timestep {metadata["timestep"]}, fov {fov_id}'
+                        f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
                     )
-                    img_optocheck = tifffile.imread(
+                    img_ref = tifffile.imread(
                         os.path.join(
-                            self.img_storage_path, "optocheck", row["fname"] + ".tiff"
+                            self.img_storage_path, "ref", row["fname"] + ".tiff"
                         )
                     )
-                    n_channels = len(metadata.get("channels", []))
-                    img_optocheck = img_optocheck[n_channels:]
-                    df_tracked = self.feature_extractor_optocheck.extract_features(
+                    df_tracked = self.feature_extractor_ref.extract_features(
                         segmentation_results,
-                        img_optocheck,
+                        img_ref,
                         df_tracked,
                         metadata,
                     )

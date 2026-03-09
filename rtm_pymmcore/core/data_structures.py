@@ -129,7 +129,7 @@ def _normalize_to_tuple(value):
 class ImgType(enum.Enum):
     IMG_RAW = enum.auto()
     IMG_STIM = enum.auto()
-    IMG_OPTOCHECK = enum.auto()
+    IMG_REF = enum.auto()
 
 
 # ---------------------------------------------------------------------------
@@ -141,19 +141,19 @@ from useq._mda_sequence import iter_sequence
 
 
 class RTMEvent(MDAEvent):
-    """Extended acquisition event: imaging channels + optional stim channels.
+    """Extended acquisition event: imaging channels + optional stim/ref channels.
 
     Inherits all MDAEvent fields (index, x_pos, y_pos, z_pos, min_start_time,
-    metadata, etc.). Adds multi-channel and stimulation support.
+    metadata, etc.). Adds multi-channel, stimulation, and reference support.
 
     The parent ``channel``/``exposure`` fields are not used directly — use
-    ``channels`` and ``stim_channels`` instead. Call ``to_mda_events()`` to
-    convert to standard MDAEvents for the microscope.
+    ``channels``, ``stim_channels``, and ``ref_channels`` instead. Call
+    ``to_mda_events()`` to convert to standard MDAEvents for the microscope.
     """
 
     channels: tuple[Channel, ...] = ()
     stim_channels: tuple[Channel, ...] = ()
-    optocheck_channels: tuple[Channel, ...] = ()
+    ref_channels: tuple[Channel, ...] = ()
 
     class Config:
         arbitrary_types_allowed = True
@@ -175,10 +175,8 @@ class RTMEvent(MDAEvent):
         fov = self.index.get("p", 0)
         timestep = self.index.get("t", 0)
         has_stim = len(self.stim_channels) > 0
-        has_optocheck = len(self.optocheck_channels) > 0
         fname = self.metadata.get("fname", f"{fov:03d}_{timestep:05d}")
 
-        # Channel config list for pipeline (needed for optocheck splitting)
         channel_names = [ch.config for ch in self.channels]
 
         base_meta = {
@@ -195,8 +193,8 @@ class RTMEvent(MDAEvent):
             base_meta["stim_power"] = getattr(sch, "power", None)
             base_meta["stim_exposure"] = sch.exposure
 
-        # Determine img_type for imaging channels
-        img_type = ImgType.IMG_OPTOCHECK if has_optocheck else ImgType.IMG_RAW
+        # img_type from metadata (e.g. IMG_REF for ref phases)
+        img_type = self.metadata.get("img_type", ImgType.IMG_RAW)
 
         def _resolve_ch(ch):
             """Build channel dict and properties for a Channel or PowerChannel."""
@@ -227,24 +225,7 @@ class RTMEvent(MDAEvent):
                 properties=props,
             ))
 
-        # Optocheck channels → emitted after imaging channels (continuing c index)
-        if has_optocheck:
-            c_offset = len(self.channels)
-            for j, ch in enumerate(self.optocheck_channels):
-                ch_dict, props = _resolve_ch(ch)
-                events.append(MDAEvent(
-                    index={**dict(self.index), "c": c_offset + j},
-                    channel=ch_dict,
-                    exposure=ch.exposure,
-                    x_pos=None,
-                    y_pos=None,
-                    z_pos=self.z_pos,
-                    min_start_time=self.min_start_time,
-                    metadata={**base_meta, "img_type": ImgType.IMG_OPTOCHECK},
-                    properties=props,
-                ))
-
-        # Stim channels → separate events with slm_image
+        # Stim channels
         if has_stim:
             for ch in self.stim_channels:
                 ch_dict, props = _resolve_ch(ch)
@@ -258,25 +239,64 @@ class RTMEvent(MDAEvent):
                     slm_image=stim_slm_image,  # filled by Controller
                 ))
 
+        # Ref channels
+        if self.ref_channels:
+            n_img = len(self.channels)
+            for j, ch in enumerate(self.ref_channels):
+                ch_dict, props = _resolve_ch(ch)
+                events.append(MDAEvent(
+                    index={**dict(self.index), "c": n_img + j},
+                    channel=ch_dict,
+                    exposure=ch.exposure,
+                    min_start_time=self.min_start_time,
+                    metadata={**base_meta, "img_type": ImgType.IMG_REF},
+                    properties=props,
+                ))
+
         return events
 
 
 # ---------------------------------------------------------------------------
-# RTMSequence — MDASequence subclass with stimulation support
+# Frame-set helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_frame_set(frames, n_timepoints: int) -> set[int]:
+    """Resolve a frame specification to a concrete set of non-negative indices.
+
+    Accepts sets, frozensets, ranges, or any iterable of ints.
+    Negative indices are resolved relative to *n_timepoints*
+    (e.g. ``-1`` → ``n_timepoints - 1``).
+    """
+    resolved: set[int] = set()
+    for f in frames:
+        if f < 0:
+            resolved.add(f + n_timepoints)
+        else:
+            resolved.add(f)
+    return resolved
+
+
+# ---------------------------------------------------------------------------
+# RTMSequence — MDASequence subclass with stimulation + ref support
 # ---------------------------------------------------------------------------
 
 
 class RTMSequence(MDASequence):
-    """MDASequence with stimulation and pipeline metadata.
+    """MDASequence with stimulation, reference acquisition, and pipeline metadata.
 
     Iterating yields RTMEvent objects (not plain MDAEvents).
     Concatenate multiple sequences with ``+`` for multi-phase experiments.
+
+    ``stim_frames`` and ``ref_frames`` accept sets, frozensets, or ``range``
+    objects.  Negative indices are resolved relative to the total number of
+    timepoints (e.g. ``-1`` → last frame).
     """
 
     stim_channels: tuple[Channel, ...] = ()
     stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
-    optocheck_channels: tuple[Channel, ...] = ()
-    optocheck_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
+    ref_channels: tuple[Channel, ...] = ()
+    ref_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {**MDASequence.model_config, "arbitrary_types_allowed": True}
@@ -286,7 +306,16 @@ class RTMSequence(MDASequence):
         return self.iter_events()
 
     def iter_events(self) -> Iterator[RTMEvent]:
-        """Yield RTMEvents by grouping parent MDAEvents by (t, p)."""
+        """Yield RTMEvents by grouping parent MDAEvents by (t, p).
+
+        The (t, p) iteration order respects ``axis_order`` (inherited from
+        MDASequence).  Dict insertion order preserves the first-encounter
+        order produced by ``iter_sequence``, so the resulting RTMEvents
+        follow the same nesting that ``axis_order`` dictates.
+
+        Negative indices in ``stim_frames`` and ``ref_frames`` are resolved
+        relative to the total number of timepoints.
+        """
         groups: dict[tuple, dict] = {}
         for mda_ev in iter_sequence(self):
             t = mda_ev.index.get("t", 0)
@@ -307,19 +336,23 @@ class RTMSequence(MDASequence):
                 )
 
         merged_meta = {**self.metadata, **self.rtm_metadata}
-        stim_set = set(self.stim_frames)
         stim_tuple = tuple(self.stim_channels)
-        optocheck_set = set(self.optocheck_frames)
-        optocheck_tuple = tuple(self.optocheck_channels)
+        ref_tuple = tuple(self.ref_channels)
 
-        for (t, p), grp in sorted(groups.items()):
+        # Resolve negative indices for stim_frames and ref_frames
+        max_t = max((t for (t, _p) in groups), default=0)
+        n_timepoints = max_t + 1
+        stim_set = _resolve_frame_set(self.stim_frames, n_timepoints)
+        ref_set = _resolve_frame_set(self.ref_frames, n_timepoints)
+
+        for (t, p), grp in groups.items():
             stim = stim_tuple if stim_tuple and t in stim_set else ()
-            optocheck = optocheck_tuple if optocheck_tuple and t in optocheck_set else ()
+            ref = ref_tuple if ref_tuple and t in ref_set else ()
             yield RTMEvent(
                 index={"t": t, "p": p},
                 channels=tuple(grp["channels"]),
                 stim_channels=stim,
-                optocheck_channels=optocheck,
+                ref_channels=ref,
                 x_pos=grp["x_pos"],
                 y_pos=grp["y_pos"],
                 z_pos=grp["z_pos"],

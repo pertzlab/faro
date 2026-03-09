@@ -137,7 +137,7 @@ class Analyzer:
 
             try:
                 # PRIORITY 1: Always store the image
-                img_raw = self._do_store(img, metadata, folder)
+                self._do_store(img, metadata, folder)
                 self.stored_images += 1
 
                 if self.debug:
@@ -147,15 +147,9 @@ class Analyzer:
 
                 if metadata.get("stim", False):
                     if isinstance(self.pipeline.stimulator, StimWithImage):
-                        img_type = metadata["img_type"]
-                        if img_type == ImgType.IMG_RAW:
-                            # stim mask does not require to use segmented cell labels.
+                        if metadata["img_type"] == ImgType.IMG_RAW:
                             self._put_stim_mask_if_no_labels(
                                 metadata=metadata, img=img
-                            )
-                        elif img_type == ImgType.IMG_OPTOCHECK:
-                            self._put_stim_mask_if_no_labels(
-                                metadata=metadata, img=img_raw
                             )
 
                 # PRIORITY 2: Pipeline only if resources available
@@ -170,32 +164,19 @@ class Analyzer:
             finally:
                 self._storage_queue.task_done()
 
-    def _optocheck_to_raw_img(self, img: np.array, metadata: dict):
-        len_raw_img = len(metadata["channels"])
-        return img[0:len_raw_img]
-
-    def _do_store(self, img: np.array, metadata: dict, folder: str) -> np.ndarray | None:
-        """Actually store image to disk (guaranteed, never skipped).
-
-        Returns the raw sub-image for IMG_OPTOCHECK (to avoid recomputing), else None.
-        """
+    def _do_store(self, img: np.array, metadata: dict, folder: str) -> None:
+        """Store image to disk (guaranteed, never skipped)."""
         img_type = metadata["img_type"]
 
         if img_type == ImgType.IMG_RAW:
             store_img(img, metadata, self.pipeline.storage_path, "raw")
-            return None
 
         elif img_type == ImgType.IMG_STIM:
             store_img(img, metadata, self.pipeline.storage_path, "stim")
-            return None
 
-        elif img_type == ImgType.IMG_OPTOCHECK:
-            img_raw = self._optocheck_to_raw_img(img, metadata=metadata)
-
-            store_img(img_raw, metadata, self.pipeline.storage_path, "raw")
-            os.makedirs(os.path.join(self.pipeline.storage_path, "optocheck"), exist_ok=True)
-            store_img(img, metadata, self.pipeline.storage_path, "optocheck")
-            return img_raw
+        elif img_type == ImgType.IMG_REF:
+            os.makedirs(os.path.join(self.pipeline.storage_path, "ref"), exist_ok=True)
+            store_img(img, metadata, self.pipeline.storage_path, "ref")
 
     def _put_stim_mask_if_no_labels(
         self, metadata: dict, img: np.ndarray = None,
@@ -665,7 +646,7 @@ class Controller:
 
                 while self._queue.qsize() >= 3:
                     time.sleep(0.1)
-                self._n_channels = len(rtm_event.channels) + len(rtm_event.optocheck_channels)
+                self._n_channels = len(rtm_event.channels)
 
                 has_stim = len(rtm_event.stim_channels) > 0
                 fov_index = rtm_event.index.get("p", 0)
@@ -691,7 +672,7 @@ class Controller:
                                 ev = ev.model_copy(update={"slm_image": slm})
                                 self._put_event(ev)
 
-                    # 2. Queue imaging events (never blocks)
+                    # 2. Queue imaging + ref events
                     for ev in img_events:
                         self._put_event(ev)
 
@@ -700,7 +681,7 @@ class Controller:
 
                 else:
                     # --- "current" mode (default) ---
-                    # 1. Queue imaging events first
+                    # 1. Queue imaging + ref events first
                     for ev in img_events:
                         self._put_event(ev)
 
@@ -808,20 +789,17 @@ class ControllerSimulated(Controller):
             del self._frame_buffers[tp]
             fname = meta["fname"]
 
-            if img_type == ImgType.IMG_RAW:
-                img_loaded = tifffile.imread(
-                    os.path.join(self._project_path, "raw", fname + ".tiff")
-                )
-                self._analyzer.run(img_loaded, event)
-
-            elif img_type == ImgType.IMG_OPTOCHECK:
-                img_loaded = tifffile.imread(
-                    os.path.join(self._project_path, "optocheck", fname + ".tiff")
-                )
-                self._analyzer.run(img_loaded, event)
-
-            else:
+            # Load from the appropriate folder based on img_type
+            folder = {
+                ImgType.IMG_RAW: "raw",
+                ImgType.IMG_REF: "ref",
+            }.get(img_type)
+            if folder is None:
                 raise ValueError(f"Unknown image type: {img_type}")
+            img_loaded = tifffile.imread(
+                os.path.join(self._project_path, folder, fname + ".tiff")
+            )
+            self._analyzer.run(img_loaded, event)
 
             try:
                 print(

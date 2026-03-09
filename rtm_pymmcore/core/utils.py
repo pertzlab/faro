@@ -50,7 +50,7 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
             available.setdefault(config, []).append(group)
 
     # Collect unique channels across all events (compatible with MDAEvent too)
-    seen: dict[str, tuple] = {}  # config → (Channel, "imaging"|"stim"|"optocheck")
+    seen: dict[str, tuple] = {}  # config → (Channel, "imaging"|"stim")
     for event in events:
         for ch in getattr(event, "channels", ()):
             if ch.config not in seen:
@@ -58,9 +58,9 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
         for ch in getattr(event, "stim_channels", ()):
             if ch.config not in seen:
                 seen[ch.config] = (ch, "stim")
-        for ch in getattr(event, "optocheck_channels", ()):
+        for ch in getattr(event, "ref_channels", ()):
             if ch.config not in seen:
-                seen[ch.config] = (ch, "optocheck")
+                seen[ch.config] = (ch, "ref")
 
     # 1. Check config existence
     for name, (ch, label) in seen.items():
@@ -78,7 +78,7 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
             hi = mmc.getPropertyUpperLimit(camera, "Exposure")
             checked_exposures: set[tuple[str, int]] = set()
             for event in events:
-                for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "optocheck_channels", ())):
+                for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "ref_channels", ())):
                     if ch.exposure is None:
                         continue
                     key = (ch.config, ch.exposure)
@@ -104,7 +104,7 @@ def validate_hardware(events, mmc, *, power_properties=None) -> bool:
     _pprops = power_properties or {}
     checked_props: set[tuple] = set()
     for event in events:
-        for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "optocheck_channels", ())):
+        for ch in (*getattr(event, "channels", ()), *getattr(event, "stim_channels", ()), *getattr(event, "ref_channels", ())):
             power = getattr(ch, "power", None)
             if power is None:
                 continue
@@ -703,7 +703,7 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
     for e in events:
         channels = getattr(e, "channels", ())
         stim_channels = getattr(e, "stim_channels", ())
-        optocheck_channels = getattr(e, "optocheck_channels", ())
+        ref_channels = getattr(e, "ref_channels", ())
 
         # Fallback for plain MDAEvent: build from .channel + .exposure
         if not channels and getattr(e, "channel", None):
@@ -718,9 +718,9 @@ def events_to_dataframe(events: list) -> pd.DataFrame:
             "z_pos": e.z_pos,
             "channels": tuple(dataclasses.asdict(ch) for ch in channels),
             "stim_channels": tuple(dataclasses.asdict(ch) for ch in stim_channels),
+            "ref_channels": tuple(dataclasses.asdict(ch) for ch in ref_channels),
             "stim": len(stim_channels) > 0,
-            "optocheck_channels": tuple(dataclasses.asdict(ch) for ch in optocheck_channels),
-            "optocheck": len(optocheck_channels) > 0,
+            "ref": len(ref_channels) > 0,
             **e.metadata,
         }
         if stim_channels:

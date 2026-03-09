@@ -69,8 +69,9 @@ pipeline = ImageProcessingPipeline(
     storage_path="/path/to/experiment",
     segmentators=segmentators,  # list of SegmentationMethod
     feature_extractor=fe,
-    tracker=tracker,           
+    tracker=tracker,
     stimulator=stimulator,
+    feature_extractor_ref=ref_fe,  # optional: for reference acquisition frames
 )
 ```
 ## Controller
@@ -79,31 +80,104 @@ The Controller converts RTMEvents to MDAEvents, queues them through the microsco
 
 ### Experiment Definition
 
-Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence` with stimulation and optocheck support. Multiple phases can be concatenated with `+`:
+Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Multiple phases can be concatenated with `+`:
 
 ```python
 from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMSequence
-
-stim = PowerChannel("CyanStim", exposure=100, group="TTL_ERK", power=10)
 
 phase_1 = RTMSequence(
     time_plan={"interval": 60.0, "loops": 100},
     stage_positions=fov_positions,
     channels=[{"config": "miRFP", "exposure": 300}],
-    stim_channels=(stim,),
-    stim_frames=range(10, 100),
 )
 
 phase_2 = RTMSequence(
     time_plan={"interval": 60.0, "loops": 150},
     stage_positions=fov_positions,
     channels=[{"config": "miRFP", "exposure": 300}],
-    stim_channels=(stim,),
-    stim_frames=range(30, 120),
 )
 
 events = phase_1 + phase_2
 ```
+
+### Stimulation
+
+Stimulation channels are acquired on specific frames, controlled via DMD/SLM. Define them with `stim_channels` and `stim_frames`:
+
+```python
+seq = RTMSequence(
+    time_plan={"interval": 5.0, "loops": 50},
+    stage_positions=fov_positions,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    stim_channels=(PowerChannel(config="CyanStim", exposure=200, power=10),),
+    stim_frames=range(10, 50),
+)
+```
+
+**Stimulation modes** (set via `ctrl.run_experiment(events, stim_mode=...)`):
+* `"current"`: acquire frame, wait for segmentation mask, then stimulate in the same timepoint
+* `"previous"`: stimulate using the mask from the previous timepoint, then acquire
+
+### Reference Acquisition
+
+Reference channels are acquired on specific frames for one-time measurements whose features are broadcast to all timepoints — e.g., checking expression of an optogenetic tool, or a high-resolution image that would bleach the sample. Define them with `ref_channels` and `ref_frames`:
+
+```python
+seq = RTMSequence(
+    time_plan={"interval": 5.0, "loops": 50},
+    stage_positions=fov_positions,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    ref_channels=(Channel(config="mCitrine", exposure=600),),
+    ref_frames={-1},  # last frame only
+)
+```
+
+Alternatively, define the reference as a separate phase:
+
+```python
+experiment = RTMSequence(time_plan=..., channels=..., ...)
+ref_phase  = RTMSequence(
+    time_plan={"interval": 0, "loops": 1},
+    stage_positions=fov_positions,
+    channels=[{"config": "mCitrine", "exposure": 600}],
+    rtm_metadata={"img_type": ImgType.IMG_REF},
+)
+events = experiment + ref_phase
+```
+
+### Frame Specification
+
+Both `stim_frames` and `ref_frames` accept:
+* **Sets**: `{0, 5, 10}` — specific frames
+* **Ranges**: `range(10, 50)` or `range(0, 50, 2)` — contiguous or strided
+* **Negative indices**: `-1` = last frame, `-2` = second-to-last
+
+### Axis Order
+
+`axis_order` controls the nesting of time, position, and channel dimensions (inherited from useq's `MDASequence`). The default is `"tpcz"`:
+
+| `axis_order` | Iteration | Use case |
+|---|---|---|
+| `"tpcz"` (default) | All positions at t=0, then all at t=1, ... | Maximize temporal resolution per position |
+| `"ptcz"` | All timepoints at p=0, then all at p=1, ... | Complete one position before moving to the next |
+
+```python
+# Visit all 3 positions at each timepoint before advancing
+seq = RTMSequence(
+    time_plan={"interval": 5.0, "loops": 50},
+    stage_positions=[(0, 0, 0), (100, 100, 0), (200, 200, 0)],
+    channels=[{"config": "BF", "exposure": 50}],
+    axis_order="tpcz",  # default: (t=0,p=0), (t=0,p=1), (t=0,p=2), (t=1,p=0), ...
+)
+
+# Complete all timepoints at each position before moving on
+seq = RTMSequence(
+    ...,
+    axis_order="ptcz",  # (t=0,p=0), (t=1,p=0), ..., (t=49,p=0), (t=0,p=1), ...
+)
+```
+
+Stimulation and reference channels are assigned per-timepoint, so they work correctly regardless of axis order. For example, `stim_frames={3}` stimulates all positions at t=3, whether they are visited consecutively (`tpcz`) or spread across the run (`ptcz`).
 
 ### Running
 
@@ -115,10 +189,6 @@ ctrl.run_experiment(events, stim_mode="current")
 ```
 
 `validate_events()` runs automatically before the experiment starts (disable with `validate=False`). It checks both pipeline compatibility and hardware limits.
-
-**Stimulation modes:**
-* `"current"`: acquire frame, wait for segmentation mask, then stimulate in the same timepoint
-* `"previous"`: stimulate using the mask from the previous timepoint, then acquire
 
 ### Experiment Continuation
 

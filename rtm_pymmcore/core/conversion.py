@@ -43,7 +43,6 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
     fov_z       z_pos
     channels    channels (tuple of Channel dicts)
     stim=True   stim_channels built from stim_* cols
-    optocheck   optocheck_channels from column
     =========== ====================================
 
     Remaining columns are forwarded as ``metadata``.
@@ -59,7 +58,6 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
         "stim_channel_device_name", "stim_channel_power_property_name",
         "stim_power", "stim_exposure",
         "stim_timestep", "stim_exposure_list",
-        "optocheck", "optocheck_channels",
         "device_name", "property_name",
     }
 
@@ -87,13 +85,6 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
                 ),
             )
 
-        # --- optocheck channels ---
-        optocheck_channels: tuple[Channel, ...] = ()
-        if row.get("optocheck", False):
-            oc_raw = row.get("optocheck_channels", ())
-            if oc_raw is not None and len(oc_raw) > 0:
-                optocheck_channels = tuple(_dict_to_channel(d) for d in oc_raw)
-
         # --- metadata: everything not consumed above ---
         metadata = {
             k: v for k, v in row.items()
@@ -104,7 +95,6 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
             index={"t": timestep, "p": fov},
             channels=channels,
             stim_channels=stim_channels,
-            optocheck_channels=optocheck_channels,
             x_pos=row.get("fov_x"),
             y_pos=row.get("fov_y"),
             z_pos=row.get("fov_z"),

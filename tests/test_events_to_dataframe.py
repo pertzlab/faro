@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from useq import MDASequence
 
-from rtm_pymmcore.core.data_structures import Channel, RTMSequence
+from rtm_pymmcore.core.data_structures import Channel, ImgType, RTMSequence
 from rtm_pymmcore.core.utils import events_to_dataframe
 
 
@@ -51,31 +51,28 @@ class TestMDASequenceCompatibility:
         assert (df_rtm["timestep"] == df_mda["timestep"]).all()
 
 
-class TestOptocheckColumns:
-    """events_to_dataframe correctly reports optocheck status."""
+class TestRefPhaseInDataframe:
+    """Ref as a separate phase shows up correctly in events_to_dataframe."""
 
-    def test_no_optocheck_all_false(self):
-        events = list(RTMSequence(
+    def test_ref_phase_has_img_type_in_metadata(self):
+        phase1 = RTMSequence(
             time_plan={"interval": 1.0, "loops": 5},
             stage_positions=[(0.0, 0.0, 0.0)],
             channels=[{"config": "phase-contrast", "exposure": 50}],
-        ))
+        )
+        phase2 = RTMSequence(
+            time_plan={"interval": 0, "loops": 1},
+            stage_positions=[(0.0, 0.0, 0.0)],
+            channels=[{"config": "mCitrine", "exposure": 600}],
+            rtm_metadata={"img_type": ImgType.IMG_REF},
+        )
+        events = list(phase1 + phase2)
         df = events_to_dataframe(events)
 
-        assert "optocheck" in df.columns
-        assert not df["optocheck"].any()
-
-    def test_optocheck_at_specific_frames(self):
-        seq = RTMSequence(
-            time_plan={"interval": 1.0, "loops": 10},
-            stage_positions=[(0.0, 0.0, 0.0)],
-            channels=[{"config": "phase-contrast", "exposure": 50}],
-            optocheck_channels=(Channel(config="mCitrine", exposure=600),),
-            optocheck_frames={4, 9},
-        )
-        df = events_to_dataframe(list(seq))
-
-        assert df.loc[df["timestep"] == 4, "optocheck"].iloc[0] == True  # noqa: E712
-        assert df.loc[df["timestep"] == 9, "optocheck"].iloc[0] == True  # noqa: E712
-        assert df.loc[df["timestep"] == 0, "optocheck"].iloc[0] == False  # noqa: E712
-        assert df["optocheck"].sum() == 2
+        assert len(df) == 6  # 5 imaging + 1 ref
+        # Last row is ref
+        assert df.iloc[-1]["img_type"] == ImgType.IMG_REF
+        # First 5 rows: img_type is NaN (no img_type in their metadata)
+        import pandas as pd
+        for _, row in df.iloc[:5].iterrows():
+            assert pd.isna(row["img_type"])

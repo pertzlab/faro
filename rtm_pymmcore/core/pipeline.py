@@ -146,14 +146,14 @@ class ImageProcessingPipeline:
         feature_extractor: abstract_fe.FeatureExtractor = None,
         stimulator: base_stimulation.Stim = None,
         tracker: abstract_tracker.Tracker = None,
-        feature_extractor_optocheck: abstract_fe.FeatureExtractor = None,
+        feature_extractor_ref: abstract_fe.FeatureExtractor = None,
         only_save_every_n_frames: int = 1,
     ):
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
         self.stimulator = stimulator
         self.tracker = tracker
-        self.feature_extractor_optocheck = feature_extractor_optocheck
+        self.feature_extractor_ref = feature_extractor_ref
         self.storage_path = storage_path
         folders = ["raw", "tracks"]
         self.only_save_every_n_frames = only_save_every_n_frames
@@ -167,10 +167,10 @@ class ImageProcessingPipeline:
         if self.segmentators is not None:
             for seg in self.segmentators:
                 folders.append(seg.name)
-        if feature_extractor_optocheck is not None:
-            folders.append("optocheck")
-            if hasattr(feature_extractor_optocheck, "extra_folders"):
-                folders.extend(feature_extractor_optocheck.extra_folders)
+        if feature_extractor_ref is not None:
+            folders.append("ref")
+            if hasattr(feature_extractor_ref, "extra_folders"):
+                folders.extend(feature_extractor_ref.extra_folders)
         create_folders(self.storage_path, folders)
         self._analyzer = None  # set by Analyzer.__init__
         self._queue_timeout: float = 20  # seconds; override in tests
@@ -350,12 +350,6 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
-        if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
-            n_optocheck_channels = len(metadata["optocheck_channels"])
-            n_channels = len(metadata["channels"])
-            img_optocheck = img[n_channels:]
-            img = img[:n_channels]
-
         shape_img = (img.shape[-2], img.shape[-1])
         metadata["img_shape"] = shape_img
 
@@ -408,20 +402,20 @@ class ImageProcessingPipeline:
             if isinstance(self.stimulator, StimWithPipeline):
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
-        if metadata["img_type"] == ImgType.IMG_OPTOCHECK:
+        if metadata.get("img_type") == ImgType.IMG_REF:
             if (
-                self.feature_extractor_optocheck is not None
+                self.feature_extractor_ref is not None
                 and self.tracker is not None
             ):
-                df_tracked = self.feature_extractor_optocheck.extract_features(
+                df_tracked = self.feature_extractor_ref.extract_features(
                     segmentation_results,
-                    img_optocheck,
+                    img,
                     df_tracked,
                     metadata,
                 )
 
         # --- Unblock the next frame ---
-        # df_tracked is fully populated (features, stim, optocheck).
+        # df_tracked is fully populated (features, stim, ref).
         # Parquet + TIFF saves below use their own data and unique filenames,
         # so they're safe to run concurrently with the next frame.
         fov_obj.tracks_queue.put(df_tracked)

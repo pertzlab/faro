@@ -164,8 +164,8 @@ All experiment notebooks moved from the repository root into `experiments/<name>
 | `rtm_pymmcore.tracking.abstract_tracker` | `rtm_pymmcore.tracking.base` |
 | `rtm_pymmcore.feature_extraction.abstract_fe` | `rtm_pymmcore.feature_extraction.base` |
 | `rtm_pymmcore.feature_extraction.simple_fe` | `rtm_pymmcore.feature_extraction.simple` |
-| `rtm_pymmcore.feature_extraction.optocheck_fe` | `rtm_pymmcore.feature_extraction.optocheck` |
-| `rtm_pymmcore.feature_extraction.abstract_fe_optocheck` | `rtm_pymmcore.feature_extraction.base_optocheck` |
+| `rtm_pymmcore.feature_extraction.optocheck_fe` | `rtm_pymmcore.feature_extraction.ref` (or `optocheck` compat shim) |
+| `rtm_pymmcore.feature_extraction.abstract_fe_optocheck` | `rtm_pymmcore.feature_extraction.base_ref` (or `base_optocheck` compat shim) |
 
 ### Deleted classes / functions
 
@@ -181,10 +181,83 @@ All experiment notebooks moved from the repository root into `experiments/<name>
 |---|---|
 | `utils.generate_fov_objects(mic, ...)` | `utils.generate_fov_positions(mic, ...)` |
 | `utils.generate_fov_objects_from_list(mic, data)` | `utils.generate_fov_positions_from_list(mic, data)` |
+| `feature_extraction.optocheck.OptoCheckFE` | `feature_extraction.ref.RefFE` |
+| `feature_extraction.base_optocheck.FeatureExtractorOptoCheck` | `feature_extraction.base_ref.FeatureExtractorRef` |
 
 ---
 
-## 4. Per-notebook migration status
+## 4. Optocheck → Reference acquisition rename
+
+"Optocheck" (checking optogenetic tool expression) has been generalized to **"ref"** (reference acquisition). This covers any one-time acquisition whose features are broadcast to all timepoints — e.g., high-resolution images, expression checks, or acquisitions that bleach the sample.
+
+### What changed
+
+| Old name | New name |
+|---|---|
+| `ImgType.IMG_OPTOCHECK` | `ImgType.IMG_REF` |
+| `feature_extractor_optocheck` (pipeline param) | `feature_extractor_ref` |
+| `FeatureExtractorOptoCheck` (base class) | `FeatureExtractorRef` |
+| `OptoCheckFE` (concrete class) | `RefFE` |
+| `optocheck_mean_intensity` (DataFrame column) | `ref_mean_intensity` |
+| `optocheck/` (storage folder) | `ref/` |
+| `optocheck.py`, `base_optocheck.py` (files) | `ref.py`, `base_ref.py` (old files kept as compat shims) |
+
+### New: ref_channels and ref_frames on RTMSequence
+
+Reference acquisitions can now be defined inline on `RTMSequence`, just like stimulation:
+
+```python
+seq = RTMSequence(
+    time_plan={"interval": 5, "loops": 50},
+    stage_positions=positions,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    ref_channels=(Channel(config="mCitrine", exposure=600),),
+    ref_frames={-1},  # last frame only
+)
+```
+
+Both `stim_frames` and `ref_frames` now support **negative indexing** (`-1` = last frame, `-2` = second-to-last) and `range()` objects (`range(0, 50, 2)` = every other frame).
+
+Alternatively, use phase concatenation for multi-phase experiments:
+
+```python
+experiment = RTMSequence(...)
+ref_phase = RTMSequence(
+    time_plan={"interval": 0, "loops": 1},
+    stage_positions=positions,
+    channels=[{"config": "mCitrine", "exposure": 600}],
+    rtm_metadata={"img_type": ImgType.IMG_REF},
+)
+events = experiment + ref_phase
+```
+
+### Updating your code
+
+**Pipeline:**
+```python
+# Old
+pipeline = ImageProcessingPipeline(..., feature_extractor_optocheck=OptoCheckFE("labels"))
+
+# New
+pipeline = ImageProcessingPipeline(..., feature_extractor_ref=RefFE("labels"))
+```
+
+**Custom feature extractors:**
+```python
+# Old
+from rtm_pymmcore.feature_extraction.base_optocheck import FeatureExtractorOptoCheck
+class MyFE(FeatureExtractorOptoCheck): ...
+
+# New
+from rtm_pymmcore.feature_extraction.base_ref import FeatureExtractorRef
+class MyFE(FeatureExtractorRef): ...
+```
+
+The old import paths (`base_optocheck`, `optocheck`) still work as backwards-compat shims.
+
+---
+
+## 5. Per-notebook migration status
 
 ### Fully updated (no action needed)
 
@@ -214,7 +287,7 @@ All experiment notebooks moved from the repository root into `experiments/<name>
 
 ---
 
-## 5. Technical changes (internal)
+## 6. Technical changes (internal)
 
 These changes don't affect experiment scripts but are relevant for contributors:
 
@@ -225,4 +298,4 @@ These changes don't affect experiment scripts but are relevant for contributors:
 - **AbstractMicroscope defines MDA interface**: `run_mda()`, `connect_frame()`, `disconnect_frame()`, `cancel_mda()` — testable without pymmcore.
 - **New intermediate class `PyMMCoreMicroscope`**: Bridges AbstractMicroscope → pymmcore-plus. Lab microscopes (Jungfrau, Niesen, Moench) inherit from this.
 - **Validation system**: `pipeline.validate_events(events)` checks method signatures and required metadata. `mic.validate_hardware(events)` checks hardware capabilities.
-- **Test suite**: 112 integration tests covering pipeline, tracking, stimulation, crash resilience, burst dispatch, and experiment continuation.
+- **Test suite**: 152 tests covering pipeline, tracking, stimulation, event ordering, reference acquisition, negative indexing, crash resilience, burst dispatch, and experiment continuation.
