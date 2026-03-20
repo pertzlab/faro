@@ -7,7 +7,7 @@ import enum
 from typing import Any, Iterator
 import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, model_validator
 from rtm_pymmcore.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
@@ -295,11 +295,25 @@ class RTMSequence(MDASequence):
 
     stim_channels: tuple[Channel, ...] = ()
     stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
+    stim_exposure: None | float | int | tuple[float | int, ...] | list[float | int] = None
     ref_channels: tuple[Channel, ...] = ()
     ref_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {**MDASequence.model_config, "arbitrary_types_allowed": True}
+
+    @model_validator(mode="after")
+    def _validate_stim_exposure(self) -> RTMSequence:
+        exp = self.stim_exposure
+        if exp is None or isinstance(exp, (int, float)):
+            return self
+        # sequence type — length must match stim_frames
+        if len(exp) != len(self.stim_frames):
+            raise ValueError(
+                f"stim_exposure length ({len(exp)}) must match "
+                f"stim_frames length ({len(self.stim_frames)})"
+            )
+        return self
 
     def __iter__(self) -> Iterator[RTMEvent]:
         """Yield RTMEvents (overrides MDASequence.__iter__)."""
@@ -345,8 +359,30 @@ class RTMSequence(MDASequence):
         stim_set = _resolve_frame_set(self.stim_frames, n_timepoints)
         ref_set = _resolve_frame_set(self.ref_frames, n_timepoints)
 
+        # Build per-frame stim exposure mapping
+        stim_exposure_map: dict[int, float | int] | None = None
+        if self.stim_exposure is not None and not isinstance(self.stim_exposure, (int, float)):
+            # Map each stim frame to its corresponding exposure
+            sorted_stim_frames = sorted(stim_set)
+            stim_exposure_map = dict(zip(sorted_stim_frames, self.stim_exposure))
+
         for (t, p), grp in groups.items():
-            stim = stim_tuple if stim_tuple and t in stim_set else ()
+            if stim_tuple and t in stim_set:
+                if self.stim_exposure is None:
+                    stim = stim_tuple
+                elif isinstance(self.stim_exposure, (int, float)):
+                    stim = tuple(
+                        Channel(config=ch.config, exposure=self.stim_exposure, group=ch.group)
+                        for ch in stim_tuple
+                    )
+                else:
+                    exp = stim_exposure_map[t]
+                    stim = tuple(
+                        Channel(config=ch.config, exposure=exp, group=ch.group)
+                        for ch in stim_tuple
+                    )
+            else:
+                stim = ()
             ref = ref_tuple if ref_tuple and t in ref_set else ()
             yield RTMEvent(
                 index={"t": t, "p": p},
