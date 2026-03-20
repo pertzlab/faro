@@ -24,7 +24,7 @@ class SegmentatorImagingServerKit(Segmentator):
         self.client = sk.Client(server)
         self.min_size = min_size
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
         """
         Run the an imagekit model on data and do post-processing (remove small cells)
         """
@@ -32,10 +32,10 @@ class SegmentatorImagingServerKit(Segmentator):
         for attempt in range(0, max_attempts):
             try:
                 if self.model_param is None:
-                    labels = self.client.run(img, algorithm=self.algorithm)[0].data
+                    labels = self.client.run(image, algorithm=self.algorithm)[0].data
                 else:
                     labels = self.client.run(
-                        img, algorithm=self.algorithm, **self.model_param
+                        image, algorithm=self.algorithm, **self.model_param
                     )[0].data
             except Exception as e:
                 print("Failed attempt ", attempt)

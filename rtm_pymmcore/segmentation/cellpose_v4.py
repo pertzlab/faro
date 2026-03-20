@@ -25,10 +25,10 @@ class CellposeV4(Segmentator):
                 pretrained_model=custom_model_path, gpu=True
             )
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
 
         masks, flows, styles = self.model.eval(
-            img,
+            image,
             flow_threshold=self.flow_threshold,
             cellprob_threshold=self.cellprob_threshold,
         )

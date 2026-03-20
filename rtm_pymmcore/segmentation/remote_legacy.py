@@ -26,11 +26,11 @@ class SegmentatorImagingServerKitLegacy(Segmentator):
         self.client = imaging_server_kit.Client(server)
         self.min_size = min_size
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
         """
         Run the an imagekit model on data and do post-processing (remove small cells)
         """
-        params = {"image": img}
+        params = {"image": image}
         if self.model_param is not None:
             params.update(self.model_param)
 

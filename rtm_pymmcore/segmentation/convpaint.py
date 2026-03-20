@@ -25,13 +25,13 @@ class SegmentatorConvpaint(Segmentator):
         self.min_cell_size = min_cell_size
         self.fill_holes_smaller_than = fill_holes_smaller_than
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
         """
         Run the stardist model on data and do post-processing (remove small cells)
         """
 
-        mean, std = conv_paint_utils.compute_image_stats(img)
-        img_normed = conv_paint_utils.normalize_image(img, mean, std)
+        mean, std = conv_paint_utils.compute_image_stats(image)
+        img_normed = conv_paint_utils.normalize_image(image, mean, std)
         labels = self.model.predict_image(
             img_normed, self.random_forest, self.model_param
         )
