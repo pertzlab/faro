@@ -18,7 +18,9 @@ dependencies = [
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
+    "pymmcore-widgets",
     "ome-writers",
+    "napari-ome-zarr",
     "zarr>=3",
 ]
 
@@ -55,16 +57,20 @@ virtual-microscope = [
     "imageio[ffmpeg]"
 ]
 
+api74 = [
+    "pymmcore==11.10.0.74.1"
+]
 
 
 [[tool.uv.index]]
-name = "pytorch-cu129"
-url = "https://download.pytorch.org/whl/cu129"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu129" }
+torch = { index = "pytorch-cu130" }
 virtual-microscope = { git = "https://github.com/hinderling/virtual-microscope.git" }
+pymmcore-widgets = {git = "https://github.com/pymmcore-plus/pymmcore-widgets.git" }
 
 [build-system]
 requires = ["hatchling"]
