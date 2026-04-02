@@ -1,5 +1,7 @@
 # Offline reprocessing pipeline for post-experiment image processing.
 
+from __future__ import annotations
+
 import os
 from typing import List
 
@@ -31,7 +33,7 @@ class ImageProcessingPipeline_postExperiment:
         self,
         img_storage_path: str,
         out_path: str,
-        df_acquire: pd.DataFrame,
+        df_acquire: pd.DataFrame | None = None,
         segmentators: List[SegmentationMethod] = None,
         feature_extractor: abstract_fe.FeatureExtractor = None,
         stimulator: base_stimulation.Stim = None,
@@ -41,7 +43,15 @@ class ImageProcessingPipeline_postExperiment:
         use_old_stim_masks: bool = False,
         n_jobs: int = 2,
         correct_timestep_jumps: bool = False,
+        events: list | None = None,
     ):
+        if events is not None:
+            from rtm_pymmcore.core.conversion import events_to_df
+
+            df_acquire = events_to_df(events)
+        elif df_acquire is None:
+            raise ValueError("Either 'events' or 'df_acquire' must be provided.")
+
         self.segmentators = segmentators
         self.feature_extractor = feature_extractor
         self.stimulator = stimulator
@@ -54,6 +64,20 @@ class ImageProcessingPipeline_postExperiment:
         self.n_jobs = n_jobs
         self.correct_timestep_jumps = correct_timestep_jumps
         self.use_old_stim_masks = use_old_stim_masks
+
+        # Detect OME-Zarr input
+        zarr_path = os.path.join(img_storage_path, "acquisition.ome.zarr")
+        self._use_zarr = os.path.isdir(zarr_path)
+        if self._use_zarr:
+            import zarr
+
+            self._zarr_store = zarr.open(zarr_path, mode="r")
+            self._zarr_raw = self._zarr_store["0"]
+            ome = self._zarr_store.attrs.get("ome", {})
+            axes = ome.get("multiscales", [{}])[0].get("axes", [])
+            self._zarr_axes = [a["name"] for a in axes]
+        else:
+            self._zarr_store = None
 
         folders = ["raw", "tracks"]
         self.folders_to_move = folders.copy()
@@ -78,6 +102,42 @@ class ImageProcessingPipeline_postExperiment:
             if hasattr(feature_extractor_ref, "extra_folders"):
                 folders.extend(feature_extractor_ref.extra_folders)
         create_folders(self.storage_path, folders)
+
+    # ------------------------------------------------------------------
+    # OME-Zarr reading helpers
+    # ------------------------------------------------------------------
+
+    def _read_zarr_raw(self, timestep: int, fov: int) -> np.ndarray:
+        """Read a raw frame from the zarr store, returning (c, y, x) array."""
+        axes = self._zarr_axes
+        has_p = "p" in axes
+        has_c = "c" in axes
+        arr = self._zarr_raw
+
+        if has_p and has_c:
+            img = np.asarray(arr[timestep, fov])  # (c, y, x)
+        elif has_p:
+            img = np.asarray(arr[timestep, fov])[np.newaxis]  # (1, y, x)
+        elif has_c:
+            img = np.asarray(arr[timestep])  # (c, y, x)
+        else:
+            img = np.asarray(arr[timestep])[np.newaxis]  # (1, y, x)
+        return img
+
+    def _read_zarr_label(
+        self, label_name: str, timestep: int, fov: int
+    ) -> np.ndarray | None:
+        """Read a label frame from the zarr store, returning (y, x) array."""
+        store = self._zarr_store
+        lbl_path = f"labels/{label_name}/0"
+        try:
+            lbl_arr = store[lbl_path]
+        except KeyError:
+            return None
+        has_p = "p" in self._zarr_axes
+        if has_p:
+            return np.asarray(lbl_arr[timestep, fov])
+        return np.asarray(lbl_arr[timestep])
 
     def run(self):
         unique_fovs = self.df_acquire["fov"].unique()
@@ -171,9 +231,13 @@ class ImageProcessingPipeline_postExperiment:
                     df = df.sort_values(by="timestep").reset_index(drop=True)
 
         for index, row in df.iterrows():
-            img = tifffile.imread(
-                os.path.join(self.img_storage_path, "raw", row["fname"] + ".tiff")
-            )
+            t = int(row["timestep"])
+            if self._use_zarr:
+                img = self._read_zarr_raw(t, int(fov_id))
+            else:
+                img = tifffile.imread(
+                    os.path.join(self.img_storage_path, "raw", row["fname"] + ".tiff")
+                )
             metadata = row.to_dict()
             metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
             shape_img = (img.shape[-2], img.shape[-1])
@@ -183,11 +247,24 @@ class ImageProcessingPipeline_postExperiment:
             segmentation_results = {}
             if self.use_old_segmentations:
                 for seg in self.segmentators:
-                    segmentation_results[seg.name] = tifffile.imread(
-                        os.path.join(
-                            self.img_storage_path, seg.name, row["fname"] + ".tiff"
+                    if self._use_zarr:
+                        lbl = self._read_zarr_label(seg.name, t, int(fov_id))
+                        if lbl is not None:
+                            segmentation_results[seg.name] = lbl
+                        else:
+                            segmentation_results[seg.name] = tifffile.imread(
+                                os.path.join(
+                                    self.img_storage_path,
+                                    seg.name,
+                                    row["fname"] + ".tiff",
+                                )
+                            )
+                    else:
+                        segmentation_results[seg.name] = tifffile.imread(
+                            os.path.join(
+                                self.img_storage_path, seg.name, row["fname"] + ".tiff"
+                            )
                         )
-                    )
             else:
                 for seg in self.segmentators:
                     segmentation_results[seg.name] = seg.segmentation_class.segment(
@@ -195,7 +272,9 @@ class ImageProcessingPipeline_postExperiment:
                     )
 
             # 1. Extract positions (label, x, y) for tracking
-            df_new = build_frame_dataframe(self.feature_extractor, segmentation_results, metadata)
+            df_new = build_frame_dataframe(
+                self.feature_extractor, segmentation_results, metadata
+            )
 
             # 2. Track
             df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
@@ -207,19 +286,28 @@ class ImageProcessingPipeline_postExperiment:
             df_old = df_tracked
             fov_obj.fov_timestep_counter += 1
 
-            if (
-                self.feature_extractor_ref is not None
-                and self.tracker is not None
-            ):
-                if metadata.get("img_type") == ImgType.IMG_REF or metadata.get("ref", False):
+            if self.feature_extractor_ref is not None and self.tracker is not None:
+                if metadata.get("img_type") == ImgType.IMG_REF or metadata.get(
+                    "ref", False
+                ):
                     print(
                         f'Adding ref features for timestep {metadata["timestep"]}, fov {fov_id}'
                     )
-                    img_ref = tifffile.imread(
-                        os.path.join(
+                    if self._use_zarr:
+                        # Ref images fall back to TIFF even with zarr writer
+                        ref_tiff = os.path.join(
                             self.img_storage_path, "ref", row["fname"] + ".tiff"
                         )
-                    )
+                        if os.path.exists(ref_tiff):
+                            img_ref = tifffile.imread(ref_tiff)
+                        else:
+                            continue
+                    else:
+                        img_ref = tifffile.imread(
+                            os.path.join(
+                                self.img_storage_path, "ref", row["fname"] + ".tiff"
+                            )
+                        )
                     df_tracked = self.feature_extractor_ref.extract_features(
                         segmentation_results,
                         img_ref,
@@ -235,7 +323,10 @@ class ImageProcessingPipeline_postExperiment:
             if not self.use_old_stim_masks and self.stimulator is not None:
                 if metadata.get("stim", False):
                     stim_mask = dispatch_stim_mask(
-                        self.stimulator, segmentation_results, metadata, img=img,
+                        self.stimulator,
+                        segmentation_results,
+                        metadata,
+                        img=img,
                     )
                     store_img(stim_mask, metadata, self.storage_path, "stim_mask")
                 else:
@@ -247,21 +338,26 @@ class ImageProcessingPipeline_postExperiment:
                     )
 
             save_segmentation_results(
-                segmentation_results, self.segmentators, self.tracker,
-                df_tracked, metadata, self.storage_path,
+                segmentation_results,
+                self.segmentators,
+                self.tracker,
+                df_tracked,
+                metadata,
+                self.storage_path,
                 save_labels=not self.use_old_segmentations,
             )
 
-            for folder in self.folders_to_move:
-                src_path = os.path.join(
-                    self.img_storage_path, folder, row["fname"] + ".tiff"
-                )
-                dst_path = os.path.join(
-                    self.storage_path, folder, row["fname"] + ".tiff"
-                )
-                if os.path.exists(src_path):
-                    if not os.path.exists(dst_path):
-                        os.link(src_path, dst_path)
+            if not self._use_zarr:
+                for folder in self.folders_to_move:
+                    src_path = os.path.join(
+                        self.img_storage_path, folder, row["fname"] + ".tiff"
+                    )
+                    dst_path = os.path.join(
+                        self.storage_path, folder, row["fname"] + ".tiff"
+                    )
+                    if os.path.exists(src_path):
+                        if not os.path.exists(dst_path):
+                            os.link(src_path, dst_path)
 
         df_tracked = convert_track_dtypes(df_tracked)
 
