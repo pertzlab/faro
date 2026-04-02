@@ -24,6 +24,10 @@ dependencies = [
 
 [project.optional-dependencies]
 
+test = [
+    "pytest",
+]
+
 stardist = [
     "stardist",
     "tensorflow",
@@ -53,7 +57,13 @@ virtual-microscope = [
 
 
 
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
 [tool.uv.sources]
+torch = { index = "pytorch-cu129" }
 virtual-microscope = { git = "https://github.com/hinderling/virtual-microscope.git" }
 
 [build-system]
