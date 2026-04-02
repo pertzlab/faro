@@ -376,6 +376,16 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
+        # Split ref channels off the combined image so that segmentation and
+        # regular feature extraction only see imaging channels.
+        img_ref = None
+        if metadata.get("img_type") == ImgType.IMG_REF:
+            n_ref_channels = len(metadata.get("ref_channels", ()))
+            n_channels = len(metadata.get("channels", ()))
+            if n_ref_channels > 0 and img.shape[0] > n_channels:
+                img_ref = img[n_channels:]
+                img = img[:n_channels]
+
         shape_img = (img.shape[-2], img.shape[-1])
         metadata["img_shape"] = shape_img
 
@@ -439,7 +449,7 @@ class ImageProcessingPipeline:
             if self.feature_extractor_ref is not None and self.tracker is not None:
                 df_tracked = self.feature_extractor_ref.extract_features(
                     segmentation_results,
-                    img,
+                    img_ref if img_ref is not None else img,
                     df_tracked,
                     metadata,
                 )
