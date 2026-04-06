@@ -680,7 +680,9 @@ class Controller:
         # extend_experiment) still need to be drained.
         self._event_queue = Queue()
         self._pending_sentinels = 0
-        events = sorted(events, key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
+        events = sorted(
+            events, key=lambda e: (e.min_start_time or 0, e.index.get("p", 0))
+        )
         for ev in events:
             self._event_queue.put(ev)
         self._event_queue.put(None)  # sentinel for this initial batch
@@ -858,13 +860,50 @@ class Controller:
 
 
 class ControllerSimulated(Controller):
-    """Controller that loads images from disk instead of from the camera."""
+    """Controller that loads images from disk instead of from the camera.
+
+    Supports both TIFF (``raw/``, ``ref/`` folders) and OME-Zarr
+    (``acquisition.ome.zarr``) source layouts.  If an ``acquisition.ome.zarr``
+    directory is found inside *old_data_project_path*, raw frames are read
+    from the zarr store; reference images still fall back to TIFFs in
+    ``ref/``.
+    """
 
     def __init__(
         self, mic, pipeline, old_data_project_path: str, *, writer: Writer | None = None
     ):
         super().__init__(mic, pipeline, writer=writer)
         self._project_path = old_data_project_path
+
+        # Detect OME-Zarr source
+        zarr_path = os.path.join(old_data_project_path, "acquisition.ome.zarr")
+        if os.path.isdir(zarr_path):
+            import zarr
+
+            self._zarr_store = zarr.open_group(zarr_path, mode="r")
+            self._zarr_raw = self._zarr_store["0"]
+            ome = self._zarr_store.attrs.get("ome", {})
+            axes = ome.get("multiscales", [{}])[0].get("axes", [])
+            self._zarr_axes = [a["name"] for a in axes]
+        else:
+            self._zarr_store = None
+
+    def _read_zarr_raw(self, timestep: int, fov: int) -> np.ndarray:
+        """Read a raw frame from the zarr store, returning (c, y, x)."""
+        axes = self._zarr_axes
+        has_p = "p" in axes
+        has_c = "c" in axes
+        arr = self._zarr_raw
+
+        if has_p and has_c:
+            img = np.asarray(arr[timestep, fov])
+        elif has_p:
+            img = np.asarray(arr[timestep, fov])[np.newaxis]
+        elif has_c:
+            img = np.asarray(arr[timestep])
+        else:
+            img = np.asarray(arr[timestep])[np.newaxis]
+        return img
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
         """Override to load images from disk for simulated controller."""
@@ -882,17 +921,22 @@ class ControllerSimulated(Controller):
         if len(buf) >= self._n_channels:
             del self._frame_buffers[tp]
             fname = meta["fname"]
+            t_idx = event.index.get("t", 0)
+            p_idx = event.index.get("p", 0)
 
-            # Load from the appropriate folder based on img_type
-            folder = {
-                ImgType.IMG_RAW: "raw",
-                ImgType.IMG_REF: "ref",
-            }.get(img_type)
-            if folder is None:
-                raise ValueError(f"Unknown image type: {img_type}")
-            img_loaded = tifffile.imread(
-                os.path.join(self._project_path, folder, fname + ".tiff")
-            )
+            if img_type == ImgType.IMG_RAW and self._zarr_store is not None:
+                img_loaded = self._read_zarr_raw(t_idx, p_idx)
+            else:
+                # TIFF fallback (raw/) or always for ref images
+                folder = {
+                    ImgType.IMG_RAW: "raw",
+                    ImgType.IMG_REF: "ref",
+                }.get(img_type)
+                if folder is None:
+                    raise ValueError(f"Unknown image type: {img_type}")
+                img_loaded = tifffile.imread(
+                    os.path.join(self._project_path, folder, fname + ".tiff")
+                )
             self._analyzer.run(img_loaded, event)
 
             try:

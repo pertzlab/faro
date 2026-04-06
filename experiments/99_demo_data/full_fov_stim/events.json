@@ -1,0 +1,196 @@
+[
+  {
+    "index": {
+      "t": 0,
+      "p": 0
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [],
+    "x_pos": -33565.8,
+    "y_pos": 30756.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 0.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  },
+  {
+    "index": {
+      "t": 0,
+      "p": 1
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [],
+    "x_pos": -32766.1,
+    "y_pos": 31158.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 0.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  },
+  {
+    "index": {
+      "t": 1,
+      "p": 0
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [],
+    "x_pos": -33565.8,
+    "y_pos": 30756.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 5.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  },
+  {
+    "index": {
+      "t": 1,
+      "p": 1
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [],
+    "x_pos": -32766.1,
+    "y_pos": 31158.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 5.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  },
+  {
+    "index": {
+      "t": 2,
+      "p": 0
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [
+      {
+        "config": "mCitrine",
+        "exposure": 600,
+        "group": "TTL_ERK",
+        "power": 99
+      }
+    ],
+    "x_pos": -33565.8,
+    "y_pos": 30756.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 10.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  },
+  {
+    "index": {
+      "t": 2,
+      "p": 1
+    },
+    "channels": [
+      {
+        "config": "miRFP",
+        "exposure": 100.0,
+        "group": null
+      },
+      {
+        "config": "mScarlet3",
+        "exposure": 100.0,
+        "group": null
+      }
+    ],
+    "stim_channels": [],
+    "ref_channels": [
+      {
+        "config": "mCitrine",
+        "exposure": 600,
+        "group": "TTL_ERK",
+        "power": 99
+      }
+    ],
+    "x_pos": -32766.1,
+    "y_pos": 31158.8,
+    "z_pos": 3678.73,
+    "pos_name": null,
+    "min_start_time": 10.0,
+    "metadata": {
+      "phase_name": "PostDrug",
+      "phase_id": 1,
+      "treatment_name": "Sustained Phase 2 post Drug"
+    }
+  }
+]

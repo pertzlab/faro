@@ -1,0 +1,97 @@
+{
+  "attributes": {
+    "ome": {
+      "version": "0.5",
+      "multiscales": [
+        {
+          "name": "stim_mask",
+          "axes": [
+            {
+              "name": "t",
+              "type": "time"
+            },
+            {
+              "name": "p",
+              "type": "other"
+            },
+            {
+              "name": "y",
+              "type": "space"
+            },
+            {
+              "name": "x",
+              "type": "space"
+            }
+          ],
+          "datasets": [
+            {
+              "path": "0",
+              "coordinateTransformations": [
+                {
+                  "type": "scale",
+                  "scale": [
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "image-label": {
+        "source": {
+          "image": "../../"
+        }
+      }
+    },
+    "multiscales": [
+      {
+        "name": "stim_mask",
+        "axes": [
+          {
+            "name": "t",
+            "type": "time"
+          },
+          {
+            "name": "p",
+            "type": "other"
+          },
+          {
+            "name": "y",
+            "type": "space"
+          },
+          {
+            "name": "x",
+            "type": "space"
+          }
+        ],
+        "datasets": [
+          {
+            "path": "0",
+            "coordinateTransformations": [
+              {
+                "type": "scale",
+                "scale": [
+                  1.0,
+                  1.0,
+                  1.0,
+                  1.0
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "image-label": {
+      "source": {
+        "image": "../../"
+      }
+    }
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}
