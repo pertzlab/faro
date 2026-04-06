@@ -3,8 +3,6 @@ import weakref
 
 from rtm_pymmcore.microscope.abstract_microscope import AbstractMicroscope
 from rtm_pymmcore.controller import Controller, Analyzer
-from rtm_pymmcore.dmd import DMD
-from useq._mda_event import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
 from typing import Optional
 from pymmcore_plus._logger import logger
@@ -22,65 +20,7 @@ from contextlib import suppress
 os.environ["PYMM_PARALLEL_INIT"] = "0"
 
 
-class KeepDMDAlive:
-    def __init__(self, mmc):
-        self.mmc = mmc
-        self.thread = None
-        self.last_wakeup = 0
-        self.is_running = False
-
-    def wakeup_dmd(self):
-        self.mmc.setSLMExposure(self.mmc.getSLMDevice(), 200000.0)
-        self.mmc.setSLMPixelsTo(self.mmc.getSLMDevice(), 255)
-        self.mmc.displaySLMImage(self.mmc.getSLMDevice())
-
-    def run(self):
-        # Set locale to C/POSIX to ensure period as decimal separator
-        try:
-            locale.setlocale(locale.LC_NUMERIC, "C")
-        except locale.Error:
-            # If 'C' is not available, try 'en_US.UTF-8' or 'en_US'
-            for loc in ["en_US.UTF-8", "en_US", "English_United States.1252"]:
-                try:
-                    locale.setlocale(locale.LC_NUMERIC, loc)
-                    break
-                except locale.Error:
-                    continue
-
-        self.is_running = True
-        self.last_wakeup = 0
-        self.thread = threading.Thread(target=self._run)
-        self.thread.start()
-
-    def _run(self):
-        while self.is_running:
-            current_time = time.time()
-            if current_time - self.last_wakeup > 60:  # Wake up every minute
-                self.wakeup_dmd()
-                self.last_wakeup = current_time
-            time.sleep(5)
-
-    def stop(self):
-        # Set locale to C/POSIX to ensure period as decimal separator
-        try:
-            locale.setlocale(locale.LC_NUMERIC, "C")
-        except locale.Error:
-            # If 'C' is not available, try 'en_US.UTF-8' or 'en_US'
-            for loc in ["en_US.UTF-8", "en_US", "English_United States.1252"]:
-                try:
-                    locale.setlocale(locale.LC_NUMERIC, loc)
-                    break
-                except locale.Error:
-                    continue
-
-        self.is_running = False
-        self.thread.join()
-        time.sleep(5)
-        self.mmc.setSLMExposure(self.mmc.getSLMDevice(), 100)
-        self.mmc.displaySLMImage(self.mmc.getSLMDevice())
-
-
-class Moench(AbstractMicroscope):
+class MoenchNoDMD(AbstractMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0_api75"
     MICROMANAGER_CONFIG = (
         "C:\\rtm-pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench.cfg"
@@ -102,17 +42,12 @@ class Moench(AbstractMicroscope):
     ROI_HEIGHT = 800
     SET_ROI_REQUIRED = True
 
-    def __init__(self, affine_calibration_matrix=None):
+    def __init__(self):
         super().__init__()
 
         pymmcore_plus.use_micromanager(self.MICROMANAGER_PATH)
         self.mmc = pymmcore_plus.CMMCorePlus(mm_path=self.MICROMANAGER_PATH)
-        self.slm_dev = None
-        self.slm_width = None
-        self.slm_height = None
 
-        self.affine_calibration_matrix = affine_calibration_matrix
-        self.wakeup_dmd = None
         self.init_scope()
 
     def init_scope(self):
@@ -124,47 +59,15 @@ class Moench(AbstractMicroscope):
         self.slm_dev = self.mmc.getSLMDevice()
         self.slm_width = self.mmc.getSLMWidth(self.slm_dev)
         self.slm_height = self.mmc.getSLMHeight(self.slm_dev)
-        self.dmd = DMD(
-            self.mmc,
-            self.DMD_CALIBRATION_PROFILE,
-            affine_matrix=self.affine_calibration_matrix,
-        )
-        self.wakeup_dmd = KeepDMDAlive(self.mmc)
-        self.wakeup_dmd.run()
 
         self.image_height = self.mmc.getImageHeight()
         self.image_width = self.mmc.getImageWidth()
-
-    def calibrate_dmd(
-        self,
-        verbose=False,
-        n_points=15,
-        radius=4,
-        exposure=25,
-        marker_style="x",
-        calibration_points_DMD=None,
-    ):
-        self.disable_log_output()
-
-        "Calibrate the DMD if it is not already calibrated." ""
-        if self.dmd is not None and self.dmd.affine is None:
-            self.wakeup_dmd.stop()
-            self.dmd.calibrate(
-                verbose=verbose,
-                n_points=n_points,
-                radius=radius,
-                exposure=exposure,
-                marker_style=marker_style,
-                calibration_points_DMD=calibration_points_DMD,
-            )
-            self.wakeup_dmd.run()
 
     def run_experiment(self, df_acquire):
         """Run the experiment."""
         self.mmc.setProperty("Core", "TimeoutMs", 4000)
         self.register_engine()
         self.disable_log_output()
-        self.wakeup_dmd.stop()
         time.sleep(2)
         self.analyzer = Analyzer(self.pipeline)
         self.controller = Controller(
@@ -172,8 +75,6 @@ class Moench(AbstractMicroscope):
             self.mmc,
             self.queue,
             use_autofocus_event=self.USE_AUTOFOCUS_EVENT,
-            dmd=self.dmd,
-            dmd_needs_to_be_waken=self.DMD_NEEDS_TO_BE_WAKEN,
         )
         self.controller.run(df_acquire)
 
@@ -183,7 +84,7 @@ class Moench(AbstractMicroscope):
 
     def post_experiment(self):
         """Post-process the experiment."""
-        self.wakeup_dmd.run()
+        pass
 
     def register_engine(self, force: bool = False) -> None:
         """Create and register the microscope-specific MDA engine.
@@ -326,7 +227,6 @@ class MoenchMDAEngine(MDAEngine):
             event_y = cur_y if event_y is None else event_y
 
         for attempt in range(0, max_retry_attempts):
-            print
             try:
                 core.setXYPosition(event_x, event_y)
                 return
@@ -424,7 +324,7 @@ class MoenchMDAEngine(MDAEngine):
         if event.keep_shutter_open:
             ...
 
-        max_retry_attempts = 10
+        max_retry_attempts = 5
 
         self._set_event_xy_position(event, max_retry_attempts=max_retry_attempts)
 
