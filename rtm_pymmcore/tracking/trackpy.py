@@ -22,6 +22,15 @@ class TrackerTrackpy(Tracker):
             fov_state: FovState instance holding linker and counter."""
 
         required_columns = ["x", "y", "label"]
+
+        # Empty frame (no detections): still need to advance the linker
+        if df_new.empty:
+            if fov_state.linker is not None:
+                fov_state.linker.next_level(
+                    np.empty((0, 2)), fov_state.fov_timestep_counter
+                )
+            return df_old
+
         missing_columns = [col for col in required_columns if col not in df_new.columns]
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
