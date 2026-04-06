@@ -257,37 +257,8 @@ The old import paths (`base_optocheck`, `optocheck`) still work as backwards-com
 
 ---
 
-## 5. Per-notebook migration status
 
-### Fully updated (no action needed)
-
-| Notebook | Description |
-|---|---|
-| `demo_sim_optogenetic/demo_sim_optogenetic.ipynb` | Reference notebook for the new API (RTMSequence, simulation) |
-| `erk_full_fov_stim/erk_full_fov_stim_updated.ipynb` | New-API version of ERK full-FOV stim (RTMSequence, PowerChannel) |
-| `data_analysis/data_analysis.ipynb` | Pure analysis, no acquisition code |
-| `demo/demo.ipynb` | Getting-started demo using df_to_events bridge |
-
-### Updated but need real-microscope verification
-
-| Notebook | What changed | Needs microscope testing? |
-|---|---|---|
-| `cell_migration/cell_migration.ipynb` | Updated to Controller + df_to_events. Uses legacy df workflow with `generate_fov_objects` (alias still works). | **Yes** — Moench + DMD + remote StarDist server |
-| `erk_full_fov_stim/erk_full_fov_stim.ipynb` | Updated to Controller + df_to_events. Uses legacy df workflow with `generate_fov_objects` (alias still works). | **Yes** — Jungfrau + remote StarDist server |
-| `reanalysis/reanalysis.ipynb` | Uses `ImageProcessingPipeline_postExperiment` from `pipeline_post`. Import path fixed. | No — offline reanalysis |
-
-### Need fixes before they can run
-
-| Notebook | Broken imports | Fix applied |
-|---|---|---|
-| `no_stim/no_stim.ipynb` | `Fov` class deleted (imported but unused) | Removed `Fov` from import |
-| `legacy_erk_ramp/legacy_erk_ramp.ipynb` | `Fov` class deleted (used to build df_acquire) | Replaced `Fov` usage with direct dict-based FOV construction |
-| `line_stimulation/line_stimulation.ipynb` | `rtm_pymmcore.stimulation.moving_line` renamed to `moving_line_20x` | Updated import to `moving_line_20x` |
-| `cell_migration_test/cell_migration_test.ipynb` | `Fov` class deleted (used to build df_acquire) | Replaced `Fov` usage with direct construction |
-
----
-
-## 6. Pluggable storage backends (Writer)
+## 5. Pluggable storage backends (Writer)
 
 Image storage is no longer hardcoded. The new `Writer` protocol lets you choose how acquired data is persisted. Three implementations are included:
 
@@ -428,7 +399,7 @@ class MyWriter:
 
 ---
 
-## 7. Technical changes (internal)
+## 6. Technical changes (internal)
 
 These changes don't affect experiment scripts but are relevant for contributors:
 

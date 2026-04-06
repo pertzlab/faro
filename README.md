@@ -7,19 +7,19 @@ rtm-pymmcore acquires images, segments cells, extracts features, tracks them ove
 ## Architecture
 
 ```
-Pipeline   ◀──▶  Controller   ◀──▶   Microscope
-────────         ──────────          ──────────
+Pipeline   <-->  Controller   <-->   Microscope
+--------         ----------          ----------
 - segment        - orchestrate       - stage
 - track            experiment        - camera
 - extract                            - DMD/SLM
   features                           - live cells
 - stim mask
 ```
-**Microscope**: hardware interface. Any microscope that speaks implements [useq-schema](https://github.com/pymmcore-plus/useq-schema) can be used. Works great with µManger / [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus).
+**Microscope**: hardware interface. Any microscope that implements [useq-schema](https://github.com/pymmcore-plus/useq-schema) can be used. Works great with Micro-Manager / [pymmcore-plus](https://github.com/pymmcore-plus/pymmcore-plus).
 
 **Pipeline**: modular image processing. Performs segmentation, tracking, feature extraction. Decides if/where to photoactivate the sample.
 
-**Controller**: experiment orchestrator. Queues acquisition events to the microscope, dispatches frames to the pipeline, and coordinates stimulation timing.
+**Controller**: experiment orchestrator. Queues acquisition events to the microscope, dispatches frames to the pipeline, and coordinates stimulation timing. A simulated controller (`ControllerSimulated`) can replay pre-acquired data from disk for testing or re-analysis.
 
 ## Quickstart
 
@@ -179,6 +179,24 @@ seq = RTMSequence(
 
 Stimulation and reference channels are assigned per-timepoint, so they work correctly regardless of axis order. For example, `stim_frames={3}` stimulates all positions at t=3, whether they are visited consecutively (`tpcz`) or spread across the run (`ptcz`).
 
+### FOV Batching
+
+When an experiment has more FOV positions than can be imaged within a single timepoint interval, FOV batching automatically partitions positions into sequential batches with adjusted timing.
+
+```python
+from rtm_pymmcore.core.utils import check_fov_batching, apply_fov_batching
+
+events = list(seq)
+
+# Check whether all FOVs fit in one batch
+check_fov_batching(events, time_per_fov=2.0)
+
+# If not, split into batches with adjusted timing
+events = apply_fov_batching(events, time_per_fov=2.0)
+```
+
+`check_fov_batching` computes how many FOVs fit in parallel (`interval / time_per_fov`) and reports whether batching is needed. `apply_fov_batching` offsets overflow FOVs into subsequent batches so that each batch runs within the interval. Timepoint indices are adjusted so the imaging order remains physically sensible.
+
 ### Running
 
 ```python
@@ -226,6 +244,54 @@ ctrl.extend_experiment(extra_events)                   # non-blocking, appends t
 | `continue_experiment()` | Subsequent phases — reuses Analyzer, offsets timesteps |
 | `extend_experiment()` | Mid-run additions — pushes events into the running loop |
 | `finish_experiment()` | Cleanup — shuts down Analyzer, resets state |
+
+## Simulated Controller
+
+`ControllerSimulated` loads pre-acquired images from disk instead of from the camera, enabling testing and re-analysis without hardware.
+
+It supports both **TIFF** (`raw/`, `ref/` folders) and **OME-Zarr** (`acquisition.ome.zarr`) source layouts. When an OME-Zarr store is found, raw frames are read from zarr; reference images fall back to TIFFs in `ref/`.
+
+```python
+from rtm_pymmcore.core.controller import ControllerSimulated
+
+ctrl = ControllerSimulated(mic, pipeline, old_data_project_path="/path/to/old_experiment")
+ctrl.run_experiment(events, stim_mode="current")
+```
+
+Use cases:
+- **Testing**: run the full pipeline on demo data without any microscope hardware
+- **Re-analysis**: replay raw images through a new pipeline (different segmentation, tracking, etc.)
+- **Validation**: verify analysis logic reproducibly on known data
+
+See **`experiments/11_erk_experiments_full_fov_stim/stim_rtmsequence_demo_mic.ipynb`** for a working example.
+
+## Re-analysis
+
+The offline re-analysis pipeline (`ImageProcessingPipeline_postExperiment`) reprocesses images from a previous experiment with new segmentation, tracking, or feature extraction parameters — without re-acquiring.
+
+```python
+from rtm_pymmcore.core.pipeline_post import ImageProcessingPipeline_postExperiment
+
+pipeline = ImageProcessingPipeline_postExperiment(
+    img_storage_path="/path/to/original_experiment",
+    out_path="/path/to/new_output",
+    events=events,
+    segmentators=[SegmentationMethod("labels", SegmentorCellpose(), use_channel=0)],
+    feature_extractor=FE_ErkKtr("labels"),
+    tracker=TrackerTrackpy(),
+    n_jobs=4,
+)
+pipeline.run()
+```
+
+Key features:
+- **Dual input format**: reads from both TIFF and OME-Zarr source experiments
+- **Reuse old segmentations**: set `use_old_segmentations=True` to skip re-segmenting and only recompute tracking/features
+- **Parallel FOV processing**: uses `n_jobs` threads to process multiple FOVs concurrently
+- **Hard-linking**: when outputting to OME-Zarr, raw data resolution levels are hard-linked instead of copied (falls back to copy on network shares)
+- **Timestep gap correction**: `correct_timestep_jumps=True` backfills missing timesteps
+
+See **`experiments/90_reanalysis/reanalysis.ipynb`** for a complete example.
 
 ## Storage
 
@@ -405,11 +471,11 @@ For microscopes with controllable light source power, define a `POWER_PROPERTIES
 
 ```python
 POWER_PROPERTIES = {
-    "CyanStim": ("Spectra", "Cyan_Level"),  # config_name → (device, property)
+    "CyanStim": ("Spectra", "Cyan_Level"),  # config_name -> (device, property)
 }
 ```
 
-## Adding Your Own µManager Microscope
+## Adding Your Own Micro-Manager Microscope
 
 Create a new file in `rtm_pymmcore/microscope/` and inherit from `PyMMCoreMicroscope`:
 
