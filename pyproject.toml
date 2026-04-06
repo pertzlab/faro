@@ -1,9 +1,9 @@
 [project]
 name = "rtm-pymmcore"
-version = "0.1.0"
+version = "1.0.0"
 description = "Real-time feedback control microscopy using pymmcore as interface "
 readme = "README.md"
-requires-python = ">=3.13, <3.14"
+requires-python = ">=3.12"
 dependencies = [
     "pandas",
     "numpy",
@@ -11,20 +11,24 @@ dependencies = [
     "ipykernel",
     "ipywidgets",
     "matplotlib",
-    "napari[all]",
+    "napari[Pyqt6]",
     "scikit-image",
     "tifffile",
-    "pymmcore-plus",
+    "pymmcore-plus>=0.17.3",
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
-    "imaging-server-kit",
+    "pymmcore-widgets",
+    "ome-writers",
+    "napari-ome-zarr",
+    "zarr>=3",
 ]
 
 [project.optional-dependencies]
-ome_zarr = [
-    "ome-zarr",
-    ]
+
+test = [
+    "pytest",
+]
 
 stardist = [
     "stardist",
@@ -38,19 +42,36 @@ cellpose = [
     ]
 
 convpaint = [
-    "napari-convpaint", 
+    "napari-convpaint",
     "scipy"
 ]
 
-
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cu128", extra = "cellpose" },
+remote-segmentation = [
+    "imaging-server-kit",
 ]
-napari-micromanager = { git = "https://github.com/pymmcore-plus/napari-micromanager" }
+
+
+virtual-microscope = [
+    "virtual-microscope",
+    "opencv-python",
+    "imageio[ffmpeg]"
+]
+
+api74 = [
+    "pymmcore==11.10.0.74.1"
+]
 
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }
+virtual-microscope = { git = "https://github.com/hinderling/virtual-microscope.git" }
+pymmcore-widgets = {git = "https://github.com/pymmcore-plus/pymmcore-widgets.git" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

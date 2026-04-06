@@ -1,5 +1,5 @@
 import numpy as np
-from rtm_pymmcore.segmentation.base_segmentation import Segmentator
+from rtm_pymmcore.segmentation.base import Segmentator
 import skimage
 import csbdeep
 from stardist.models import StarDist2D
@@ -45,11 +45,11 @@ class SegmentatorStardist(Segmentator):
         self.min_size = min_size  # minimal object size
         self.prob_thresh = prob_thresh
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
         """
         Run the stardist model on data and do post-processing (remove small cells)
         """
-        img_normed = csbdeep.utils.normalize(img, self.norm_min, self.norm_max)
+        img_normed = csbdeep.utils.normalize(image, self.norm_min, self.norm_max)
         if self.prob_thresh is None:
             labels, details = self.model.predict_instances(img_normed)
         else:

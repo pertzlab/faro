@@ -1,0 +1,21 @@
+{
+  "attributes": {
+    "ome": {
+      "labels": [
+        "stim_mask",
+        "labels_ring",
+        "particles",
+        "labels"
+      ],
+      "version": "0.5"
+    },
+    "labels": [
+      "stim_mask",
+      "labels_ring",
+      "particles",
+      "labels"
+    ]
+  },
+  "zarr_format": 3,
+  "node_type": "group"
+}

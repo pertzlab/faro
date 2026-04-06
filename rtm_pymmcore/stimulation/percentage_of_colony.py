@@ -1,17 +1,20 @@
 import os
-from .base_stimulation import Stim
+from .base import StimWithImage
 import numpy as np
 from napari_convpaint.conv_paint_model import ConvpaintModel
 from scipy import ndimage as ndi
+import skimage
 from skimage.morphology import disk
 import matplotlib.pyplot as plt
 
 
-class StimColonyPercentage(Stim):
+class StimColonyPercentage(StimWithImage):
     """
     Segment the colony using Convpaint and stimulate a left-to-right fraction
     of it based on percentage_stimulated.
     """
+
+    required_metadata = {"percentage_stimulated"}
 
     def __init__(
         self,
@@ -20,15 +23,14 @@ class StimColonyPercentage(Stim):
         channel_for_segmentation: int,
         percentage_stimulated: float = 0.5,  # 0..1 fraction by default
     ):
-        super().__init__()
         self.path_to_model = path_to_model
         self.model_name = model_name
         self.percentage_stimulated = float(percentage_stimulated)
         self.cpm = ConvpaintModel(model_path=os.path.join(path_to_model, model_name))
-        self.use_labels = False
         self.channel_for_segmentation = channel_for_segmentation
 
     def segment_and_cleanup(self, img) -> np.ndarray:
+        img = skimage.exposure.adjust_gamma(img, gamma=0.1)
         seg = self.cpm.segment(img)
         # 1) convert to binary mask
         if seg.dtype == bool:
@@ -60,7 +62,7 @@ class StimColonyPercentage(Stim):
 
         return spot_mask.astype(bool)
 
-    def get_stim_mask(self, label_images: dict, metadata: dict, img: np.array = None):
+    def get_stim_mask(self, metadata: dict, img: np.ndarray):
         img = img[self.channel_for_segmentation]
         mask = self.segment_and_cleanup(img)
         percentage_stimulated_metadata = metadata.get("percentage_stimulated", None)

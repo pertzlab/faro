@@ -1,5 +1,5 @@
 import numpy as np
-from rtm_pymmcore.segmentation.base_segmentation import Segmentator
+from rtm_pymmcore.segmentation.base import Segmentator
 import skimage
 from cellpose import models
 
@@ -32,11 +32,11 @@ class SegmentorCellpose(Segmentator):
         else:
             self.channels = [0, 0]
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
 
         if self.is_custom_model:
             masks, flows, styles = self.model.eval(
-                img,
+                image,
                 channels=self.channels,
                 flow_threshold=self.flow_threshold,
                 cellprob_threshold=self.cellprob_threshold,
@@ -45,7 +45,7 @@ class SegmentorCellpose(Segmentator):
         else:
             # Use the default Cellpose model for segmentation
             masks, flows, styles, diams = self.model.eval(
-                img,
+                image,
                 channels=self.channels,
                 flow_threshold=self.flow_threshold,
                 cellprob_threshold=self.cellprob_threshold,

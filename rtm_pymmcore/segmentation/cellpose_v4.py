@@ -1,5 +1,9 @@
+import warnings
+
+warnings.filterwarnings("ignore", message="Sparse invariant checks")
+
 import numpy as np
-from rtm_pymmcore.segmentation.base_segmentation import Segmentator
+from rtm_pymmcore.segmentation.base import Segmentator
 import skimage
 from cellpose import models
 
@@ -25,10 +29,10 @@ class CellposeV4(Segmentator):
                 pretrained_model=custom_model_path, gpu=True
             )
 
-    def segment(self, img: np.ndarray) -> np.ndarray:
+    def segment(self, image: np.ndarray) -> np.ndarray:
 
         masks, flows, styles = self.model.eval(
-            img,
+            image,
             flow_threshold=self.flow_threshold,
             cellprob_threshold=self.cellprob_threshold,
         )
@@ -36,6 +40,6 @@ class CellposeV4(Segmentator):
         if self.min_size > 0:
             # remove cells below threshold
             masks = skimage.morphology.remove_small_objects(
-                masks, min_size=self.min_size, connectivity=1
+                masks, max_size=self.min_size - 1, connectivity=1
             )
         return masks
