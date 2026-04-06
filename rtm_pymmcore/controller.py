@@ -611,7 +611,8 @@ class Controller:
                                         {}, metadata=metadata_dict, img=None
                                     )
                                 )
-                                stim_mask = self._dmd.affine_transform(stim_mask)
+                                if not np.all(stim_mask):
+                                    stim_mask = self._dmd.affine_transform(stim_mask)
                             else:
                                 try:
                                     stim_mask = fov_obj.stim_mask_queue.get(

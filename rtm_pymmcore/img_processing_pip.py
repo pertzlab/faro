@@ -114,10 +114,11 @@ class ImageProcessingPipeline:
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
 
-        if self.stimulator.use_labels == False:
-            timeout_time = 60
-        else:
-            timeout_time = 20
+        timeout_time = 20
+
+        if self.stimulator is not None:
+            if self.stimulator.use_labels == False:
+                timeout_time = 60
 
         try:
             # First attempt: pull from queue
@@ -365,6 +366,7 @@ class ImageProcessingPipeline_postExperiment:
             if c.startswith("mean_intensity_")
             or c.startswith("median_intensity_")
             or c.startswith("cnr_")
+            or c.startswith("area_nuc")
             or c.startswith("cnr")
             or c.startswith("norm_")
             or c.startswith("mean_")
