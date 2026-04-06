@@ -3,6 +3,7 @@ from .base_stimulation import Stim
 import numpy as np
 from napari_convpaint.conv_paint_model import ConvpaintModel
 from scipy import ndimage as ndi
+import skimage
 from skimage.morphology import disk
 import matplotlib.pyplot as plt
 
@@ -29,6 +30,7 @@ class StimColonyPercentage(Stim):
         self.channel_for_segmentation = channel_for_segmentation
 
     def segment_and_cleanup(self, img) -> np.ndarray:
+        img = skimage.exposure.adjust_gamma(img, gamma=0.1)
         seg = self.cpm.segment(img)
         # 1) convert to binary mask
         if seg.dtype == bool:

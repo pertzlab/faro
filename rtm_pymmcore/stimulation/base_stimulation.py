@@ -41,7 +41,7 @@ class StimWholeFOV(Stim):
     def get_stim_mask(
         self, label_images: dict, metadata: dict = None, img: np.array = None
     ) -> npt.NDArray[np.uint8]:
-        return np.ones((img.shape[-2], img.shape[-1]), dtype=np.uint8), None
+        return True, None
 
 
 class StimNothing(Stim):
