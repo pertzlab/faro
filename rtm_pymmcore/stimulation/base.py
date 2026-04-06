@@ -17,9 +17,9 @@ class Stim(ABC):
 
     @abstractmethod
     def get_stim_mask(
-        self, metadata: dict,
-    ) -> tuple[npt.NDArray[np.uint8], object]:
-        ...
+        self,
+        metadata: dict,
+    ) -> tuple[npt.NDArray[np.uint8], object]: ...
 
 
 class StimWithImage(Stim):
@@ -27,9 +27,10 @@ class StimWithImage(Stim):
 
     @abstractmethod
     def get_stim_mask(
-        self, metadata: dict, img: np.ndarray,
-    ) -> tuple[npt.NDArray[np.uint8], object]:
-        ...
+        self,
+        metadata: dict,
+        img: np.ndarray,
+    ) -> tuple[npt.NDArray[np.uint8], object]: ...
 
 
 class StimWithPipeline(Stim):
@@ -37,18 +38,19 @@ class StimWithPipeline(Stim):
 
     @abstractmethod
     def get_stim_mask(
-        self, label_images: dict, metadata: dict,
-        img: np.ndarray = None, tracks: "pd.DataFrame | None" = None,
-    ) -> tuple[npt.NDArray[np.uint8], object]:
-        ...
+        self,
+        label_images: dict,
+        metadata: dict,
+        img: np.ndarray = None,
+        tracks: "pd.DataFrame | None" = None,
+    ) -> tuple[npt.NDArray[np.uint8], object]: ...
 
 
 class StimWholeFOV(Stim):
     """Stimulate the whole FOV."""
 
     def get_stim_mask(self, metadata: dict) -> tuple[npt.NDArray[np.uint8], object]:
-        h, w = metadata["img_shape"]
-        return np.ones((h, w), dtype=np.uint8), None
+        return True, None
 
 
 class StimTopEdgeMeta(StimWithPipeline):

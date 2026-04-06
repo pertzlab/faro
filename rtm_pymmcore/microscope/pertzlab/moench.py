@@ -71,19 +71,21 @@ class KeepDMDAlive:
 
 
 class Moench(PyMMCoreMicroscope):
-    MICROMANAGER_PATH = "C:\\micromanager_rtm_pymmcore\\Micro-Manager-2.0_api74"
-    MICROMANAGER_CONFIG = "C:\\micromanager_rtm_pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench_w_TTL_PrimeBSI.cfg"
+    MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0_api75"
+    MICROMANAGER_CONFIG = (
+        "C:\\rtm-pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench.cfg"
+    )
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = True
     DMD_NEEDS_TO_BE_WAKEN = True
     DMD_CHANNEL_GROUP = "TTL_ERK"
     POWER_PROPERTIES = {
-        "CyanStim": ("Spectra", "Cyan_Level"),
+        "CyanStim": ("LED", "Cyan_Level"),
     }
     DMD_CALIBRATION_PROFILE = {
         "channel_group": "TTL_ERK",
         "channel_config": "CyanStim",
-        "device_name": "Spectra",
+        "device_name": "LED",
         "property_name": "Cyan_Level",
         "power": 10,
     }
@@ -300,6 +302,7 @@ class MoenchMDAEngine(MDAEngine):
             event_y = cur_y if event_y is None else event_y
 
         for attempt in range(0, max_retry_attempts):
+            print
             try:
                 core.setXYPosition(event_x, event_y)
                 return
@@ -319,6 +322,74 @@ class MoenchMDAEngine(MDAEngine):
                     logger.warning("Failed to set XY position. %s", e)
                     raise
 
+    def _wait_for_system_excluding_xy(self, event: MDAEvent) -> None:
+        """Wait for all devices except TIXYDrive, then handle XY separately.
+
+        TIXYDrive's Busy() flag is perpetually stuck on this microscope,
+        so including it in waitForSystem() wastes 5s per event. Instead we
+        wait for each device individually and only check XY position when
+        a move was actually commanded.
+        """
+        core = self.mmcore
+        xy_stage = core.getXYStageDevice() if core.getXYStageDevice() else None
+
+        # Wait for every loaded device except the XY stage
+        for dev in core.getLoadedDevices():
+            if dev == xy_stage or dev == "Core":
+                continue
+            try:
+                core.waitForDevice(dev)
+            except RuntimeError as e:
+                if "timed out" in str(e):
+                    print(f"[WARN] waitForDevice({dev}) timed out ({e}), continuing.")
+                else:
+                    raise
+
+        # Handle TIXYDrive: only wait if an XY move was commanded.
+        # Since Busy() is perpetually stuck, we poll position directly
+        # instead of relying on waitForDevice().
+        target_xy = (event.x_pos, event.y_pos)
+        if xy_stage and target_xy != (None, None):
+            xy_tolerance_um = 1.0
+            max_wait_s = 5.0
+            poll_interval_s = 0.5
+            elapsed = 0.0
+            while elapsed < max_wait_s:
+                try:
+                    actual_xy = core.getXYPosition()
+                    dx = abs(actual_xy[0] - target_xy[0])
+                    dy = abs(actual_xy[1] - target_xy[1])
+                    if dx < xy_tolerance_um and dy < xy_tolerance_um:
+                        break
+                except Exception:
+                    pass
+                time.sleep(poll_interval_s)
+                elapsed += poll_interval_s
+            else:
+                try:
+                    actual_xy = core.getXYPosition()
+                except Exception:
+                    actual_xy = "unknown"
+                print(
+                    f"[WARN] {xy_stage} not at target after {max_wait_s}s. "
+                    f"target={target_xy}, actual={actual_xy}"
+                )
+
+    def setup_event(self, event: MDAEvent) -> None:
+        """Override to wait for devices individually, bypassing TIXYDrive.
+
+        The TIXYDrive on this microscope has a perpetually-stuck Busy() flag,
+        so waitForSystem() always times out after 5s. Instead, we wait for each
+        device individually and handle TIXYDrive separately only when an XY
+        move was actually commanded.
+        """
+        if isinstance(event, SequencedEvent):
+            self.setup_sequenced_event(event)
+        else:
+            self.setup_single_event(event)
+
+        self._wait_for_system_excluding_xy(event)
+
     def setup_single_event(self, event: MDAEvent) -> None:
         """Setup hardware for a single (non-sequenced) event.
 
@@ -329,7 +400,7 @@ class MoenchMDAEngine(MDAEngine):
         if event.keep_shutter_open:
             ...
 
-        max_retry_attempts = 5
+        max_retry_attempts = 10
 
         self._set_event_xy_position(event, max_retry_attempts=max_retry_attempts)
 

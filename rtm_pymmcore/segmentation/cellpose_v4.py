@@ -1,3 +1,7 @@
+import warnings
+
+warnings.filterwarnings("ignore", message="Sparse invariant checks")
+
 import numpy as np
 from rtm_pymmcore.segmentation.base import Segmentator
 import skimage
@@ -36,6 +40,6 @@ class CellposeV4(Segmentator):
         if self.min_size > 0:
             # remove cells below threshold
             masks = skimage.morphology.remove_small_objects(
-                masks, min_size=self.min_size, connectivity=1
+                masks, max_size=self.min_size - 1, connectivity=1
             )
         return masks

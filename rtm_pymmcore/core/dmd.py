@@ -292,13 +292,13 @@ class DMD:
             test_image = []
             test_src = []
             test_dst = []
-            p0, p1, p2 = ([300, 500], [650, 200], [500, 800])
+            p0, p1, p2 = ([100, 500], [600, 350], [500, 800])
             camera_height = self.mmc.getImageHeight()
             camera_width = self.mmc.getImageWidth()
 
             for p in [p0, p1, p2]:
                 img_p = np.zeros((camera_height, camera_width)).astype(np.uint8)
-                rr, cc = skimage.draw.disk((p[0], p[1]), 20)
+                rr, cc = skimage.draw.disk((p[0], p[1]), radius)
                 test_src.append((p[1], p[0]))
                 img_p[rr, cc] = 255
                 img_warp = self.affine_transform(img_p)

@@ -403,9 +403,7 @@ def _get_mda_from_file(filename):
 def _get_mda_from_viewer(viewer):
     import warnings
 
-    data_mda_fovs = (
-        viewer.window.dock_widgets["MDA"].value().stage_positions
-    )
+    data_mda_fovs = viewer.window.dock_widgets["MDA"].value().stage_positions
     return [pos.model_dump() for pos in data_mda_fovs]
 
 
@@ -488,8 +486,10 @@ def generate_df_acquire(
     )
     timesteps = range(n_frames)
     dfs = []
-    for fov_index, fov in enumerate(fovs):
-        fov_group = fov_index // n_fovs_simultaneously
+    first_fov_index = fovs[0].index
+    for _, fov in enumerate(fovs):
+        fov_index = fov.index
+        fov_group = (fov_index - first_fov_index) // n_fovs_simultaneously
         start_time_fov = start_time + fov_group * time_between_timesteps * len(
             timesteps
         )
@@ -549,6 +549,7 @@ def apply_stim_treatments_to_df_acquire(
     n_fovs_per_well=None,
     add_stim_exposure_group=False,
     regular_spacing_between_stimulations=False,
+    randomize=False,
 ):
     """Apply stim treatments to the df_acquire dataframe."""
 
@@ -559,11 +560,13 @@ def apply_stim_treatments_to_df_acquire(
             n_fovs // n_stim_treatments // len(np.unique(condition))
         )
         stim_treatment_tot = []
-        random.shuffle(stim_treatments)
+        if randomize:
+            random.shuffle(stim_treatments)
         if n_fovs_per_well is None:
             for fov_index in range(0, n_fovs_per_stim_condition + 1):
                 stim_treatment_tot.extend(stim_treatments)
-            random.shuffle(stim_treatment_tot)
+            if randomize:
+                random.shuffle(stim_treatment_tot)
             if n_fovs % n_stim_treatments != 0:
                 print(
                     f"Warning: Not equal number of fovs per stim condition. {n_fovs % n_stim_treatments} fovs will have repeated treatment"
