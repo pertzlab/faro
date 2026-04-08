@@ -15,7 +15,7 @@ warnings.filterwarnings(
 import numpy as np
 from useq import MDAEvent
 
-from rtm_pymmcore.core.dmd import DMD
+from faro.core.dmd import DMD
 
 
 class AbstractMicroscope:

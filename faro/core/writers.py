@@ -15,7 +15,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import tifffile
 
-from rtm_pymmcore.core.utils import create_folders
+from faro.core.utils import create_folders
 
 # Default channel colors for omero metadata (hex RGB)
 _DEFAULT_CHANNEL_COLORS = [
@@ -91,7 +91,7 @@ class TiffWriter:
         )
 
     def save_events(self, events) -> None:
-        from rtm_pymmcore.core.conversion import save_events_json
+        from faro.core.conversion import save_events_json
 
         save_events_json(self.storage_path, events)
 
@@ -245,7 +245,7 @@ class OmeZarrWriter:
     # ------------------------------------------------------------------
 
     def save_events(self, events) -> None:
-        from rtm_pymmcore.core.conversion import save_events_json
+        from faro.core.conversion import save_events_json
 
         save_events_json(self.storage_path, events)
 

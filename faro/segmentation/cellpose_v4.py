@@ -3,7 +3,7 @@ import warnings
 warnings.filterwarnings("ignore", message="Sparse invariant checks")
 
 import numpy as np
-from rtm_pymmcore.segmentation.base import Segmentator
+from faro.segmentation.base import Segmentator
 import skimage
 from cellpose import models
 

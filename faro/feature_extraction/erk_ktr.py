@@ -4,8 +4,8 @@ import pandas as pd
 from skimage.segmentation import expand_labels
 from skimage.measure import regionprops_table
 
-from rtm_pymmcore.feature_extraction.base import FeatureExtractor
-from rtm_pymmcore.feature_extraction.utils import median_intensity
+from faro.feature_extraction.base import FeatureExtractor
+from faro.feature_extraction.utils import median_intensity
 
 
 class FE_ErkKtr(FeatureExtractor):

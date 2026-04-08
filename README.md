@@ -1,8 +1,10 @@
-# rtm-pymmcore
+# FARO
+
+**FARO — Feedback Adaptive Real-time Optogenetics**
 
 **Real-time feedback control microscopy.**
 
-rtm-pymmcore acquires images, segments cells, extracts features, tracks them over time, and generates stimulation masks, all while the experiment is running. This enables closed-loop feedback control: stimulation patterns can be computed from the latest segmentation and applied within the same or next timepoint.
+FARO (*faro*, lighthouse in Spanish) acquires images, segments cells, extracts features, tracks them over time, and generates stimulation masks, all while the experiment is running. This enables closed-loop feedback control: stimulation patterns can be computed from the latest segmentation and applied within the same or next timepoint.
 
 ## Architecture
 
@@ -83,7 +85,7 @@ The Controller converts RTMEvents to MDAEvents, queues them through the microsco
 Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Multiple phases can be concatenated with `+`:
 
 ```python
-from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMSequence
+from faro.core.data_structures import Channel, PowerChannel, RTMSequence
 
 phase_1 = RTMSequence(
     time_plan={"interval": 60.0, "loops": 100},
@@ -184,7 +186,7 @@ Stimulation and reference channels are assigned per-timepoint, so they work corr
 When an experiment has more FOV positions than can be imaged within a single timepoint interval, FOV batching automatically partitions positions into sequential batches with adjusted timing.
 
 ```python
-from rtm_pymmcore.core.utils import check_fov_batching, apply_fov_batching
+from faro.core.utils import check_fov_batching, apply_fov_batching
 
 events = list(seq)
 
@@ -200,7 +202,7 @@ events = apply_fov_batching(events, time_per_fov=2.0)
 ### Running
 
 ```python
-from rtm_pymmcore.core.controller import Controller
+from faro.core.controller import Controller
 
 ctrl = Controller(mic, pipeline)
 ctrl.run_experiment(events, stim_mode="current")
@@ -252,7 +254,7 @@ ctrl.extend_experiment(extra_events)                   # non-blocking, appends t
 It supports both **TIFF** (`raw/`, `ref/` folders) and **OME-Zarr** (`acquisition.ome.zarr`) source layouts. When an OME-Zarr store is found, raw frames are read from zarr; reference images fall back to TIFFs in `ref/`.
 
 ```python
-from rtm_pymmcore.core.controller import ControllerSimulated
+from faro.core.controller import ControllerSimulated
 
 ctrl = ControllerSimulated(mic, pipeline, old_data_project_path="/path/to/old_experiment")
 ctrl.run_experiment(events, stim_mode="current")
@@ -270,7 +272,7 @@ See **`experiments/11_erk_experiments_full_fov_stim/stim_rtmsequence_demo_mic.ip
 The offline re-analysis pipeline (`ImageProcessingPipeline_postExperiment`) reprocesses images from a previous experiment with new segmentation, tracking, or feature extraction parameters — without re-acquiring.
 
 ```python
-from rtm_pymmcore.core.pipeline_post import ImageProcessingPipeline_postExperiment
+from faro.core.pipeline_post import ImageProcessingPipeline_postExperiment
 
 pipeline = ImageProcessingPipeline_postExperiment(
     img_storage_path="/path/to/original_experiment",
@@ -319,7 +321,7 @@ experiment/
 ```
 
 ```python
-from rtm_pymmcore.core.writers import OmeZarrWriter
+from faro.core.writers import OmeZarrWriter
 
 writer = OmeZarrWriter(
     storage_path="/path/to/experiment",
@@ -355,7 +357,7 @@ experiment/
 ```
 
 ```python
-from rtm_pymmcore.core.writers import OmeZarrWriterPlate
+from faro.core.writers import OmeZarrWriterPlate
 
 writer = OmeZarrWriterPlate(
     storage_path="/path/to/experiment",
@@ -381,7 +383,7 @@ experiment/
 ```
 
 ```python
-from rtm_pymmcore.core.writers import TiffWriter
+from faro.core.writers import TiffWriter
 
 pipeline = ImageProcessingPipeline(
     storage_path="/path/to/experiment",
@@ -416,7 +418,7 @@ uv tool dir
 Existing TIFF-based experiments can be migrated to OME-Zarr using the conversion utility:
 
 ```python
-from rtm_pymmcore.core.conversion import convert_tiff_to_omezarr
+from faro.core.conversion import convert_tiff_to_omezarr
 
 convert_tiff_to_omezarr(
     src_path="/path/to/tiff_experiment",
@@ -477,11 +479,11 @@ POWER_PROPERTIES = {
 
 ## Adding Your Own Micro-Manager Microscope
 
-Create a new file in `rtm_pymmcore/microscope/` and inherit from `PyMMCoreMicroscope`:
+Create a new file in `faro/microscope/` and inherit from `PyMMCoreMicroscope`:
 
 ```python
 import pymmcore_plus
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+from faro.microscope.pymmcore import PyMMCoreMicroscope
 
 class MyScope(PyMMCoreMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
@@ -509,8 +511,8 @@ For DMD support, set up `self.dmd` in `__init__()`, see `pertzlab/moench.py` for
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-git clone https://github.com/pertzlab/rtm-pymmcore.git
-cd rtm-pymmcore
+git clone https://github.com/pertzlab/faro.git
+cd faro
 uv sync
 ```
 

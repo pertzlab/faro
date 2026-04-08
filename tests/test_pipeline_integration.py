@@ -20,21 +20,21 @@ import pytest
 import tifffile
 from useq import MDAEvent
 
-from rtm_pymmcore.core.controller import Analyzer, Controller
-from rtm_pymmcore.core.data_structures import (
+from faro.core.controller import Analyzer, Controller
+from faro.core.data_structures import (
     Channel,
     FovState,
     ImgType,
     RTMEvent,
     SegmentationMethod,
 )
-from rtm_pymmcore.core.pipeline import ImageProcessingPipeline
-from rtm_pymmcore.feature_extraction.simple import SimpleFE
-from rtm_pymmcore.microscope.base import AbstractMicroscope
-from rtm_pymmcore.segmentation.base import OtsuSegmentator
-from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWholeFOV
-from rtm_pymmcore.stimulation.center_circle import CenterCircle
-from rtm_pymmcore.tracking.trackpy import TrackerTrackpy
+from faro.core.pipeline import ImageProcessingPipeline
+from faro.feature_extraction.simple import SimpleFE
+from faro.microscope.base import AbstractMicroscope
+from faro.segmentation.base import OtsuSegmentator
+from faro.stimulation.base import Stim, StimWithImage, StimWholeFOV
+from faro.stimulation.center_circle import CenterCircle
+from faro.tracking.trackpy import TrackerTrackpy
 
 # ---------------------------------------------------------------------------
 # Constants

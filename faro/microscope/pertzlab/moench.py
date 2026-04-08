@@ -1,8 +1,8 @@
 import pymmcore_plus
 import weakref
 
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
-from rtm_pymmcore.core.dmd import DMD
+from faro.microscope.pymmcore import PyMMCoreMicroscope
+from faro.core.dmd import DMD
 from useq._mda_event import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
 from typing import Optional
@@ -73,7 +73,7 @@ class KeepDMDAlive:
 class Moench(PyMMCoreMicroscope):
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0_api75"
     MICROMANAGER_CONFIG = (
-        "C:\\rtm-pymmcore\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench.cfg"
+        "C:\\faro\\pertzlab_mic_configs\\micromanager\\Moench\\TiMoench.cfg"
     )
     USE_AUTOFOCUS_EVENT = False
     USE_ONLY_PFS = True

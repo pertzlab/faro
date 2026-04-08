@@ -1,5 +1,5 @@
 import numpy as np
-from rtm_pymmcore.segmentation.base import Segmentator
+from faro.segmentation.base import Segmentator
 import skimage
 import csbdeep
 from stardist.models import StarDist2D

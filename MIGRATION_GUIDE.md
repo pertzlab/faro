@@ -1,6 +1,6 @@
-# Migration Guide: rtm-pymmcore restructuring
+# Migration Guide: FARO restructuring
 
-This guide covers all breaking changes introduced in the `refactor/restructure-repo` branch. It is aimed at lab members who have existing experiment scripts or notebooks.
+This guide covers all breaking changes introduced during the FARO restructuring (formerly rtm-pymmcore). It is aimed at lab members who have existing experiment scripts or notebooks.
 
 ---
 
@@ -21,9 +21,9 @@ The microscope owned the entire experiment lifecycle: it created the Analyzer, C
 ### New way (Controller + RTMEvent)
 
 ```python
-from rtm_pymmcore.microscope.pertzlab.jungfrau import Jungfrau
-from rtm_pymmcore.core.controller import Controller
-from rtm_pymmcore.core.data_structures import RTMSequence, Channel, PowerChannel
+from faro.microscope.pertzlab.jungfrau import Jungfrau
+from faro.core.controller import Controller
+from faro.core.data_structures import RTMSequence, Channel, PowerChannel
 
 mic = Jungfrau()
 pipeline = ImageProcessingPipeline(storage_path=path, ...)
@@ -49,7 +49,7 @@ The microscope no longer knows about experiments — it only provides hardware p
 If you have an existing `df_acquire` DataFrame, convert it to events:
 
 ```python
-from rtm_pymmcore.core.conversion import df_to_events
+from faro.core.conversion import df_to_events
 
 events = df_to_events(df_acquire)
 ctrl.run_experiment(events)
@@ -73,7 +73,7 @@ ctrl.finish_experiment()
 The output format is unchanged — the pipeline still writes per-FOV `.parquet` files in the `tracks/` folder. You can also convert events to a DataFrame for inspection:
 
 ```python
-from rtm_pymmcore.core.utils import events_to_dataframe
+from faro.core.utils import events_to_dataframe
 df = events_to_dataframe(events)
 ```
 
@@ -116,7 +116,7 @@ Segmentators are now passed as `SegmentationMethod` dataclass instances, not dic
 segmentators = [{"name": "labels", "class": CellposeSegmentator(), "use_channel": 0}]
 
 # New
-from rtm_pymmcore.core.data_structures import SegmentationMethod
+from faro.core.data_structures import SegmentationMethod
 segmentators = [SegmentationMethod("labels", CellposeSegmentator(), use_channel=0)]
 ```
 
@@ -146,26 +146,26 @@ All experiment notebooks moved from the repository root into `experiments/<name>
 
 | Old import | New import |
 |---|---|
-| `rtm_pymmcore.controller` | `rtm_pymmcore.core.controller` |
-| `rtm_pymmcore.data_structures` | `rtm_pymmcore.core.data_structures` |
-| `rtm_pymmcore.img_processing_pip` | `rtm_pymmcore.core.pipeline` + `rtm_pymmcore.core.pipeline_post` |
-| `rtm_pymmcore.utils` | `rtm_pymmcore.core.utils` |
-| `rtm_pymmcore.dmd` | `rtm_pymmcore.core.dmd` |
-| `rtm_pymmcore.microscope.abstract_microscope` | `rtm_pymmcore.microscope.base` |
-| `rtm_pymmcore.microscope.Jungfrau` | `rtm_pymmcore.microscope.pertzlab.jungfrau` |
-| `rtm_pymmcore.microscope.Niesen` | `rtm_pymmcore.microscope.pertzlab.niesen` |
-| `rtm_pymmcore.microscope.Moench` | `rtm_pymmcore.microscope.pertzlab.moench` |
-| `rtm_pymmcore.microscope.MMDemo` | `rtm_pymmcore.microscope.demo` |
-| `rtm_pymmcore.stimulation.base_stimulation` | `rtm_pymmcore.stimulation.base` |
-| `rtm_pymmcore.stimulation.moving_line` | `rtm_pymmcore.stimulation.moving_line_20x` |
-| `rtm_pymmcore.segmentation.base_segmentation` | `rtm_pymmcore.segmentation.base` |
-| `rtm_pymmcore.segmentation.imaging_server` | `rtm_pymmcore.segmentation.remote` |
-| `rtm_pymmcore.segmentation.imaging_server_legacy` | `rtm_pymmcore.segmentation.remote_legacy` |
-| `rtm_pymmcore.tracking.abstract_tracker` | `rtm_pymmcore.tracking.base` |
-| `rtm_pymmcore.feature_extraction.abstract_fe` | `rtm_pymmcore.feature_extraction.base` |
-| `rtm_pymmcore.feature_extraction.simple_fe` | `rtm_pymmcore.feature_extraction.simple` |
-| `rtm_pymmcore.feature_extraction.optocheck_fe` | `rtm_pymmcore.feature_extraction.ref` (or `optocheck` compat shim) |
-| `rtm_pymmcore.feature_extraction.abstract_fe_optocheck` | `rtm_pymmcore.feature_extraction.base_ref` (or `base_optocheck` compat shim) |
+| `rtm_pymmcore.controller` | `faro.core.controller` |
+| `rtm_pymmcore.data_structures` | `faro.core.data_structures` |
+| `rtm_pymmcore.img_processing_pip` | `faro.core.pipeline` + `faro.core.pipeline_post` |
+| `rtm_pymmcore.utils` | `faro.core.utils` |
+| `rtm_pymmcore.dmd` | `faro.core.dmd` |
+| `rtm_pymmcore.microscope.abstract_microscope` | `faro.microscope.base` |
+| `rtm_pymmcore.microscope.Jungfrau` | `faro.microscope.pertzlab.jungfrau` |
+| `rtm_pymmcore.microscope.Niesen` | `faro.microscope.pertzlab.niesen` |
+| `rtm_pymmcore.microscope.Moench` | `faro.microscope.pertzlab.moench` |
+| `rtm_pymmcore.microscope.MMDemo` | `faro.microscope.demo` |
+| `rtm_pymmcore.stimulation.base_stimulation` | `faro.stimulation.base` |
+| `rtm_pymmcore.stimulation.moving_line` | `faro.stimulation.moving_line_20x` |
+| `rtm_pymmcore.segmentation.base_segmentation` | `faro.segmentation.base` |
+| `rtm_pymmcore.segmentation.imaging_server` | `faro.segmentation.remote` |
+| `rtm_pymmcore.segmentation.imaging_server_legacy` | `faro.segmentation.remote_legacy` |
+| `rtm_pymmcore.tracking.abstract_tracker` | `faro.tracking.base` |
+| `rtm_pymmcore.feature_extraction.abstract_fe` | `faro.feature_extraction.base` |
+| `rtm_pymmcore.feature_extraction.simple_fe` | `faro.feature_extraction.simple` |
+| `rtm_pymmcore.feature_extraction.optocheck_fe` | `faro.feature_extraction.ref` (or `optocheck` compat shim) |
+| `rtm_pymmcore.feature_extraction.abstract_fe_optocheck` | `faro.feature_extraction.base_ref` (or `base_optocheck` compat shim) |
 
 ### Deleted classes / functions
 
@@ -249,7 +249,7 @@ from rtm_pymmcore.feature_extraction.base_optocheck import FeatureExtractorOptoC
 class MyFE(FeatureExtractorOptoCheck): ...
 
 # New
-from rtm_pymmcore.feature_extraction.base_ref import FeatureExtractorRef
+from faro.feature_extraction.base_ref import FeatureExtractorRef
 class MyFE(FeatureExtractorRef): ...
 ```
 
@@ -292,7 +292,7 @@ storage_path/
 Pass an `OmeZarrWriter` to the Controller to stream all positions and channels into a single OME-Zarr v0.5 container:
 
 ```python
-from rtm_pymmcore.core.writers import OmeZarrWriter
+from faro.core.writers import OmeZarrWriter
 
 writer = OmeZarrWriter(
     storage_path=path,
@@ -345,7 +345,7 @@ storage_path/
 `OmeZarrWriterPlate` inherits all options from `OmeZarrWriter` but arranges each FOV position as a well in a single-row plate. napari-ome-zarr tiles the positions spatially as a mosaic:
 
 ```python
-from rtm_pymmcore.core.writers import OmeZarrWriterPlate
+from faro.core.writers import OmeZarrWriterPlate
 
 writer = OmeZarrWriterPlate(storage_path=path)
 ctrl = Controller(mic, pipeline, writer=writer)
@@ -387,7 +387,7 @@ Both OME-Zarr writers route images by folder name:
 Any object that satisfies the `Writer` protocol works:
 
 ```python
-from rtm_pymmcore.core.writers import Writer
+from faro.core.writers import Writer
 
 class MyWriter:
     storage_path: str

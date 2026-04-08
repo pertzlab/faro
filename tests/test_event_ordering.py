@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from rtm_pymmcore.core.data_structures import (
+from faro.core.data_structures import (
     Channel,
     ImgType,
     RTMEvent,

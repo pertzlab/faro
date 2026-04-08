@@ -13,26 +13,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rtm_pymmcore.core.data_structures import FovState
-from rtm_pymmcore.feature_extraction.base import FeatureExtractor
-from rtm_pymmcore.feature_extraction.erk_ktr import FE_ErkKtr
-from rtm_pymmcore.feature_extraction.simple import SimpleFE
-from rtm_pymmcore.segmentation.base import (
+from faro.core.data_structures import FovState
+from faro.feature_extraction.base import FeatureExtractor
+from faro.feature_extraction.erk_ktr import FE_ErkKtr
+from faro.feature_extraction.simple import SimpleFE
+from faro.segmentation.base import (
     DummySegmentator,
     OtsuSegmentator,
     Segmentator,
     SegmentatorBinary,
 )
-from rtm_pymmcore.stimulation.base import (
+from faro.stimulation.base import (
     Stim,
     StimNothing,
     StimTopEdgeMeta,
     StimWholeFOV,
     StimWithPipeline,
 )
-from rtm_pymmcore.stimulation.center_circle import CenterCircle
-from rtm_pymmcore.stimulation.moving_line_20x import StimLine
-from rtm_pymmcore.tracking.trackpy import TrackerTrackpy
+from faro.stimulation.center_circle import CenterCircle
+from faro.stimulation.moving_line_20x import StimLine
+from faro.tracking.trackpy import TrackerTrackpy
 
 # ---------------------------------------------------------------------------
 # Synthetic test data

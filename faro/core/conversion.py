@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMEvent
+from faro.core.data_structures import Channel, PowerChannel, RTMEvent
 
 
 def _dict_to_channel(d: dict) -> Channel | PowerChannel:
@@ -376,7 +376,7 @@ def convert_tiff_to_omezarr(
     Returns:
         Path to the created ``acquisition.ome.zarr`` directory.
     """
-    from rtm_pymmcore.core.writers import OmeZarrWriter
+    from faro.core.writers import OmeZarrWriter
 
     src = Path(src_path)
     dst = Path(dst_path)

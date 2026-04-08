@@ -1,4 +1,4 @@
-from rtm_pymmcore.microscope.base import AbstractMicroscope
+from faro.microscope.base import AbstractMicroscope
 
 
 class PyMMCoreMicroscope(AbstractMicroscope):
@@ -80,7 +80,7 @@ class PyMMCoreMicroscope(AbstractMicroscope):
         """
         if self.mmc is None:
             return {}
-        from rtm_pymmcore.core.utils import detect_power_properties
+        from faro.core.utils import detect_power_properties
         detected = detect_power_properties(self.mmc, group=group)
         self._detected_power_properties = detected
         return detected
@@ -97,5 +97,5 @@ class PyMMCoreMicroscope(AbstractMicroscope):
         # Auto-detect on first use if not yet done
         if self._detected_power_properties is None:
             self.detect_power_properties()
-        from rtm_pymmcore.core.utils import validate_hardware
+        from faro.core.utils import validate_hardware
         return validate_hardware(events, self.mmc, power_properties=self.get_power_properties())

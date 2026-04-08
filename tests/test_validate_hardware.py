@@ -10,8 +10,8 @@ import warnings
 
 import pytest
 
-from rtm_pymmcore.core.data_structures import Channel, PowerChannel, RTMEvent
-from rtm_pymmcore.core.utils import validate_hardware
+from faro.core.data_structures import Channel, PowerChannel, RTMEvent
+from faro.core.utils import validate_hardware
 
 
 # ---------------------------------------------------------------------------
@@ -384,14 +384,14 @@ class TestAbstractMicroscopeValidateHardware:
     """AbstractMicroscope.validate_hardware is a no-op (returns True)."""
 
     def test_base_validate_hardware_returns_true(self):
-        from rtm_pymmcore.microscope.base import AbstractMicroscope
+        from faro.microscope.base import AbstractMicroscope
         mic = AbstractMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
 
     def test_base_validate_hardware_without_pipeline(self):
         """validate_hardware works standalone (no pipeline involved)."""
-        from rtm_pymmcore.microscope.base import AbstractMicroscope
+        from faro.microscope.base import AbstractMicroscope
         mic = AbstractMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
@@ -401,20 +401,20 @@ class TestPyMMCoreMicroscopeValidateHardware:
     """PyMMCoreMicroscope.validate_hardware delegates to utils.validate_hardware."""
 
     def test_no_mmc_returns_true(self):
-        from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+        from faro.microscope.pymmcore import PyMMCoreMicroscope
         mic = PyMMCoreMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
 
     def test_delegates_to_utils(self):
-        from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+        from faro.microscope.pymmcore import PyMMCoreMicroscope
         mic = PyMMCoreMicroscope()
         mic.mmc = FakeMMCore()
         events = _make_events(channels=[Channel("phase-contrast", 50)])
         assert mic.validate_hardware(events) is True
 
     def test_delegates_detects_bad_channel(self):
-        from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+        from faro.microscope.pymmcore import PyMMCoreMicroscope
         mic = PyMMCoreMicroscope()
         mic.mmc = FakeMMCore()
         events = _make_events(channels=[Channel("MISSING", 50)])
@@ -429,12 +429,12 @@ class TestPyMMCoreMicroscopeValidateHardware:
     def test_pipeline_and_hardware_validation_separate(self):
         """pipeline.validate_pipeline + mic.validate_hardware work independently."""
         import tempfile, shutil
-        from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
-        from rtm_pymmcore.core.pipeline import ImageProcessingPipeline
-        from rtm_pymmcore.core.data_structures import SegmentationMethod, RTMSequence
+        from faro.microscope.pymmcore import PyMMCoreMicroscope
+        from faro.core.pipeline import ImageProcessingPipeline
+        from faro.core.data_structures import SegmentationMethod, RTMSequence
 
         # Minimal segmentator for pipeline
-        from rtm_pymmcore.segmentation.base import Segmentator
+        from faro.segmentation.base import Segmentator
         import numpy as np
 
         class DummySeg(Segmentator):

@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from rtm_pymmcore.tracking.base import Tracker
+from faro.tracking.base import Tracker
 import trackpy
 
 

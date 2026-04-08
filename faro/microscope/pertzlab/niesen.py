@@ -1,9 +1,9 @@
 import threading
 import time
 import requests
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+from faro.microscope.pymmcore import PyMMCoreMicroscope
 import pymmcore_plus
-from rtm_pymmcore.core.dmd import DMD
+from faro.core.dmd import DMD
 
 
 class WakeUpLaser:

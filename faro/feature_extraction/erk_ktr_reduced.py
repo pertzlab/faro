@@ -1,6 +1,6 @@
 import numpy as np
 
-from rtm_pymmcore.feature_extraction.erk_ktr import FE_ErkKtr
+from faro.feature_extraction.erk_ktr import FE_ErkKtr
 
 
 class FE_ErkKtrReduced(FE_ErkKtr):

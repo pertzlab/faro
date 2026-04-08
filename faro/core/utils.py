@@ -4,7 +4,7 @@ import numpy as np
 import os
 from collections import namedtuple, defaultdict
 from skimage.util import map_array
-from rtm_pymmcore.core.data_structures import (
+from faro.core.data_structures import (
     Channel,
     PowerChannel,
     FovState,

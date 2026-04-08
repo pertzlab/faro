@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from useq import MDASequence
 
-from rtm_pymmcore.core.data_structures import Channel, ImgType, RTMSequence
-from rtm_pymmcore.core.utils import events_to_dataframe
+from faro.core.data_structures import Channel, ImgType, RTMSequence
+from faro.core.utils import events_to_dataframe
 
 
 class TestMDASequenceCompatibility:

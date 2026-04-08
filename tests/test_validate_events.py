@@ -17,18 +17,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rtm_pymmcore.core.data_structures import (
+from faro.core.data_structures import (
     Channel,
     PowerChannel,
     RTMEvent,
     RTMSequence,
     SegmentationMethod,
 )
-from rtm_pymmcore.core.pipeline import ImageProcessingPipeline
-from rtm_pymmcore.segmentation.base import Segmentator
-from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
-from rtm_pymmcore.tracking.base import Tracker
-from rtm_pymmcore.feature_extraction.base import FeatureExtractor
+from faro.core.pipeline import ImageProcessingPipeline
+from faro.segmentation.base import Segmentator
+from faro.stimulation.base import Stim, StimWithImage, StimWithPipeline
+from faro.tracking.base import Tracker
+from faro.feature_extraction.base import FeatureExtractor
 
 
 # ---------------------------------------------------------------------------

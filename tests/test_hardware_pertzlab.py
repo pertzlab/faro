@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from tests.test_validate_hardware import FakeMMCore
-from rtm_pymmcore.core.utils import detect_power_properties
+from faro.core.utils import detect_power_properties
 
 
 # ===================================================================
@@ -99,7 +99,7 @@ class TestDetectPowerProperties:
 
     def test_microscope_auto_detect_merges_with_manual(self):
         """PyMMCoreMicroscope.get_power_properties merges detected + manual."""
-        from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+        from faro.microscope.pymmcore import PyMMCoreMicroscope
 
         mmc = FakeMMCore(
             config_groups={"TTL_ERK": ["CyanStim", "miRFP"]},

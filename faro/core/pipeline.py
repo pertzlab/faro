@@ -9,13 +9,13 @@ import pandas as pd
 import tifffile
 from useq import MDAEvent
 
-import rtm_pymmcore.segmentation.base as base_segmentation
-import rtm_pymmcore.stimulation.base as base_stimulation
-from rtm_pymmcore.stimulation.base import StimWithImage, StimWithPipeline
-import rtm_pymmcore.tracking.base as abstract_tracker
-import rtm_pymmcore.feature_extraction.base as abstract_fe
-from rtm_pymmcore.core.data_structures import FovState, ImgType, SegmentationMethod
-from rtm_pymmcore.core.utils import labels_to_particles, create_folders
+import faro.segmentation.base as base_segmentation
+import faro.stimulation.base as base_stimulation
+from faro.stimulation.base import StimWithImage, StimWithPipeline
+import faro.tracking.base as abstract_tracker
+import faro.feature_extraction.base as abstract_fe
+from faro.core.data_structures import FovState, ImgType, SegmentationMethod
+from faro.core.utils import labels_to_particles, create_folders
 from datetime import datetime
 import queue
 

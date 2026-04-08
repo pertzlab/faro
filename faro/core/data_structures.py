@@ -8,7 +8,7 @@ from typing import Any, Iterator
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
-from rtm_pymmcore.segmentation.base import Segmentator
+from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
 
@@ -474,7 +474,7 @@ class RTMSequence(MDASequence):
             n_parallel: Max FOVs per batch.  If *None*, computed from
                 ``time_per_fov`` and the sequence's timepoint interval.
         """
-        from rtm_pymmcore.core.utils import check_fov_batching
+        from faro.core.utils import check_fov_batching
         return check_fov_batching(list(self), time_per_fov, n_parallel)
 
     def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:

@@ -9,7 +9,7 @@ from useq import MDAEvent
 from pymmcore_plus.mda._engine import MDAEngine
 from pymmcore_plus._logger import logger
 
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+from faro.microscope.pymmcore import PyMMCoreMicroscope
 
 
 class Jungfrau(PyMMCoreMicroscope):

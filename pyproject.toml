@@ -1,7 +1,7 @@
 [project]
-name = "rtm-pymmcore"
+name = "faro"
 version = "1.0.0"
-description = "Real-time feedback control microscopy using pymmcore as interface "
+description = "FARO - Feedback Adaptive Real-time Optogenetics"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

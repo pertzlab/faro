@@ -1,6 +1,6 @@
-from rtm_pymmcore.core.pipeline import store_img, ImageProcessingPipeline
-from rtm_pymmcore.core.data_structures import FovState, ImgType
-from rtm_pymmcore.core.writers import (
+from faro.core.pipeline import store_img, ImageProcessingPipeline
+from faro.core.data_structures import FovState, ImgType
+from faro.core.writers import (
     Writer,
     TiffWriter,
     OmeZarrWriter,
@@ -10,7 +10,7 @@ from rtm_pymmcore.core.writers import (
     _extract_n_timepoints_from_events,
     _extract_n_stim_channels_from_events,
 )
-from rtm_pymmcore.stimulation.base import Stim, StimWithImage, StimWithPipeline
+from faro.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
 import traceback

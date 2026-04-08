@@ -1,4 +1,4 @@
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+from faro.microscope.pymmcore import PyMMCoreMicroscope
 
 
 class SimDMD:

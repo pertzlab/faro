@@ -1,5 +1,5 @@
 import pymmcore_plus
-from rtm_pymmcore.microscope.pymmcore import PyMMCoreMicroscope
+from faro.microscope.pymmcore import PyMMCoreMicroscope
 import os
 
 

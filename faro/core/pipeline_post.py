@@ -11,13 +11,13 @@ import tifffile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-import rtm_pymmcore.segmentation.base as base_segmentation
-import rtm_pymmcore.stimulation.base as base_stimulation
-import rtm_pymmcore.tracking.base as abstract_tracker
-import rtm_pymmcore.feature_extraction.base as abstract_fe
-from rtm_pymmcore.core.data_structures import FovState, ImgType, SegmentationMethod
-from rtm_pymmcore.core.utils import create_folders
-from rtm_pymmcore.core.pipeline import (
+import faro.segmentation.base as base_segmentation
+import faro.stimulation.base as base_stimulation
+import faro.tracking.base as abstract_tracker
+import faro.feature_extraction.base as abstract_fe
+from faro.core.data_structures import FovState, ImgType, SegmentationMethod
+from faro.core.utils import create_folders
+from faro.core.pipeline import (
     store_img,
     build_frame_dataframe,
     run_tracking,
@@ -26,7 +26,7 @@ from rtm_pymmcore.core.pipeline import (
     convert_track_dtypes,
     save_segmentation_results,
 )
-from rtm_pymmcore.core.writers import Writer, TiffWriter, OmeZarrWriter
+from faro.core.writers import Writer, TiffWriter, OmeZarrWriter
 
 
 class ImageProcessingPipeline_postExperiment:
@@ -48,7 +48,7 @@ class ImageProcessingPipeline_postExperiment:
         writer: Writer | None = None,
     ):
         if events is not None:
-            from rtm_pymmcore.core.conversion import events_to_df
+            from faro.core.conversion import events_to_df
 
             df_acquire = events_to_df(events)
         elif df_acquire is None:
@@ -160,7 +160,7 @@ class ImageProcessingPipeline_postExperiment:
         ``zarr.json``.  Only label arrays are written fresh by the writer.
         """
         import shutil
-        from rtm_pymmcore.core.writers import _extract_positions_from_events
+        from faro.core.writers import _extract_positions_from_events
 
         events = self._events
         position_names = _extract_positions_from_events(events)
