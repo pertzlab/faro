@@ -1,10 +1,7 @@
-# FARO
+# FARO: Real-time feedback control microscopy for automation of optogenetic targeting
+**FARO** (**F**eedback **A**daptive **R**eal-time **O**ptogenetics, also *lighthouse* in Spanish) acquires images, segments cells, extracts features, tracks them over time, and generates stimulation masks, all while the experiment is running. This enables closed-loop feedback control: stimulation patterns can be computed from the latest segmentation and applied within the same or next timepoint.
 
-**FARO — Feedback Adaptive Real-time Optogenetics**
-
-**Real-time feedback control microscopy.**
-
-FARO (*faro*, lighthouse in Spanish) acquires images, segments cells, extracts features, tracks them over time, and generates stimulation masks, all while the experiment is running. This enables closed-loop feedback control: stimulation patterns can be computed from the latest segmentation and applied within the same or next timepoint.
+![FARO abstract](docs/assets/abstract.png)
 
 ## Architecture
 

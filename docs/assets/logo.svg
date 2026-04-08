@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="46.113022mm"
+   height="13.270016mm"
+   viewBox="0 0 46.113022 13.270016"
+   version="1.1"
+   id="svg1"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <g
+     id="layer1"
+     transform="translate(-5.9716503,-7.2316089)">
+    <g
+       id="g7"
+       transform="matrix(1.5122808,0,0,1.5122808,-79.697154,-46.267016)">
+      <path
+         style="fill:#34b8ff;fill-opacity:1;stroke-width:0.387529;stroke-miterlimit:49.6;paint-order:markers fill stroke"
+         d="m 86.935257,44.150921 -20.080702,1e-6 -7.282264,-8.7748 z"
+         id="path1-7-0-4-2" />
+      <text
+         xml:space="preserve"
+         style="font-size:12.2142px;line-height:1.2;font-family:Arial;-inkscape-font-specification:Arial;text-align:start;letter-spacing:-0.915846px;word-spacing:0.654328px;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#000000;fill-opacity:1;stroke-width:1.72286;stroke-miterlimit:49.6;paint-order:markers fill stroke"
+         x="75.560677"
+         y="45.342941"
+         id="text1-9-3-7-6-4"
+         transform="scale(1.030375,0.97052045)"><tspan
+           id="tspan1-0-9-1-9-09"
+           style="font-weight:bold;font-size:12.2142px;letter-spacing:-0.915846px;fill:#000000;fill-opacity:1;stroke-width:1.72286"
+           x="75.560677"
+           y="45.342941">O</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-size:12.4207px;line-height:1.2;font-family:Arial;-inkscape-font-specification:Arial;text-align:start;letter-spacing:-0.931333px;word-spacing:0.665393px;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#000000;fill-opacity:1;stroke-width:1.75199;stroke-miterlimit:49.6;paint-order:markers fill stroke"
+         x="68.959213"
+         y="44.735519"
+         id="text1-9-3-7-6-7"
+         transform="scale(1.0132409,0.98693214)"><tspan
+           id="tspan1-0-9-1-9-00"
+           style="font-weight:bold;font-size:12.4207px;letter-spacing:-0.931333px;fill:#000000;fill-opacity:1;stroke-width:1.75199"
+           x="68.959213"
+           y="44.735519">R</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-size:12.4207px;line-height:1.2;font-family:Arial;-inkscape-font-specification:Arial;text-align:start;letter-spacing:-0.931333px;word-spacing:0.665393px;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#000000;fill-opacity:1;stroke-width:1.75199;stroke-miterlimit:49.6;paint-order:markers fill stroke"
+         x="54.99268"
+         y="44.735523"
+         id="text1-9-3-7-6"
+         transform="scale(1.0132409,0.98693214)"><tspan
+           id="tspan1-0-9-1-9"
+           style="font-weight:bold;font-size:12.4207px;letter-spacing:-0.931333px;fill:#000000;fill-opacity:1;stroke-width:1.75199"
+           x="54.99268"
+           y="44.735523">F</tspan></text>
+      <text
+         xml:space="preserve"
+         style="font-size:12.4207px;line-height:1.2;font-family:Arial;-inkscape-font-specification:Arial;text-align:start;letter-spacing:-0.931333px;word-spacing:0.665393px;writing-mode:lr-tb;direction:ltr;text-anchor:start;fill:#000000;fill-opacity:1;stroke-width:1.75199;stroke-miterlimit:49.6;paint-order:markers fill stroke"
+         x="60.801113"
+         y="44.735519"
+         id="text1-9-3-7-6-6"
+         transform="scale(1.0132409,0.98693214)"><tspan
+           id="tspan1-0-9-1-9-0"
+           style="font-weight:bold;font-size:12.4207px;letter-spacing:-0.931333px;fill:#000000;fill-opacity:1;stroke-width:1.75199"
+           x="60.801113"
+           y="44.735519">A</tspan></text>
+    </g>
+  </g>
+</svg>
