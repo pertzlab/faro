@@ -15,6 +15,10 @@ dependencies = [
     "scikit-image",
     "tifffile",
     "pymmcore-plus>=0.17.3",
+    # Pinned to the v1 line. The v2 rewrite is tracked upstream at
+    # https://pymmcore-plus.github.io/useq-schema/v2-migration/ — bump
+    # deliberately once pymmcore-plus consumes v2.
+    "useq-schema>=0.9.2,<0.10",
     "pymmcore-widgets",
     "trackpy",
     "napari-micromanager",
