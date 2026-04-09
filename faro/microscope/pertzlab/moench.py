@@ -3,7 +3,7 @@ import weakref
 
 from faro.microscope.pymmcore import PyMMCoreMicroscope
 from faro.core.dmd import DMD
-from useq._mda_event import SLMImage
+from faro.core._useq_compat import SLMImage
 from pymmcore_plus.mda._engine import MDAEngine
 from typing import Optional
 from pymmcore_plus._logger import logger

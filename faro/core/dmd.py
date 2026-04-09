@@ -8,7 +8,7 @@ import scipy
 # from .acquisition import acq
 from pymmcore_plus import CMMCorePlus
 from useq import PropertyTuple
-from useq._mda_event import SLMImage
+from faro.core._useq_compat import SLMImage
 from useq import MDAEvent
 import random
 
