@@ -4,7 +4,7 @@ import queue
 import threading
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
@@ -484,50 +484,18 @@ class RTMSequence(MDASequence):
                 metadata=merged_meta,
             )
 
-    @staticmethod
-    def _offset_events(
-        events_a: list[RTMEvent], events_b: list[RTMEvent],
-    ) -> list[RTMEvent]:
-        """Append *events_b* to *events_a* with offset timepoints and times."""
-        if not events_a:
-            return list(events_b)
-        if not events_b:
-            return list(events_a)
-
-        max_t = max(e.index.get("t", 0) for e in events_a) + 1
-        max_time = max(e.min_start_time or 0 for e in events_a)
-        if len(events_b) >= 2:
-            dt = (events_b[1].min_start_time or 0) - (
-                events_b[0].min_start_time or 0
-            )
-        else:
-            dt = 1.0
-        time_offset = max_time + dt
-
-        result = list(events_a)
-        for ev in events_b:
-            new_t = ev.index.get("t", 0) + max_t
-            new_time = (ev.min_start_time or 0) + time_offset
-            result.append(
-                ev.model_copy(
-                    update={
-                        "index": {**dict(ev.index), "t": new_t},
-                        "min_start_time": new_time,
-                    }
-                )
-            )
-        result.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
-        return result
-
     def __add__(self, other: RTMSequence | list[RTMEvent]) -> list[RTMEvent]:
-        """Concatenate two RTMSequences (or an RTMSequence and an event list).
+        """Concatenate two RTMSequences along the time axis.
 
-        Timepoints in ``other`` are offset so they continue after ``self``.
-        ``min_start_time`` is also offset by the last event's time + interval.
+        Shorthand for ``concat(self, other, axis="t")``. Phase ``other``
+        runs sequentially after ``self`` with its ``t`` indices and
+        ``min_start_time`` offset past the last event of ``self``.
+
+        Prefer the explicit :func:`concat` or :func:`combine` helpers for
+        anything other than trivial two-phase time chaining — they
+        support parallel (axis="p") combinations and multi-way merges.
         """
-        events_a = list(self)
-        events_b = list(other)
-        return self._offset_events(events_a, events_b)
+        return concat(self, other, axis="t")
 
     def check_fov_batching(
         self, time_per_fov: float, n_parallel: int | None = None,
@@ -545,5 +513,176 @@ class RTMSequence(MDASequence):
     def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:
         """Support ``list[RTMEvent] + RTMSequence``."""
         if isinstance(other, list):
-            return self._offset_events(other, list(self))
+            return concat(other, self, axis="t")
         return NotImplemented
+
+
+# ---------------------------------------------------------------------------
+# concat / combine — axis-keyed composition of experiments
+# ---------------------------------------------------------------------------
+
+
+def _infer_interval(
+    src: Any, events: list[RTMEvent], fallback: float = 1.0,
+) -> float:
+    """Best-effort 'what's the spacing between consecutive timepoints'.
+
+    Prefers the source sequence's own ``time_plan.interval`` — this is the
+    authoritative answer and is available whenever ``src`` is still an
+    ``RTMSequence``. Falls back to the smallest non-zero gap between
+    ``min_start_time`` values across events (which is robust to multi-FOV
+    experiments where adjacent events in iteration order share a timepoint),
+    and finally to ``fallback`` when nothing else is available.
+    """
+    if isinstance(src, RTMSequence) and src.time_plan is not None:
+        interval = getattr(src.time_plan, "interval", None)
+        if interval is not None:
+            try:
+                return float(interval)
+            except (TypeError, ValueError):
+                pass
+    times = sorted({e.min_start_time or 0 for e in events})
+    gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
+    return min(gaps) if gaps else fallback
+
+
+def concat(
+    a: RTMSequence | Iterable[RTMEvent],
+    b: RTMSequence | Iterable[RTMEvent],
+    *,
+    axis: str = "t",
+    offset_time: bool | None = None,
+) -> list[RTMEvent]:
+    """Combine two experiments by offsetting one axis of ``b`` past ``a``.
+
+    This is the general-purpose composition primitive. Two common shapes:
+
+    - ``axis="t"`` (default, sequential):
+        ``b`` runs AFTER ``a`` in wall-clock time. ``b``'s ``t`` indices
+        and ``min_start_time`` are shifted past the last event of ``a``.
+        This is the phase-chain used for multi-step experiments like
+        ``baseline + treatment + washout``.
+
+    - ``axis="p"`` (parallel / interleave):
+        ``b`` runs ALONGSIDE ``a``, at additional position indices.
+        ``b``'s ``p`` indices are shifted past ``a``'s max; the
+        combined event list is sorted by time so FOVs from both
+        sub-experiments are visited at each timepoint. Useful for
+        multi-setup experiments: ``setup_a`` stimulates FOVs 0-4 on
+        one schedule, ``setup_b`` stimulates FOVs 5-9 on another,
+        both running concurrently.
+
+    Parameters
+    ----------
+    a, b:
+        Sources to combine. Either ``RTMSequence`` instances or already-
+        iterated ``list[RTMEvent]`` (or any iterable of events).
+    axis:
+        Which index key of ``b`` to offset past ``a``'s max. Defaults to
+        ``"t"``. Any key present on the events is valid; uncommon axes
+        (``"c"``, ``"z"``, ...) are accepted but rarely what you want.
+    offset_time:
+        Whether ``b``'s ``min_start_time`` is also shifted past ``a``'s
+        end. Defaults to ``True`` when ``axis="t"`` (so the phases
+        actually run sequentially), and ``False`` otherwise (so parallel
+        sub-experiments share the clock). Set explicitly to override —
+        for example, ``offset_time=True`` with ``axis="p"`` gives a
+        parallel block that starts with a wall-clock delay after ``a``.
+
+    Returns
+    -------
+    list[RTMEvent]
+        Flat event list ready to pass to ``ctrl.run_experiment``.
+
+    Preconditions
+    -------------
+    For ``axis="p"``, both inputs must declare the same imaging channel
+    configs. The writer today allocates ``(t, p, total_channels, y, x)``
+    with a single channel set across all positions, so heterogeneous
+    channels per FOV are unsupported in v1. (Future v2 sub-sequences will
+    make this a non-issue.) A ``ValueError`` is raised at concat time.
+
+    See Also
+    --------
+    combine : multi-way shortcut, ``combine(a, b, c, axis="t")``.
+    """
+    if offset_time is None:
+        offset_time = (axis == "t")
+
+    # Collect source events. Keep the original ``b`` reference around so
+    # ``_infer_interval`` can peek at its ``time_plan`` before we flatten.
+    events_a = list(a)
+    events_b = list(b)
+
+    if not events_a:
+        return events_b
+    if not events_b:
+        return events_a
+
+    # Precondition: matching imaging channels for parallel-p concat.
+    if axis == "p" and isinstance(a, RTMSequence) and isinstance(b, RTMSequence):
+        ch_a = [getattr(ch, "config", None) for ch in a.channels]
+        ch_b = [getattr(ch, "config", None) for ch in b.channels]
+        if ch_a != ch_b:
+            raise ValueError(
+                f"concat(axis='p') requires matching imaging channels; "
+                f"got {ch_a} vs {ch_b}. Heterogeneous channels per position "
+                f"is a v2 feature — track the useq-schema v2 migration."
+            )
+
+    # Axis offset: shift b's axis key past a's max.
+    max_key = max(e.index.get(axis, 0) for e in events_a) + 1
+
+    # Time offset: shift b's min_start_time past a's end.
+    time_offset = 0.0
+    if offset_time:
+        max_time_a = max(e.min_start_time or 0 for e in events_a)
+        interval = _infer_interval(b, events_b)
+        time_offset = max_time_a + interval
+
+    offset_b: list[RTMEvent] = []
+    for ev in events_b:
+        updates: dict = {
+            "index": {**dict(ev.index), axis: ev.index.get(axis, 0) + max_key},
+        }
+        if offset_time:
+            updates["min_start_time"] = (ev.min_start_time or 0) + time_offset
+        offset_b.append(ev.model_copy(update=updates))
+
+    # Merge strategy depends on axis:
+    # - axis="t": append. Each source's own axis_order ordering is
+    #   preserved across the boundary, because the time offset guarantees
+    #   events_b all come after events_a chronologically. A re-sort here
+    #   would scramble ptcz phase boundaries.
+    # - axis="p": sort by (min_start_time, p) to interleave the two
+    #   position groups at each timepoint.
+    if axis == "t":
+        return events_a + offset_b
+
+    merged = events_a + offset_b
+    merged.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
+    return merged
+
+
+def combine(
+    *sources: RTMSequence | Iterable[RTMEvent],
+    axis: str = "t",
+    offset_time: bool | None = None,
+) -> list[RTMEvent]:
+    """Multi-way wrapper for :func:`concat`.
+
+    ``combine(a, b, c, axis="t")`` is equivalent to
+    ``concat(concat(a, b, axis="t"), c, axis="t")`` — it left-folds
+    concat across the sources.
+
+    Useful for any n-way combination:
+
+    >>> events = combine(baseline, phase_1, phase_2, axis="t")
+    >>> events = combine(setup_a, setup_b, setup_c, axis="p")
+    """
+    if not sources:
+        return []
+    result: list[RTMEvent] = list(sources[0])
+    for src in sources[1:]:
+        result = concat(result, src, axis=axis, offset_time=offset_time)
+    return result
