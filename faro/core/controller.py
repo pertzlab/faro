@@ -1,5 +1,5 @@
 from faro.core.pipeline import store_img, ImageProcessingPipeline
-from faro.core.data_structures import FovState, ImgType
+from faro.core.data_structures import FovState, ImgType, StimMode
 from faro.core.writers import (
     Writer,
     TiffWriter,
@@ -710,41 +710,27 @@ class Controller:
                     time.sleep(0.1)
                 self._n_channels = len(rtm_event.channels)
 
-                has_stim = len(rtm_event.stim_channels) > 0
                 fov_index = rtm_event.index.get("p", 0)
-
-                # "previous" mode gating: skip stim at t=0 for FOVs whose
-                # stimulator needs prior analyzer state. This is controller
-                # state (analyzer-driven), not event state, so it stays here
-                # as a pre-filter rather than moving into plan_events.
+                # "previous" mode at t=0: the analyzer has no prior
+                # frame yet, so skip stim for this FOV until it's
+                # acquired imaging once.
                 suppress_stim = (
-                    stim_mode == "previous"
-                    and has_stim
+                    stim_mode == StimMode.PREVIOUS
+                    and rtm_event.has_stim
                     and self._analyzer.stimulator_needs_data
                     and fov_index not in _stim_pending
                 )
-                build_slm = (
-                    (lambda ev: self._build_stim_slm(ev))
-                    if (self._mic.dmd and not suppress_stim)
-                    else None
-                )
 
-                planned = rtm_event.plan_events(
+                for ev in rtm_event.plan_events(
                     stim_mode=stim_mode,
-                    build_slm=build_slm,
+                    build_slm=self._build_stim_slm if self._mic.dmd else None,
                     resolve_group=self._mic.resolve_group,
                     resolve_power=self._mic.resolve_power,
-                )
-                if suppress_stim:
-                    planned = [
-                        e for e in planned
-                        if e.metadata.get("img_type") != ImgType.IMG_STIM
-                    ]
-
-                for ev in planned:
+                    suppress_stim=suppress_stim,
+                ):
                     self._put_event(ev)
 
-                if stim_mode == "previous" and has_stim:
+                if stim_mode == StimMode.PREVIOUS and rtm_event.has_stim:
                     _stim_pending.add(fov_index)
         finally:
             self._event_queue = None
