@@ -1,0 +1,169 @@
+"""Hardware smoke test: end-to-end cell migration acquisition.
+
+Converted from ``experiments/21_cell_migration/cell_migration.ipynb``.
+Runs a short multi-FOV / multi-timestep acquisition with cellpose
+segmentation, trackpy tracking, ``StimPercentageOfCell`` DMD
+stimulation, and an optocheck reference channel on the last frame
+(exercises the ref-channel write path).
+
+Why this test exists:
+    The notebook is the canonical end-to-end demo for the segmentation
+    + tracking + per-cell stimulation pipeline. Converting it to a
+    pytest target lets us validate the whole stack against real
+    hardware in CI-style runs without needing napari or interactive
+    FOV selection.
+
+Differences from the notebook (intentional, for test ergonomics):
+    * No napari / napari-micromanager. FOV positions come from the
+      ``safe_positions`` fixture as relative offsets from the stage's
+      current XY (max 40 µm), so the stage never makes a large move.
+    * Output goes to pytest's ``tmp_path`` (auto-cleaned) instead of
+      a hardcoded drive letter.
+    * Segmentation is local (cellpose) instead of remote
+      (imaging-server-kit) so the test doesn't depend on a separate
+      server being reachable.
+    * The DMD affine matrix is the synthetic identity from
+      ``synthetic_affine`` — no interactive calibration step.
+    * Frame count and interval are scaled down (4 frames × 5 s) so
+      the whole test takes about a minute.
+
+The test is gated by ``--scope`` / ``FARO_SCOPE`` and skipped by
+default. See ``tests/conftest.py`` for the gating logic.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+import zarr
+from useq import Position, TIntervalLoops
+
+from faro.core.controller import Controller
+from faro.core.data_structures import (
+    Channel as RTMChannel,
+    PowerChannel,
+    RTMSequence,
+    SegmentationMethod,
+)
+from faro.core.pipeline import ImageProcessingPipeline
+from faro.core.writers import OmeZarrWriter
+from faro.feature_extraction.optocheck import OptoCheckFE
+from faro.feature_extraction.simple import SimpleFE
+from faro.segmentation.cellpose_v4 import CellposeV4
+from faro.stimulation.percentage_of_cell import StimPercentageOfCell
+from faro.tracking.trackpy import TrackerTrackpy
+
+
+N_FRAMES = 4
+TIME_BETWEEN_TIMESTEPS_S = 5.0
+STIM_CELL_PERCENTAGE = 0.3
+
+
+@pytest.mark.hardware
+def test_cell_migration_smoke(
+    microscope, scope_config, safe_positions, tmp_path
+) -> None:
+    """End-to-end smoke test: segmentation + tracking + stim + ref."""
+
+    cfg = scope_config
+
+    imaging = RTMChannel(
+        config=cfg["imaging_channel"],
+        exposure=cfg["imaging_exposure"],
+        group=cfg["channel_group"],
+    )
+    optocheck = RTMChannel(
+        config=cfg["optocheck_channel"],
+        exposure=cfg["optocheck_exposure"],
+        group=cfg["channel_group"],
+    )
+    stim = PowerChannel(
+        config=cfg["stim_channel"],
+        exposure=cfg["stim_exposure"],
+        group=cfg["channel_group"],
+        power=cfg["stim_power"],
+    )
+
+    sequence = RTMSequence(
+        stage_positions=[
+            Position(x=p["x"], y=p["y"], z=p["z"], name=p["name"])
+            for p in safe_positions
+        ],
+        time_plan=TIntervalLoops(
+            interval=TIME_BETWEEN_TIMESTEPS_S,
+            loops=N_FRAMES,
+        ),
+        channels=[imaging],
+        stim_channels=(stim,),
+        # Stim every frame except the first (no prior segmentation yet).
+        stim_frames=frozenset(range(1, N_FRAMES)),
+        ref_channels=(optocheck,),
+        # ``-1`` resolves to the last timepoint via _resolve_frame_set.
+        ref_frames=frozenset({-1}),
+        # StimPercentageOfCell reads this from per-event metadata.
+        rtm_metadata={"stim_cell_percentage": STIM_CELL_PERCENTAGE},
+    )
+
+    pipeline = ImageProcessingPipeline(
+        storage_path=str(tmp_path),
+        segmentators=[
+            SegmentationMethod(
+                name="labels",
+                segmentation_class=CellposeV4(min_size=50, gpu=True),
+                use_channel=0,
+                save_tracked=True,
+            ),
+        ],
+        feature_extractor=SimpleFE("labels"),
+        feature_extractor_ref=OptoCheckFE(used_mask="labels"),
+        stimulator=StimPercentageOfCell(),
+        tracker=TrackerTrackpy(),
+    )
+
+    writer = OmeZarrWriter(
+        storage_path=str(tmp_path),
+        store_stim_images=True,
+    )
+
+    controller = Controller(microscope, pipeline, writer=writer)
+    try:
+        controller.run_experiment(list(sequence), stim_mode="current")
+    finally:
+        controller.finish_experiment()
+
+    # Surface background-thread errors. Experiments intentionally keep
+    # running after storage / pipeline errors so a transient hardware
+    # glitch doesn't abort a long acquisition, but a hardware test is
+    # meaningless if it silently swallows errors.
+    assert not controller.background_errors, (
+        "Background errors during acquisition:\n"
+        + "\n".join(
+            f"  [{src}] {etype}: {msg}"
+            for src, etype, msg, _ in controller.background_errors
+        )
+    )
+
+    # ------------------------------------------------------------------
+    # Output assertions — keep these focused on "did the run produce
+    # something napari can open?" rather than per-frame correctness.
+    # ------------------------------------------------------------------
+    zarr_path = os.path.join(str(tmp_path), "acquisition.ome.zarr")
+    assert os.path.isdir(zarr_path), (
+        f"OME-Zarr store not created at {zarr_path}"
+    )
+
+    grp = zarr.open_group(zarr_path, mode="r")
+    assert "ome" in grp.attrs, (
+        "OME metadata missing on root group — store will not load in napari"
+    )
+
+    # ImageProcessingPipeline always creates tracks/. With the trackpy
+    # tracker we expect at least one parquet per FOV.
+    tracks_dir = tmp_path / "tracks"
+    assert tracks_dir.is_dir(), "tracks/ folder not created"
+    parquet_files = list(tracks_dir.glob("*.parquet"))
+    assert parquet_files, "no track parquet files written"
+
+    # OmeZarrWriter persists the event list as JSON for re-runs.
+    assert (tmp_path / "events.json").is_file(), "events.json not written"
