@@ -41,8 +41,14 @@ stardist = [
     ]
 
 cellpose = [
-    "cellpose",
+    # 4.1.1 fixed a numpy 2.x crash in models._resize_gradients on the
+    # GPU code path. Older versions are fine on CPU but blow up on GPU.
+    "cellpose>=4.1.1",
     "torch",
+    # torchvision is a transitive dep of cellpose, but listed explicitly
+    # so [tool.uv.sources] picks up the cu128 index pin (uv only routes
+    # source overrides for packages declared as direct deps).
+    "torchvision",
     ]
 
 convpaint = [
@@ -65,16 +71,38 @@ api74 = [
     "pymmcore==11.10.0.74.1"
 ]
 
+api75 = [
+    "pymmcore==12.2.2.75.0"
+]
+
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+# CUDA 12.8 wheels — the broadest currently-deployed driver compatibility
+# across the Pertzlab microscope PCs. cu130 wheels need driver >= 580.65,
+# which the Moench PC's 576.88 driver doesn't satisfy. cu128 still gives
+# full GPU acceleration for cellpose / torch and works on driver >= ~525.
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
+[tool.uv]
+conflicts = [
+    [
+        { extra = "api74" },
+        { extra = "api75" },
+    ],
+]
+
 [tool.uv.sources]
-torch = { index = "pytorch-cu130" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 virtual-microscope = { git = "https://github.com/hinderling/virtual-microscope.git" }
 pymmcore-widgets = {git = "https://github.com/pymmcore-plus/pymmcore-widgets.git" }
+
+[tool.pytest.ini_options]
+markers = [
+    "hardware: requires a real Pertzlab microscope (selected via --scope or FARO_SCOPE env var). Skipped by default.",
+]
 
 [build-system]
 requires = ["hatchling"]
