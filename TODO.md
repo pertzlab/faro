@@ -55,32 +55,83 @@ going as if it had stimulated. This is the worst kind of silent bug
 for a 24 h feedback experiment: you'd believe stim was on from frame
 1 and only discover the gap during analysis.
 
-**Root cause.** `Analyzer.get_stim_mask`
-(`faro/core/controller.py:118`) blocks on `fov_state.stim_mask_queue`
-for up to 80 s and then falls through with `stim_mask = None`. The
-first-frame cellpose inference on GPU is slower than 80 s because the
-model / CUDA context is still warming up, so the mask isn't ready in
-time. The fallback silently sends `False` via `_build_stim_slm`
-without recording anything to `background_errors`.
+**Status.** The *silent* half is fixed: `Analyzer.get_stim_mask` now
+records a `stim_mask` background error on timeout, so hardware tests
+assert on it and fail loudly. The stim event still sends `False` to
+the SLM (log-and-continue, same as other background failures), but
+at least the failure is visible.
 
-**Fix options (pick one or combine):**
+**Root cause is UNVERIFIED.** Earlier notes claimed "cellpose GPU
+warmup > 80 s" but nobody has actually measured it. Plausible
+alternatives:
 
-- **Pre-warm cellpose.** In `Controller.run_experiment` (or a new
-  `pipeline.prewarm()` hook), run one dummy `segment(np.zeros(...))`
-  before the MDA thread starts. Eats the first-inference cost once,
-  outside the acquisition window.
-- **Record as a fatal / background error.** When `get_stim_mask`
-  times out, append to `analyzer.background_errors` so it surfaces
-  in tests, or escalate via `_abort_mda_from_callback` like the
-  shape-mismatch guard does. At minimum the caller should *know*
-  the frame had no stim.
-- **Make the timeout configurable.** 80 s is hardcoded; pipelines
-  with slow first-frame segmenters (cellpose SAM, stardist remote,
-  convpaint) need more, or should opt into "block forever" semantics.
+- **Cellpose-SAM first-inference GPU cold start.** The v4 default
+  model is `cpsam`, ~1.2 GB (vs. ~25 MB for older cellpose models).
+  First-inference cold start with cuDNN autotuning on a SAM-scale
+  graph can be 30–90 s.
+- **Weights download on first-ever run.** Cellpose fetches to
+  `~/.cellpose/models/` lazily. If that dir is empty, 1.2 GB at
+  lab-WiFi speeds is 60+ s *once*, then never again. If this is
+  the cause, the "fix" is a one-time pre-download, not a code change.
+- **A pipeline task raising an exception that's eaten** before
+  `stim_mask_queue.put()` runs. (`_pipeline_task_done` now records
+  to `background_errors`, so this case should already be visible —
+  if the test reports a `pipeline` error alongside the `stim_mask`
+  error, this is the cause.)
+- **Deadlock** between the storage worker and the pipeline executor.
+- **The first raw imaging frame never making it through**
+  `Controller._frame_buffers` (wrong channel count, stale buffer,
+  buffer-shape-mismatch path triggered, etc.).
 
-Preference: pre-warm + record-as-background-error. Pre-warm makes
-normal runs not hit the timeout at all; recording catches the
-edge-case where something still fails.
+### What to measure on the next Moench run
+
+Don't add more speculation — instrument and collect data. All of
+these should be gated behind `analyzer.debug` so normal runs aren't
+affected.
+
+1. **`CellposeV4.__init__` wall time.** Time the
+   `models.CellposeModel(gpu=gpu)` construction separately from
+   first inference. Tells us whether the problem is model loading
+   or inference.
+2. **`CellposeV4.segment` first N calls.** Keep a per-instance call
+   counter and print `[timing] cellpose.segment call=N t=X.Xs` for
+   the first 3 calls. If call 1 is 70 s and call 2 is 0.3 s, it's
+   first-inference warmup.
+3. **Executor-queue lag.** In `_try_submit_pipeline`, print the
+   wall-clock gap between `executor.submit(...)` and the first line
+   of `pipeline.run` (add a timestamp param, or instrument
+   `pipeline.run` directly). Rules out "executor queue backlog".
+4. **`stim_mask_queue.put()` timing.** Print when the first stim
+   mask actually gets put. The gap between the first
+   `_on_frame_ready` and the corresponding `queue.put` is the
+   actionable number.
+5. **Confirm weights cache state before the run.** `ls -lh ~/.cellpose/models/`
+   on the Moench PC before starting the test. If `cpsam` is missing
+   or zero-bytes, the first run is a download, not inference.
+
+### Pick a fix based on the measurement
+
+- **If first-inference warmup:** add a `pipeline.prewarm()` hook
+  that runs one `segment(np.zeros((256, 256), dtype=np.uint16))`
+  inside `Controller.run_experiment` *before* `run_mda`. Consider
+  running it on a thread that fans out in parallel with MDA startup
+  so it doesn't add serial wall-time.
+- **If weights download:** document "pre-download cellpose weights
+  before running hardware tests" in the `tests/hardware/conftest.py`
+  docstring, or add a session-scope fixture that instantiates
+  `CellposeModel(gpu=True)` once to force the download.
+- **If executor queue lag or deadlock:** fix the actual bug —
+  pre-warming won't help.
+- **If a pipeline exception is being eaten:** find the missing
+  `_record_background_error` callsite and add it.
+
+### Make the timeout configurable (low priority, independent)
+
+80 s is hardcoded in `Analyzer.get_stim_mask`. Pipelines with slow
+first-frame segmenters (cellpose SAM, stardist remote, convpaint)
+need more. Add it as a constructor arg on `Analyzer`, or let
+`Controller` pass it through from `run_experiment`. Not urgent now
+that the background-error recording surfaces the timeout either way.
 
 ---
 
