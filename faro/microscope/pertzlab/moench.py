@@ -37,9 +37,11 @@ def _set_c_numeric_locale():
 class KeepDMDAlive:
     def __init__(self, mmc):
         self.mmc = mmc
-        self.thread = None
-        self.last_wakeup = 0
-        self.is_running = False
+        self.thread: threading.Thread | None = None
+        self.last_wakeup = 0.0
+        # daemon=True so interpreter shutdown doesn't block on this
+        # thread holding COM3 (zombie python.exe on next session).
+        self._stop_event = threading.Event()
 
     def wakeup_dmd(self):
         self.mmc.setSLMExposure(self.mmc.getSLMDevice(), 200000.0)
@@ -48,24 +50,28 @@ class KeepDMDAlive:
 
     def run(self):
         _set_c_numeric_locale()
-        self.is_running = True
-        self.last_wakeup = 0
-        self.thread = threading.Thread(target=self._run)
+        self._stop_event.clear()
+        self.last_wakeup = 0.0
+        self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self):
-        while self.is_running:
+        while not self._stop_event.is_set():
             current_time = time.time()
             if current_time - self.last_wakeup > 60:  # Wake up every minute
                 self.wakeup_dmd()
                 self.last_wakeup = current_time
-            time.sleep(5)
+            # Event.wait lets stop() break out immediately instead of
+            # eating up to 5 s of teardown time per session.
+            if self._stop_event.wait(timeout=5):
+                return
 
     def stop(self):
         _set_c_numeric_locale()
-        self.is_running = False
-        self.thread.join()
-        time.sleep(5)
+        self._stop_event.set()
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join()
+        self.thread = None
         self.mmc.setSLMExposure(self.mmc.getSLMDevice(), 100)
         self.mmc.displaySLMImage(self.mmc.getSLMDevice())
 
@@ -160,6 +166,27 @@ class Moench(PyMMCoreMicroscope):
     def post_experiment(self):
         """Post-process the experiment."""
         self.wakeup_dmd.run()
+
+    def shutdown(self):
+        """Tear down hardware state so the microscope can be discarded.
+
+        Stops the DMD wakeup loop and unloads all Micro-Manager devices
+        so COM ports (notably the LED on COM3) and the SLM handle are
+        released. Without this, pymmcore's native threads keep the
+        Python process alive after the main thread exits, leaving a
+        zombie that blocks the next session with
+        ``Error in device "COM3"`` when MM tries to initialize.
+        """
+        wakeup = getattr(self, "wakeup_dmd", None)
+        if wakeup is not None:
+            try:
+                wakeup.stop()
+            except Exception:
+                pass
+        try:
+            self.mmc.unloadAllDevices()
+        except Exception:
+            pass
 
     def register_engine(self, force: bool = False) -> None:
         """Create and register the microscope-specific MDA engine.
