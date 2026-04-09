@@ -713,60 +713,39 @@ class Controller:
                 has_stim = len(rtm_event.stim_channels) > 0
                 fov_index = rtm_event.index.get("p", 0)
 
-                # Convert to MDAEvents (stim_slm_image=None; we fill it below)
-                mda_events = rtm_event.to_mda_events(
+                # "previous" mode gating: skip stim at t=0 for FOVs whose
+                # stimulator needs prior analyzer state. This is controller
+                # state (analyzer-driven), not event state, so it stays here
+                # as a pre-filter rather than moving into plan_events.
+                suppress_stim = (
+                    stim_mode == "previous"
+                    and has_stim
+                    and self._analyzer.stimulator_needs_data
+                    and fov_index not in _stim_pending
+                )
+                build_slm = (
+                    (lambda ev: self._build_stim_slm(ev))
+                    if (self._mic.dmd and not suppress_stim)
+                    else None
+                )
+
+                planned = rtm_event.plan_events(
+                    stim_mode=stim_mode,
+                    build_slm=build_slm,
                     resolve_group=self._mic.resolve_group,
                     resolve_power=self._mic.resolve_power,
-                    stim_slm_image=None,
                 )
-                img_events = [
-                    e
-                    for e in mda_events
-                    if e.metadata.get("img_type") != ImgType.IMG_STIM
-                ]
-                stim_events = [
-                    e
-                    for e in mda_events
-                    if e.metadata.get("img_type") == ImgType.IMG_STIM
-                ]
+                if suppress_stim:
+                    planned = [
+                        e for e in planned
+                        if e.metadata.get("img_type") != ImgType.IMG_STIM
+                    ]
 
-                if stim_mode == "previous":
-                    # --- "previous" mode ---
-                    # Stim with mask from t-1, then acquire t.
+                for ev in planned:
+                    self._put_event(ev)
 
-                    # 1. Stim (mask from previous frame)
-                    if has_stim and stim_events and self._mic.dmd:
-                        if (
-                            not self._analyzer.stimulator_needs_data
-                            or fov_index in _stim_pending
-                        ):
-                            slm = self._build_stim_slm(rtm_event)
-                            for ev in stim_events:
-                                ev = ev.model_copy(update={"slm_image": slm})
-                                self._put_event(ev)
-
-                    # 2. Queue imaging + ref events
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    if has_stim:
-                        _stim_pending.add(fov_index)
-
-                else:
-                    # --- "current" mode (default) ---
-                    # 1. Queue imaging + ref events first
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    # 2. Wait for mask, then queue stim events
-                    if has_stim and stim_events:
-                        stim_slm_image = None
-                        if self._mic.dmd:
-                            stim_slm_image = self._build_stim_slm(rtm_event)
-                        for ev in stim_events:
-                            if stim_slm_image is not None:
-                                ev = ev.model_copy(update={"slm_image": stim_slm_image})
-                            self._put_event(ev)
+                if stim_mode == "previous" and has_stim:
+                    _stim_pending.add(fov_index)
         finally:
             self._event_queue = None
             self._queue.put(self.STOP_EVENT)

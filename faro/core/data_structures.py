@@ -157,6 +157,67 @@ class RTMEvent(MDAEvent):
     class Config:
         arbitrary_types_allowed = True
 
+    def plan_events(
+        self,
+        *,
+        stim_mode: str = "current",
+        build_slm=None,
+        resolve_group=None,
+        resolve_power=None,
+    ) -> list[MDAEvent]:
+        """Return MDAEvents in dispatch order for this (t, p) group.
+
+        Splits the event into imaging/ref and stim sub-events, resolves the
+        SLM image via ``build_slm`` if the group has stim channels, and
+        orders them according to ``stim_mode``:
+
+        - ``"current"`` (default): image → stim. The stim event fires after
+          the imaging frame at the same (t, p), so the stim mask can be
+          derived from analysis of the freshly-acquired image.
+        - ``"previous"``: stim → image. The stim mask is reused from the
+          previous timepoint's analysis; imaging happens afterwards.
+
+        This is the per-RTMEvent planning step. Stim events are inserted
+        *within* a single (t, p) group, NOT appended to the whole sequence:
+        over the full run, stim events still appear interleaved at their
+        correct (t, p) positions.
+
+        Parameters
+        ----------
+        stim_mode:
+            ``"current"`` or ``"previous"``.
+        build_slm:
+            Callable ``(rtm_event) -> SLMImage | None``. Called only when the
+            event has stim channels. Return ``None`` to leave ``slm_image``
+            unset (e.g. for microscopes without a DMD).
+        resolve_group, resolve_power:
+            Forwarded to :meth:`to_mda_events`.
+        """
+        mda_events = self.to_mda_events(
+            resolve_group=resolve_group,
+            resolve_power=resolve_power,
+            stim_slm_image=None,
+        )
+        img_events = [
+            e for e in mda_events
+            if e.metadata.get("img_type") != ImgType.IMG_STIM
+        ]
+        stim_events = [
+            e for e in mda_events
+            if e.metadata.get("img_type") == ImgType.IMG_STIM
+        ]
+
+        if stim_events and build_slm is not None:
+            slm = build_slm(self)
+            if slm is not None:
+                stim_events = [
+                    e.model_copy(update={"slm_image": slm}) for e in stim_events
+                ]
+
+        if stim_mode == "previous":
+            return stim_events + img_events
+        return img_events + stim_events
+
     def to_mda_events(self, *, resolve_group=None, resolve_power=None,
                       dmd=None, stim_slm_image=None) -> list[MDAEvent]:
         """Convert to standard useq MDAEvents.

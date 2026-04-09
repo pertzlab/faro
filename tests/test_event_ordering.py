@@ -279,6 +279,85 @@ class TestToMdaEventsOrder:
 
 
 # ===================================================================
+# plan_events: per-RTMEvent dispatch ordering (current vs previous mode)
+# ===================================================================
+
+class TestPlanEvents:
+    """RTMEvent.plan_events orders imaging/stim within a single (t, p)."""
+
+    def _event_with_stim(self):
+        return RTMEvent(
+            index={"t": 1, "p": 0},
+            channels=(Channel(config="ch0", exposure=50),),
+            stim_channels=(Channel(config="stim-405", exposure=100),),
+            x_pos=0, y_pos=0, z_pos=0, min_start_time=1,
+            metadata={"stim": True},
+        )
+
+    def test_current_mode_orders_imaging_then_stim(self):
+        ev = self._event_with_stim()
+        planned = ev.plan_events(stim_mode="current")
+        types = [e.metadata["img_type"] for e in planned]
+        assert types == [ImgType.IMG_RAW, ImgType.IMG_STIM]
+
+    def test_previous_mode_orders_stim_then_imaging(self):
+        ev = self._event_with_stim()
+        planned = ev.plan_events(stim_mode="previous")
+        types = [e.metadata["img_type"] for e in planned]
+        assert types == [ImgType.IMG_STIM, ImgType.IMG_RAW]
+
+    def test_no_stim_channels_returns_imaging_only(self):
+        """Without stim, both modes return the same imaging events."""
+        ev = RTMEvent(
+            index={"t": 0, "p": 0},
+            channels=(Channel(config="ch0", exposure=50),),
+            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+        )
+        cur = ev.plan_events(stim_mode="current")
+        prev = ev.plan_events(stim_mode="previous")
+        assert len(cur) == 1
+        assert len(prev) == 1
+        assert cur[0].metadata["img_type"] == ImgType.IMG_RAW
+        assert prev[0].metadata["img_type"] == ImgType.IMG_RAW
+
+    def test_build_slm_is_attached_to_stim_events(self):
+        """The build_slm callback's return value lands on stim events."""
+        sentinel = object()
+        ev = self._event_with_stim()
+        planned = ev.plan_events(
+            stim_mode="current",
+            build_slm=lambda _ev: sentinel,
+        )
+        stim_events = [e for e in planned if e.metadata["img_type"] == ImgType.IMG_STIM]
+        assert len(stim_events) == 1
+        assert stim_events[0].slm_image is sentinel
+
+    def test_build_slm_not_called_without_stim(self):
+        """build_slm is skipped when the event has no stim channels."""
+        called = []
+        ev = RTMEvent(
+            index={"t": 0, "p": 0},
+            channels=(Channel(config="ch0", exposure=50),),
+            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+        )
+        ev.plan_events(
+            stim_mode="current",
+            build_slm=lambda e: called.append(e) or None,
+        )
+        assert called == []
+
+    def test_build_slm_returning_none_leaves_stim_unchanged(self):
+        """A None SLM return value doesn't overwrite slm_image."""
+        ev = self._event_with_stim()
+        planned = ev.plan_events(
+            stim_mode="current",
+            build_slm=lambda _ev: None,
+        )
+        stim_events = [e for e in planned if e.metadata["img_type"] == ImgType.IMG_STIM]
+        assert stim_events[0].slm_image is None
+
+
+# ===================================================================
 # Ref as a separate phase
 # ===================================================================
 
