@@ -26,7 +26,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 
-BackgroundErrorSource = Literal["storage", "deferred", "pipeline"]
+BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
 
 
 @dataclass(frozen=True)
@@ -166,8 +166,19 @@ class Analyzer:
             fov_state = self.get_fov_state(fov_index)
             try:
                 return fov_state.stim_mask_queue.get(block=True, timeout=timeout)
-            except Exception as e:
-                print(f"Warning: Stimulation mask not ready (timeout): {e}")
+            except QueueEmpty as e:
+                # _build_stim_slm still log-and-continues with False,
+                # but hardware tests check background_errors so the
+                # dropped stim frame is no longer silent. Raise-then-
+                # catch so _record_background_error's format_exc() sees
+                # the TimeoutError with its QueueEmpty cause chain.
+                try:
+                    raise TimeoutError(
+                        f"Stim mask not ready for FOV {fov_index} after "
+                        f"{timeout}s — pipeline didn't produce one in time"
+                    ) from e
+                except TimeoutError as terr:
+                    self._record_background_error("stim_mask", terr)
                 return None
         else:
             metadata["img_shape"] = metadata.get("img_shape", (1024, 1024))

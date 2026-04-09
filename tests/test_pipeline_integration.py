@@ -1315,3 +1315,47 @@ class TestBurstNoSignalLoss:
             assert (
                 len(rows) == N_BURST_FRAMES
             ), f"Particle {pid}: expected {N_BURST_FRAMES} rows, got {len(rows)}"
+
+
+# ===================================================================
+# Test Class: Analyzer.get_stim_mask timeout recording
+# ===================================================================
+
+
+class TestStimMaskTimeout:
+    """Analyzer.get_stim_mask records a background error when the queue times out.
+
+    Regression guard for the silent-stim-frame bug: on the first stim
+    frame, the pipeline hadn't produced a mask yet, get_stim_mask timed
+    out, and the fallback silently sent False to the SLM with nothing
+    recorded. Hardware tests (which assert background_errors == [])
+    should fail loudly in that case.
+    """
+
+    @pytest.fixture
+    def analyzer(self, tmp_dir) -> Iterator[Analyzer]:
+        pipeline = _make_pipeline_with_stim(tmp_dir, ImageBasedStim())
+        instance = Analyzer(pipeline=pipeline)
+        yield instance
+        instance.shutdown(wait=True)
+
+    def test_timeout_records_background_error(self, analyzer):
+        result = analyzer.get_stim_mask(fov_index=7, metadata={}, timeout=0.05)
+        assert result is None
+        assert len(analyzer.background_errors) == 1
+        err = analyzer.background_errors[0]
+        assert err.source == "stim_mask"
+        assert err.exc_type == "TimeoutError"
+        assert "FOV 7" in err.message
+        assert "0.05" in err.message
+        # Traceback should reflect the TimeoutError raise site, not the
+        # bare QueueEmpty — regression guard for the format_exc() bug.
+        assert "TimeoutError" in err.traceback
+
+    def test_ready_mask_returns_value_without_recording(self, analyzer):
+        """Happy path: a mask already in the queue is returned, no error recorded."""
+        mask = np.ones((32, 32), dtype=np.uint8)
+        analyzer.get_fov_state(0).stim_mask_queue.put(mask)
+        result = analyzer.get_stim_mask(fov_index=0, metadata={}, timeout=5.0)
+        assert result is mask
+        assert analyzer.background_errors == []
