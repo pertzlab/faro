@@ -16,27 +16,21 @@ haven't fixed yet.
 
 ## 1. Exclude `Mosaic3` from `waitForDevice` (performance / Moench)
 
-**Symptom.** Every MDA event on Moench logs:
+**Status.** Fixed via a `SKIP_WAIT_DEVICES: tuple[str, ...]` class
+attribute on `Moench` that `MoenchMDAEngine._wait_for_system_excluding_xy`
+consults via the engine's microscope weakref. Moench declares
+`SKIP_WAIT_DEVICES = ("Mosaic3",)`. Unit-tested in
+`tests/test_hardware_pertzlab.py::TestSkipWaitDevices`. Verification
+of the actual time saved on a cell-migration test run is still
+pending — expected savings 60-100 s on a 280 s test (5 s per event
+× ~12-20 events that hit the wait path).
 
-```
-[WARN] waitForDevice(Mosaic3) timed out (Wait for device "Mosaic3" timed out after 5000ms), continuing.
-```
-
-That's 5 s wasted per event. The cell-migration test has ~12 imaging
-events → ~60 s of pure wait cost, and a 24 h experiment pays this tax
-on every frame.
-
-**Root cause.** `Mosaic3` (the DMD) has a perpetually-stuck `Busy()`
-flag, same pathology as `TIXYDrive`. `MoenchMDAEngine._wait_for_system_excluding_xy`
-(`faro/microscope/pertzlab/moench.py:325-376`) already knows how to
-skip `TIXYDrive` — `Mosaic3` should be in the same skip list, or the
-exclude set should be a class attribute so it's easy to extend.
-
-**Fix sketch.** In `_wait_for_system_excluding_xy`, add
-`"Mosaic3"` (or better: a `SKIP_WAIT_DEVICES` class tuple on `Moench`)
-to the set of devices the loop skips. The DMD image has already been
-committed by `setSLMImage` / `displaySLMImage` by the time we're
-waiting, so skipping its `Busy()` poll is safe.
+**Upstream follow-up.** A more general per-device timeout primitive
+on `CMMCorePlus.waitForDevice(dev, timeout_ms=X)` — where
+`timeout_ms=0` collapses to "check Busy() once, fail fast" — would
+replace the skip-list with a cleaner device-neutral knob. See
+`../pymmcore-plus/TODO.md` for the full proposal and MMCore C++
+source references.
 
 ---
 
