@@ -132,10 +132,17 @@ class ImgType(enum.Enum):
     IMG_REF = enum.auto()
 
 
+class StimMode(str, enum.Enum):
+    """When stim events fire relative to imaging within a (t, p) group."""
+
+    CURRENT = "current"  # image → stim (mask from the fresh frame)
+    PREVIOUS = "previous"  # stim → image (mask from the previous timepoint)
+
+
 # ---------------------------------------------------------------------------
 # RTMEvent — extended MDAEvent with multi-channel + stimulation support
 # ---------------------------------------------------------------------------
-from useq import MDAEvent, MDASequence
+from useq import Axis, MDAEvent, MDASequence
 from faro.core._useq_compat import SLMImage
 
 
@@ -157,55 +164,47 @@ class RTMEvent(MDAEvent):
     class Config:
         arbitrary_types_allowed = True
 
+    @property
+    def has_stim(self) -> bool:
+        """Whether this event carries any stim channels."""
+        return bool(self.stim_channels)
+
     def plan_events(
         self,
         *,
-        stim_mode: str = "current",
+        stim_mode: StimMode | str = "current",
         build_slm=None,
         resolve_group=None,
         resolve_power=None,
+        suppress_stim: bool = False,
     ) -> list[MDAEvent]:
         """Return MDAEvents in dispatch order for this (t, p) group.
 
-        Splits the event into imaging/ref and stim sub-events, resolves the
-        SLM image via ``build_slm`` if the group has stim channels, and
-        orders them according to ``stim_mode``:
+        - ``stim_mode="current"``: image → stim (mask derived from the
+          fresh imaging frame).
+        - ``stim_mode="previous"``: stim → image (mask reused from the
+          previous timepoint).
 
-        - ``"current"`` (default): image → stim. The stim event fires after
-          the imaging frame at the same (t, p), so the stim mask can be
-          derived from analysis of the freshly-acquired image.
-        - ``"previous"``: stim → image. The stim mask is reused from the
-          previous timepoint's analysis; imaging happens afterwards.
-
-        This is the per-RTMEvent planning step. Stim events are inserted
-        *within* a single (t, p) group, NOT appended to the whole sequence:
-        over the full run, stim events still appear interleaved at their
-        correct (t, p) positions.
-
-        Parameters
-        ----------
-        stim_mode:
-            ``"current"`` or ``"previous"``.
-        build_slm:
-            Callable ``(rtm_event) -> SLMImage | None``. Called only when the
-            event has stim channels. Return ``None`` to leave ``slm_image``
-            unset (e.g. for microscopes without a DMD).
-        resolve_group, resolve_power:
-            Forwarded to :meth:`to_mda_events`.
+        Stim events are inserted within a single (t, p) group; over the
+        full run they still appear interleaved at their correct (t, p).
+        Set ``suppress_stim=True`` to drop stim events entirely (used by
+        the controller in "previous" mode at t=0 when the analyzer has
+        no prior state to build a mask from).
         """
-        mda_events = self.to_mda_events(
+        img_events: list[MDAEvent] = []
+        stim_events: list[MDAEvent] = []
+        for e in self.to_mda_events(
             resolve_group=resolve_group,
             resolve_power=resolve_power,
             stim_slm_image=None,
-        )
-        img_events = [
-            e for e in mda_events
-            if e.metadata.get("img_type") != ImgType.IMG_STIM
-        ]
-        stim_events = [
-            e for e in mda_events
-            if e.metadata.get("img_type") == ImgType.IMG_STIM
-        ]
+        ):
+            if e.metadata.get("img_type") == ImgType.IMG_STIM:
+                stim_events.append(e)
+            else:
+                img_events.append(e)
+
+        if suppress_stim:
+            return img_events
 
         if stim_events and build_slm is not None:
             slm = build_slm(self)
@@ -346,8 +345,8 @@ def _resolve_frame_set(frames, n_timepoints: int) -> set[int]:
 class RTMSequence(MDASequence):
     """MDASequence with stimulation, reference acquisition, and pipeline metadata.
 
-    Iterating yields RTMEvent objects (not plain MDAEvents).
-    Concatenate multiple sequences with ``+`` for multi-phase experiments.
+    Iterating yields RTMEvent objects (not plain MDAEvents). Use
+    :func:`combine` to chain multi-phase experiments.
 
     ``stim_frames`` and ``ref_frames`` accept sets, frozensets, or ``range``
     objects.  Negative indices are resolved relative to the total number of
@@ -412,11 +411,8 @@ class RTMSequence(MDASequence):
         relative to the total number of timepoints.
         """
         groups: dict[tuple, dict] = {}
-        # Call the parent's iter_events directly (not via self) so we
-        # bypass this very override and get the plain-MDAEvent stream.
-        # MDASequence.__iter__ would dispatch back into RTMSequence.iter_events
-        # and recurse forever. Equivalent to the old private ``iter_sequence``
-        # call but via the parent class's public method.
+        # Call the parent method directly to avoid recursing back into
+        # this override (MDASequence.__iter__ dispatches via self).
         for mda_ev in MDASequence.iter_events(self):
             t = mda_ev.index.get("t", 0)
             p = mda_ev.index.get("p", 0)
@@ -506,14 +502,12 @@ class RTMSequence(MDASequence):
 def _infer_interval(
     src: Any, events: list[RTMEvent], fallback: float = 1.0,
 ) -> float:
-    """Best-effort 'what's the spacing between consecutive timepoints'.
+    """Best-effort spacing between consecutive timepoints.
 
-    Prefers the source sequence's own ``time_plan.interval`` — this is the
-    authoritative answer and is available whenever ``src`` is still an
-    ``RTMSequence``. Falls back to the smallest non-zero gap between
-    ``min_start_time`` values across events (which is robust to multi-FOV
-    experiments where adjacent events in iteration order share a timepoint),
-    and finally to ``fallback`` when nothing else is available.
+    Prefers the source's ``time_plan.interval`` when ``src`` is an
+    ``RTMSequence`` — authoritative and O(1). Otherwise delegates to
+    :func:`faro.core.utils._infer_interval` on the already-iterated
+    events, with ``fallback`` when that yields 0.
     """
     if isinstance(src, RTMSequence) and src.time_plan is not None:
         interval = getattr(src.time_plan, "interval", None)
@@ -522,9 +516,8 @@ def _infer_interval(
                 return float(interval)
             except (TypeError, ValueError):
                 pass
-    times = sorted({e.min_start_time or 0 for e in events})
-    gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
-    return min(gaps) if gaps else fallback
+    from faro.core.utils import _infer_interval as _from_events
+    return _from_events(events) or fallback
 
 
 def _combine_pair(
@@ -534,18 +527,9 @@ def _combine_pair(
     axis: str,
     offset_time: bool,
 ) -> list[RTMEvent]:
-    """Pairwise merge used by :func:`combine` (not a public API).
-
-    Offsets ``b``'s ``axis`` index past ``a``'s max, optionally shifts
-    ``b``'s ``min_start_time``, and either appends (axis="t") or
-    sorts-by-time to interleave (axis="p"). All the tricky semantics
-    of experiment composition live here; :func:`combine` just folds
-    this over a variadic input list.
-
-    Note: the channel-match precondition for ``axis="p"`` is enforced
-    in :func:`combine` itself (which still sees the original sources),
-    not here — by the time ``_combine_pair`` runs, ``a`` has usually
-    already been flattened to a list.
+    """Pairwise merge used by :func:`combine`. The channel-match
+    precondition for ``axis="p"`` is enforced by :func:`combine` on the
+    raw sources, because ``a`` is usually a flattened list here.
     """
     events_a = list(a)
     events_b = list(b)
@@ -555,15 +539,12 @@ def _combine_pair(
     if not events_b:
         return events_a
 
-    # Axis offset: shift b's axis key past a's max.
     max_key = max(e.index.get(axis, 0) for e in events_a) + 1
 
-    # Time offset: shift b's min_start_time past a's end.
     time_offset = 0.0
     if offset_time:
         max_time_a = max(e.min_start_time or 0 for e in events_a)
-        interval = _infer_interval(b, events_b)
-        time_offset = max_time_a + interval
+        time_offset = max_time_a + _infer_interval(b, events_b)
 
     offset_b: list[RTMEvent] = []
     for ev in events_b:
@@ -574,98 +555,53 @@ def _combine_pair(
             updates["min_start_time"] = (ev.min_start_time or 0) + time_offset
         offset_b.append(ev.model_copy(update=updates))
 
-    # Merge strategy depends on axis:
-    # - axis="t": append. Each source's own axis_order ordering is
-    #   preserved across the boundary, because the time offset guarantees
-    #   events_b all come after events_a chronologically. A re-sort here
-    #   would scramble ptcz phase boundaries.
-    # - axis="p": sort by (min_start_time, p) to interleave the two
-    #   position groups at each timepoint.
-    if axis == "t":
+    if axis == Axis.TIME:
+        # Plain append preserves each source's own axis_order across the
+        # boundary. Re-sorting by (time, p) would scramble ptcz phases.
         return events_a + offset_b
 
     merged = events_a + offset_b
-    merged.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
+    merged.sort(key=lambda e: (e.min_start_time or 0, e.index.get(Axis.POSITION, 0)))
     return merged
 
 
 def combine(
     *sources: RTMSequence | Iterable[RTMEvent],
-    axis: str = "t",
+    axis: str = Axis.TIME,
     offset_time: bool | None = None,
 ) -> list[RTMEvent]:
     """Combine N experiments by offsetting one axis of each past the previous.
 
-    The single, explicit composition primitive for multi-step experiments.
-    Two common shapes:
+    - ``axis=Axis.TIME`` (default): sources run sequentially in time,
+      each one's ``t`` indices and ``min_start_time`` shifted past the
+      accumulated end::
 
-    - ``axis="t"`` (default, sequential):
-        Each source runs AFTER the previous one in wall-clock time. Every
-        source's ``t`` indices and ``min_start_time`` are shifted past the
-        last event of the accumulated result. This is the phase-chain used
-        for multi-step experiments like ``baseline + treatment + washout``::
+          events = combine(baseline, treatment, washout, axis=Axis.TIME)
 
-            events = combine(baseline, treatment, washout, axis="t")
+    - ``axis=Axis.POSITION``: sources run in parallel at additional
+      position indices, sharing the wall clock. Useful when different
+      FOV groups need different stim schedules or treatments::
 
-    - ``axis="p"`` (parallel / interleave):
-        Sources run ALONGSIDE each other, at additional position indices.
-        Each source's ``p`` indices are shifted past the accumulated max;
-        the combined event list is sorted by time so FOVs from every
-        sub-experiment are visited at each timepoint. Useful for
-        multi-setup experiments where stim schedules, treatments, or
-        metadata differ per FOV group but everything shares the clock::
+          events = combine(setup_a, setup_b, setup_c, axis=Axis.POSITION)
 
-            events = combine(setup_a, setup_b, setup_c, axis="p")
-
-    Single-source and empty calls are degenerate cases::
-
-        combine()                   # -> []
-        combine(seq)                # -> list(seq)
-        combine(seq, axis="p")      # -> list(seq)
-
-    Parameters
-    ----------
-    *sources:
-        Two or more ``RTMSequence`` instances (or already-iterated
-        ``list[RTMEvent]``) to combine left-to-right.
-    axis:
-        Which index key to offset for each subsequent source. Defaults to
-        ``"t"``. Any key present on the events is valid; uncommon axes
-        (``"c"``, ``"z"``, ...) are accepted but rarely what you want.
-    offset_time:
-        Whether subsequent sources' ``min_start_time`` is also shifted
-        past the accumulated end. Defaults to ``True`` when ``axis="t"``
-        (so phases actually run sequentially), and ``False`` otherwise
-        (so parallel sub-experiments share the clock). Set explicitly to
-        override — e.g. ``offset_time=True`` with ``axis="p"`` gives a
-        parallel block that starts with a wall-clock delay.
-
-    Returns
-    -------
-    list[RTMEvent]
-        Flat event list ready to pass to ``ctrl.run_experiment``.
+    ``axis="t"`` / ``axis="p"`` also work since ``Axis`` is a str enum.
 
     Raises
     ------
     ValueError
-        When ``axis="p"`` and two sources declare different imaging
-        channels. The v1 writer allocates a single channel set across all
-        positions, so heterogeneous channels per FOV are unsupported
-        until the useq-schema v2 migration lands.
+        When ``axis=Axis.POSITION`` and two sources declare different
+        imaging channels. The v1 writer uses a uniform channel set across
+        positions; heterogeneous channels per FOV needs useq-schema v2.
     """
     if not sources:
         return []
     if offset_time is None:
-        offset_time = (axis == "t")
+        offset_time = (axis == Axis.TIME)
 
-    # Precondition for axis="p": every RTMSequence source must declare
-    # the same imaging channels. The v1 writer allocates a single channel
-    # set across all positions, so heterogeneous channels per FOV are
-    # unsupported until v2 sub-sequences land. This check has to run on
-    # the raw sources (before the first _combine_pair flattens them),
-    # because once ``result`` is a plain ``list[RTMEvent]`` the original
-    # ``channels`` tuple is no longer recoverable.
-    if axis == "p":
+    # Precondition check must run before _combine_pair flattens sources
+    # to lists — once flattened, the original ``channels`` tuples are
+    # no longer recoverable.
+    if axis == Axis.POSITION:
         seq_sources = [s for s in sources if isinstance(s, RTMSequence)]
         if len(seq_sources) >= 2:
             ref_channels = [getattr(ch, "config", None) for ch in seq_sources[0].channels]
@@ -673,10 +609,9 @@ def combine(
                 other = [getattr(ch, "config", None) for ch in s.channels]
                 if other != ref_channels:
                     raise ValueError(
-                        f"combine(axis='p') requires matching imaging channels; "
-                        f"got {ref_channels} vs {other}. Heterogeneous channels "
-                        f"per position is a v2 feature — track the useq-schema "
-                        f"v2 migration."
+                        f"combine(axis=Axis.POSITION) requires matching imaging "
+                        f"channels; got {ref_channels} vs {other}. Heterogeneous "
+                        f"channels per position is a v2 feature."
                     )
 
     result: list[RTMEvent] = list(sources[0])
