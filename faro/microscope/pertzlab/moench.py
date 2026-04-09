@@ -101,6 +101,13 @@ class Moench(PyMMCoreMicroscope):
     ROI_HEIGHT = 800
     SET_ROI_REQUIRED = True
 
+    # Devices whose Busy() flag is unreliable — waitForDevice on these
+    # eats the full 5 s MMCore timeout on every MDA event. Mosaic3 (DMD)
+    # has the same stuck-Busy pathology as TIXYDrive; displaySLMImage()
+    # commits the pattern synchronously before we reach the wait, so
+    # skipping the poll is safe. See TODO.md #1.
+    SKIP_WAIT_DEVICES: tuple[str, ...] = ("Mosaic3",)
+
     def __init__(self, affine_calibration_matrix=None):
         super().__init__()
 
@@ -355,14 +362,23 @@ class MoenchMDAEngine(MDAEngine):
         TIXYDrive's Busy() flag is perpetually stuck on this microscope,
         so including it in waitForSystem() wastes 5s per event. Instead we
         wait for each device individually and only check XY position when
-        a move was actually commanded.
+        a move was actually commanded. Devices listed in the microscope's
+        SKIP_WAIT_DEVICES are bypassed for the same reason.
         """
         core = self.mmcore
         xy_stage = core.getXYStageDevice() if core.getXYStageDevice() else None
 
-        # Wait for every loaded device except the XY stage
+        skip = {"Core"}
+        if xy_stage:
+            skip.add(xy_stage)
+        mic = self.microscope
+        if mic is not None:
+            skip.update(getattr(mic, "SKIP_WAIT_DEVICES", ()))
+
+        # Wait for every loaded device except the XY stage and any
+        # caller-declared skip devices.
         for dev in core.getLoadedDevices():
-            if dev == xy_stage or dev == "Core":
+            if dev in skip:
                 continue
             try:
                 core.waitForDevice(dev)

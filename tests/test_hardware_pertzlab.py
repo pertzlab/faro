@@ -121,3 +121,94 @@ class TestDetectPowerProperties:
         assert merged["CyanStim"] == ("CustomDev", "CustomProp")
         # Auto-detected still present
         assert merged["miRFP"] == ("Spectra", "Red_Level")
+
+
+# ===================================================================
+# SKIP_WAIT_DEVICES — per-microscope waitForDevice skip list
+# ===================================================================
+
+
+class _FakeWaitMMCore:
+    """Minimal mmcore surface for _wait_for_system_excluding_xy tests."""
+
+    def __init__(self, devices: list[str], xy_stage: str = ""):
+        self._devices = devices
+        self._xy_stage = xy_stage
+        self.wait_calls: list[str] = []
+
+    def getLoadedDevices(self):
+        return self._devices
+
+    def getXYStageDevice(self):
+        return self._xy_stage
+
+    def waitForDevice(self, dev: str):
+        self.wait_calls.append(dev)
+
+    def getXYPosition(self):
+        return (0.0, 0.0)
+
+
+class _FakeMoench:
+    """Weakref-able stand-in for Moench carrying SKIP_WAIT_DEVICES."""
+
+    def __init__(self, skip: tuple[str, ...]):
+        self.SKIP_WAIT_DEVICES = skip
+
+
+class TestSkipWaitDevices:
+    """MoenchMDAEngine honors the microscope's SKIP_WAIT_DEVICES tuple.
+
+    Regression guard against the 5 s-per-event Mosaic3 stuck-Busy wait
+    (TODO.md #1): devices listed here must never hit waitForDevice().
+    """
+
+    def _make_engine(self, mmc, mic):
+        import weakref
+
+        from faro.microscope.pertzlab.moench import MoenchMDAEngine
+
+        # Bypass MDAEngine.__init__ — the base class wants a real
+        # CMMCorePlus, but this test only exercises the skip-filter
+        # logic which reads self.mmcore and self.microscope.
+        engine = MoenchMDAEngine.__new__(MoenchMDAEngine)
+        engine._mmcore_ref = weakref.ref(mmc)
+        engine._microscope_ref = weakref.ref(mic)
+        return engine
+
+    def test_skip_devices_bypass_wait(self):
+        from useq import MDAEvent
+
+        mmc = _FakeWaitMMCore(
+            devices=["Core", "Camera", "Shutter", "Mosaic3", "XYStage"],
+            xy_stage="XYStage",
+        )
+        mic = _FakeMoench(skip=("Mosaic3",))
+        engine = self._make_engine(mmc, mic)
+
+        engine._wait_for_system_excluding_xy(MDAEvent())
+
+        assert "Mosaic3" not in mmc.wait_calls, "Mosaic3 should be skipped"
+        assert "XYStage" not in mmc.wait_calls, "xy_stage handled separately"
+        assert "Core" not in mmc.wait_calls, "Core is always skipped"
+        assert "Camera" in mmc.wait_calls
+        assert "Shutter" in mmc.wait_calls
+
+    def test_missing_attribute_is_noop(self):
+        """Microscopes without SKIP_WAIT_DEVICES fall through to the default."""
+        from useq import MDAEvent
+
+        mmc = _FakeWaitMMCore(
+            devices=["Core", "Camera", "Mosaic3"],
+            xy_stage="",
+        )
+
+        class _BareMic:
+            pass
+
+        engine = self._make_engine(mmc, _BareMic())
+        engine._wait_for_system_excluding_xy(MDAEvent())
+
+        # Without SKIP_WAIT_DEVICES, Mosaic3 is waited on as before.
+        assert "Mosaic3" in mmc.wait_calls
+        assert "Camera" in mmc.wait_calls
