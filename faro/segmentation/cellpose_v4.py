@@ -16,6 +16,7 @@ class CellposeV4(Segmentator):
         flow_threshold: float = 0.4,
         cellprob_threshold: float = 0.0,
         min_size: int = 50,
+        gpu: bool = True,
     ):
 
         self.flow_threshold = flow_threshold
@@ -23,10 +24,10 @@ class CellposeV4(Segmentator):
         self.min_size = min_size
 
         if custom_model_path is None:
-            self.model = models.CellposeModel(gpu=True)
+            self.model = models.CellposeModel(gpu=gpu)
         else:
             self.model = models.CellposeModel(
-                pretrained_model=custom_model_path, gpu=True
+                pretrained_model=custom_model_path, gpu=gpu
             )
 
     def segment(self, image: np.ndarray) -> np.ndarray:
@@ -40,6 +41,6 @@ class CellposeV4(Segmentator):
         if self.min_size > 0:
             # remove cells below threshold
             masks = skimage.morphology.remove_small_objects(
-                masks, max_size=self.min_size - 1, connectivity=1
+                masks, min_size=self.min_size, connectivity=1
             )
         return masks
