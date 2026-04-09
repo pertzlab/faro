@@ -136,8 +136,7 @@ class ImgType(enum.Enum):
 # RTMEvent — extended MDAEvent with multi-channel + stimulation support
 # ---------------------------------------------------------------------------
 from useq import MDAEvent, MDASequence
-from useq._mda_event import SLMImage
-from useq._mda_sequence import iter_sequence
+from faro.core._useq_compat import SLMImage
 
 
 class RTMEvent(MDAEvent):
@@ -345,14 +344,19 @@ class RTMSequence(MDASequence):
 
         The (t, p) iteration order respects ``axis_order`` (inherited from
         MDASequence).  Dict insertion order preserves the first-encounter
-        order produced by ``iter_sequence``, so the resulting RTMEvents
+        order produced by the parent iterator, so the resulting RTMEvents
         follow the same nesting that ``axis_order`` dictates.
 
         Negative indices in ``stim_frames`` and ``ref_frames`` are resolved
         relative to the total number of timepoints.
         """
         groups: dict[tuple, dict] = {}
-        for mda_ev in iter_sequence(self):
+        # Call the parent's iter_events directly (not via self) so we
+        # bypass this very override and get the plain-MDAEvent stream.
+        # MDASequence.__iter__ would dispatch back into RTMSequence.iter_events
+        # and recurse forever. Equivalent to the old private ``iter_sequence``
+        # call but via the parent class's public method.
+        for mda_ev in MDASequence.iter_events(self):
             t = mda_ev.index.get("t", 0)
             p = mda_ev.index.get("p", 0)
             key = (t, p)

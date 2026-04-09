@@ -14,7 +14,7 @@ from faro.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
 import traceback
-from useq._mda_event import SLMImage
+from faro.core._useq_compat import SLMImage
 from useq import MDAEvent
 from queue import Queue, Empty as QueueEmpty
 import numpy as np
