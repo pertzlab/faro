@@ -99,11 +99,39 @@ class Analyzer:
         self.skipped_pipeline = 0
         self.deferred_processed = 0
 
+        # Background-thread errors. Experiments intentionally log-and-
+        # continue (one bad filter wheel shouldn't crash a 24h run), so
+        # tests need an explicit channel to detect silent failures.
+        # Each entry is a (source, exception_type, message, traceback)
+        # tuple; tests assert the lists are empty at end of run.
+        self.background_errors: list[tuple[str, str, str, str]] = []
+        self._error_lock = threading.Lock()
+
     def get_fov_state(self, fov_index: int) -> FovState:
         """Return the FovState for *fov_index*, creating it lazily if needed."""
         if fov_index not in self.fov_states:
             self.fov_states[fov_index] = FovState()
         return self.fov_states[fov_index]
+
+    def _record_background_error(self, source: str, exc: BaseException) -> None:
+        """Log a background-thread exception and record it for later inspection.
+
+        Experiments intentionally keep running after background errors
+        (storage, pipeline, deferred worker) so that one-off hardware
+        glitches don't abort a long acquisition. The error is printed
+        with its full traceback for human review, and appended to
+        ``self.background_errors`` so that tests (or any caller) can
+        assert ``analyzer.background_errors == []`` and fail loudly if
+        anything went wrong silently.
+        """
+        tb = traceback.format_exc()
+        msg = str(exc)
+        print(f"[Analyzer] {source} error: {type(exc).__name__}: {msg}")
+        print(tb)
+        with self._error_lock:
+            self.background_errors.append(
+                (source, type(exc).__name__, msg, tb)
+            )
 
     @property
     def stimulator_needs_data(self) -> bool:
@@ -173,11 +201,9 @@ class Analyzer:
                 self._try_submit_pipeline(img, event, metadata, folder)
 
             except OSError as e:
-                print(f"Error storing image: {type(e).__name__}: {str(e)}")
+                self._record_background_error("storage", e)
             except Exception as e:
-                print(
-                    f"Unexpected error processing image: {type(e).__name__}: {str(e)}"
-                )
+                self._record_background_error("storage", e)
             finally:
                 self._storage_queue.task_done()
 
@@ -232,6 +258,15 @@ class Analyzer:
 
         if metadata["img_type"] == ImgType.IMG_STIM:
             # Don't pipeline stim images
+            return
+
+        # Pure-stim pipelines (no segmentator) have nothing for
+        # pipeline.run() to do: tracking, feature extraction, and
+        # segmentation-based mask generation all require labels.
+        # The stim path for these runs is handled directly by
+        # Analyzer.get_stim_mask() (metadata-only or image-only), so
+        # skipping submission here is the cheapest correct behavior.
+        if self.pipeline.segmentators is None:
             return
 
         with self.task_lock:
@@ -332,7 +367,7 @@ class Analyzer:
                         self._deferred_queue.put_nowait((event, metadata, folder))
 
             except Exception as e:
-                print(f"Error processing deferred image: {type(e).__name__}: {str(e)}")
+                self._record_background_error("deferred", e)
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
         """Called from MDA callback - must return INSTANTLY.
@@ -373,11 +408,7 @@ class Analyzer:
             try:
                 future.result()  # This will re-raise any exception that occurred
             except Exception as e:
-                print(f"[Analyzer] Pipeline task FAILED with exception:")
-                print(f"Exception type: {type(e).__name__}")
-                print(f"Exception message: {str(e)}")
-                print("Full traceback:")
-                traceback.print_exc()
+                self._record_background_error("pipeline", e)
 
         if self.debug:
             print(
@@ -414,6 +445,17 @@ class Analyzer:
                 "pending_deferred": self._deferred_queue.qsize(),
                 "active_pipeline_tasks": self.active_pipeline_tasks,
             }
+
+
+class FrameShapeMismatchError(RuntimeError):
+    """Raised when acquired frames have inconsistent (y, x) shapes.
+
+    Channels/refs must all come back at the same image size — the zarr
+    store, segmentation, tracking, and DMD mask pipeline all assume a
+    single y/x shape per acquisition. A mid-run shape change (e.g. a
+    sticky camera binning property) corrupts everything downstream, so
+    the Controller treats this as fatal and aborts the experiment.
+    """
 
 
 class Controller:
@@ -455,6 +497,19 @@ class Controller:
         self._fov_positions: dict[int, tuple[float, float, float]] = {}
         self._pre_loop_hook: callable | None = None  # testing hook
         self._all_events: list = []  # accumulated events for JSON persistence
+
+        # Background-thread errors harvested from the Analyzer on shutdown.
+        # Survives ``finish_experiment()`` so callers (tests, notebooks)
+        # can inspect what went wrong after the run has completed.
+        self.background_errors: list[tuple[str, str, str, str]] = []
+
+        # Fatal condition raised from the signal-callback thread. Set by
+        # ``_on_frame_ready`` when it detects unrecoverable state (shape
+        # mismatch across channels, etc.), checked by
+        # ``_run_mda_with_events`` after the MDA drains, and re-raised
+        # into the caller so the experiment fails loudly instead of
+        # silently writing corrupt data.
+        self._fatal_error: BaseException | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -612,6 +667,9 @@ class Controller:
         are done.
         """
         if self._analyzer is not None:
+            # Harvest background-thread errors before we drop the Analyzer
+            # so callers can inspect them after the run.
+            self.background_errors.extend(self._analyzer.background_errors)
             self._analyzer.shutdown(wait=True)
             self._analyzer = None
         self._t_offset = 0
@@ -739,11 +797,27 @@ class Controller:
                 mda_thread.join()
             self._mic.disconnect_frame(self._on_frame_ready)
 
+        # If the frame-ready callback detected an unrecoverable condition
+        # (shape mismatch, etc.), surface it here so the caller sees a
+        # hard failure instead of a silently-truncated acquisition. We
+        # wait until after the MDA thread has joined so no extra frames
+        # land while we're unwinding.
+        if self._fatal_error is not None:
+            fatal = self._fatal_error
+            self._fatal_error = None
+            raise fatal
+
     # ------------------------------------------------------------------
     # Frame handling
     # ------------------------------------------------------------------
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
+        # A fatal error was already raised on a previous frame — just
+        # drop subsequent frames on the floor so we don't write more
+        # corrupt data while the MDA winds down.
+        if self._fatal_error is not None:
+            return
+
         meta = event.metadata or {}
         img_type = meta.get("img_type", ImgType.IMG_RAW)
 
@@ -766,6 +840,18 @@ class Controller:
             tp = (event.index.get("t", 0), event.index.get("p", 0))
             cached_imaging = self._ref_imaging_cache.pop(tp, None)
             if cached_imaging is not None:
+                # Imaging stack is (c, y, x); ref image is (y, x).
+                # Shapes must match on the spatial axes or the whole run
+                # is corrupt — bail before np.concatenate raises into
+                # psygnal's callback error handler.
+                if cached_imaging.shape[-2:] != img.shape[-2:]:
+                    self._raise_fatal_shape_mismatch(
+                        event=event,
+                        where="ref_frame vs cached imaging",
+                        expected=tuple(cached_imaging.shape[-2:]),
+                        actual=tuple(img.shape[-2:]),
+                    )
+                    return
                 ref_frame = np.concatenate(
                     [cached_imaging, img[np.newaxis, ...]],
                     axis=0,
@@ -778,6 +864,18 @@ class Controller:
         # Imaging: buffer by (t, p), submit when all channels received
         tp = (event.index.get("t", 0), event.index.get("p", 0))
         buf = self._frame_buffers.setdefault(tp, [])
+        if buf and buf[0].shape[-2:] != img.shape[-2:]:
+            # Different channels at the same (t, p) came back at
+            # different sizes — almost always a sticky camera binning
+            # or ROI property. Stacking would raise, and even if it
+            # didn't the zarr y/x slot is fixed.
+            self._raise_fatal_shape_mismatch(
+                event=event,
+                where="imaging channel vs previous channel in same (t, p)",
+                expected=tuple(buf[0].shape[-2:]),
+                actual=tuple(img.shape[-2:]),
+            )
+            return
         buf.append(img)
 
         if len(buf) >= self._n_channels:
@@ -786,6 +884,45 @@ class Controller:
             # Cache imaging frame for ref channels that arrive later
             self._ref_imaging_cache[tp] = frame
             self._analyzer.run(frame, event)
+
+    def _raise_fatal_shape_mismatch(
+        self,
+        *,
+        event: MDAEvent,
+        where: str,
+        expected: tuple[int, ...],
+        actual: tuple[int, ...],
+    ) -> None:
+        """Record a shape-mismatch fatal error and cancel the running MDA.
+
+        Called from the frameReady signal callback, where raising would
+        be swallowed by psygnal's callback error handler and the MDA
+        would keep going. Instead, we store the exception on
+        ``self._fatal_error`` (picked up by ``_run_mda_with_events``
+        after the MDA drains) and ask the microscope to cancel ASAP so
+        no more corrupt frames get written.
+        """
+        try:
+            idx = dict(event.index)
+            ch = (
+                event.channel.config
+                if getattr(event, "channel", None) is not None
+                else None
+            )
+        except Exception:
+            idx, ch = {}, None
+        err = FrameShapeMismatchError(
+            f"Frame shape mismatch ({where}): expected (y,x)={expected}, "
+            f"got {actual} at index={idx} channel={ch!r}. "
+            "This usually means a sticky camera Binning or ROI property "
+            "changed mid-run. Aborting to avoid writing corrupt data."
+        )
+        self._fatal_error = err
+        print(f"[Controller] FATAL: {err}")
+        try:
+            self._mic.cancel_mda()
+        except Exception as cancel_exc:
+            print(f"[Controller] cancel_mda() failed during fatal abort: {cancel_exc}")
 
     # ------------------------------------------------------------------
     # Stim helpers
