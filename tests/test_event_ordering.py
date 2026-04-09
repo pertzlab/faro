@@ -19,7 +19,6 @@ from faro.core.data_structures import (
     RTMEvent,
     RTMSequence,
     combine,
-    concat,
 )
 
 
@@ -367,7 +366,7 @@ class TestRefPhase:
     """Ref is a separate RTMSequence phase, not a special channel type."""
 
     def test_ref_phase_via_concatenation(self):
-        """phase1 + phase2 produces experiment events then ref events."""
+        """combine(phase1, phase2) produces experiment events then ref events."""
         phase1 = RTMSequence(
             time_plan={"interval": 1.0, "loops": 3},
             stage_positions=[(0, 0, 0)],
@@ -379,7 +378,7 @@ class TestRefPhase:
             channels=[{"config": "mCitrine", "exposure": 600}],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
 
         assert len(events) == 4  # 3 imaging + 1 ref
         # First 3: regular imaging
@@ -403,7 +402,7 @@ class TestRefPhase:
             channels=[{"config": "mCitrine", "exposure": 600}],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
         opto_event = events[-1]
         assert opto_event.index["t"] == 5  # offset after last imaging t=4
 
@@ -421,7 +420,7 @@ class TestRefPhase:
             channels=[{"config": "mCitrine", "exposure": 600}],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
 
         assert len(events) == 12  # 3t * 3p + 1t * 3p
         opto_events = [e for e in events if e.metadata.get("img_type") == ImgType.IMG_REF]
@@ -445,7 +444,7 @@ class TestRefPhase:
             ],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
         opto_event = events[-1]
         ch_names = [c.config for c in opto_event.channels]
         assert ch_names == ["mCitrine", "mCherry"]
@@ -478,7 +477,7 @@ class TestRefPhase:
             channels=[{"config": "mCitrine", "exposure": 600}],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
 
         # 5 imaging + 1 ref
         assert len(events) == 6
@@ -662,12 +661,12 @@ class TestNegativeIndexing:
 
 
 # ===================================================================
-# concat() / combine() — axis-keyed experiment composition
+# combine() — axis-keyed experiment composition
 # ===================================================================
 
 
-class TestConcatT:
-    """concat(a, b, axis='t') chains two phases sequentially in time."""
+class TestCombineT:
+    """combine(a, b, ..., axis='t') chains phases sequentially in time."""
 
     def _mk(self, *, loops=3, n_pos=1, interval=10.0, channels=("ch0",)):
         return RTMSequence(
@@ -680,7 +679,7 @@ class TestConcatT:
         """phase_b's t indices pick up where phase_a left off."""
         a = self._mk(loops=3)
         b = self._mk(loops=2)
-        events = concat(a, b, axis="t")
+        events = combine(a, b, axis="t")
         ts = [e.index["t"] for e in events]
         assert ts == [0, 1, 2, 3, 4]
 
@@ -692,7 +691,7 @@ class TestConcatT:
         """
         a = self._mk(loops=3, n_pos=2, interval=10.0)  # times: 0,0,10,10,20,20
         b = self._mk(loops=2, n_pos=2, interval=10.0)
-        events = concat(a, b, axis="t")
+        events = combine(a, b, axis="t")
 
         # phase_a spans [0, 20]; phase_b should start at 30 (20 + interval).
         # Old buggy code: events_b[0].min_start_time == events_b[1].min_start_time
@@ -722,7 +721,7 @@ class TestConcatT:
             channels=[{"config": "ch0", "exposure": 50}],
             axis_order="ptcz",
         )
-        events = concat(a, b, axis="t")
+        events = combine(a, b, axis="t")
         # In ptcz, each phase visits p=0 fully before p=1.
         # Boundary: phase_a completes (p=0,t=0,1; p=1,t=0,1)
         # then phase_b begins (p=0,t=2,3; p=1,t=2,3).
@@ -732,25 +731,21 @@ class TestConcatT:
 
     def test_empty_a_returns_b(self):
         b = self._mk(loops=2)
-        events = concat([], b, axis="t")
+        events = combine([], b, axis="t")
         assert len(events) == 2
 
     def test_empty_b_returns_a(self):
         a = self._mk(loops=3)
-        events = concat(a, [], axis="t")
+        events = combine(a, [], axis="t")
         assert len(events) == 3
 
-    def test_add_operator_delegates_to_concat(self):
-        """``a + b`` should match ``concat(a, b, axis='t')``."""
-        a = self._mk(loops=3)
-        b = self._mk(loops=2)
-        assert [(e.index, e.min_start_time) for e in a + b] == [
-            (e.index, e.min_start_time) for e in concat(a, b, axis="t")
-        ]
+    def test_three_way_t_chain(self):
+        events = combine(self._mk(loops=2), self._mk(loops=3), self._mk(loops=1), axis="t")
+        assert [e.index["t"] for e in events] == [0, 1, 2, 3, 4, 5]
 
 
-class TestConcatP:
-    """concat(a, b, axis='p') runs two sub-experiments in parallel."""
+class TestCombineP:
+    """combine(a, b, ..., axis='p') runs sub-experiments in parallel."""
 
     def _mk(self, *, loops=2, positions, channels=("ch0",), stim_frames=None):
         return RTMSequence(
@@ -767,7 +762,7 @@ class TestConcatP:
         """b's p indices shift past a's max."""
         a = self._mk(positions=[(0, 0, 0), (1, 0, 0), (2, 0, 0)])  # p=0..2
         b = self._mk(positions=[(3, 0, 0), (4, 0, 0)])              # p=0..1
-        events = concat(a, b, axis="p")
+        events = combine(a, b, axis="p")
         p_indices = {e.index["p"] for e in events}
         assert p_indices == {0, 1, 2, 3, 4}
 
@@ -775,7 +770,7 @@ class TestConcatP:
         """At each t, FOVs from both sub-experiments appear together."""
         a = self._mk(loops=2, positions=[(0, 0, 0), (1, 0, 0)])     # p=0,1
         b = self._mk(loops=2, positions=[(2, 0, 0), (3, 0, 0)])     # becomes p=2,3
-        events = concat(a, b, axis="p")
+        events = combine(a, b, axis="p")
         tp = [(e.index["t"], e.index["p"]) for e in events]
         # t=0: p=0,1,2,3; then t=1: p=0,1,2,3
         assert tp == [(0, 0), (0, 1), (0, 2), (0, 3),
@@ -785,7 +780,7 @@ class TestConcatP:
         """Both sub-experiments share the wall clock."""
         a = self._mk(loops=2, positions=[(0, 0, 0)])
         b = self._mk(loops=2, positions=[(1, 0, 0)])
-        events = concat(a, b, axis="p")
+        events = combine(a, b, axis="p")
         # Both FOVs at t=0 should have min_start_time == 0
         t0_events = [e for e in events if e.index["t"] == 0]
         assert len(t0_events) == 2
@@ -795,7 +790,7 @@ class TestConcatP:
         """Each sub-experiment keeps its own stim_frames."""
         a = self._mk(loops=4, positions=[(0, 0, 0)], stim_frames={1})
         b = self._mk(loops=4, positions=[(1, 0, 0)], stim_frames={2})
-        events = concat(a, b, axis="p")
+        events = combine(a, b, axis="p")
 
         stim_events = [e for e in events if len(e.stim_channels) > 0]
         # a's single FOV (p=0 after offset=0) stims at t=1
@@ -808,30 +803,15 @@ class TestConcatP:
         a = self._mk(loops=2, positions=[(0, 0, 0)], channels=("miRFP",))
         b = self._mk(loops=2, positions=[(1, 0, 0)], channels=("CFP",))
         with pytest.raises(ValueError, match="matching imaging channels"):
-            concat(a, b, axis="p")
+            combine(a, b, axis="p")
 
     def test_p_accepts_matching_channels(self):
         a = self._mk(loops=2, positions=[(0, 0, 0)], channels=("ch0", "ch1"))
         b = self._mk(loops=2, positions=[(1, 0, 0)], channels=("ch0", "ch1"))
-        events = concat(a, b, axis="p")  # should not raise
+        events = combine(a, b, axis="p")  # should not raise
         assert len({e.index["p"] for e in events}) == 2
 
-
-class TestCombine:
-    """combine() is a multi-way shortcut for concat()."""
-
-    def _mk(self, loops):
-        return RTMSequence(
-            time_plan={"interval": 1.0, "loops": loops},
-            stage_positions=[(0, 0, 0)],
-            channels=[{"config": "ch0", "exposure": 50}],
-        )
-
-    def test_combine_t_three_way(self):
-        events = combine(self._mk(2), self._mk(3), self._mk(1), axis="t")
-        assert [e.index["t"] for e in events] == [0, 1, 2, 3, 4, 5]
-
-    def test_combine_p_three_way(self):
+    def test_three_way_p_combine(self):
         a = RTMSequence(
             time_plan={"interval": 1.0, "loops": 1},
             stage_positions=[(0, 0, 0)],
@@ -850,10 +830,27 @@ class TestCombine:
         events = combine(a, b, c, axis="p")
         assert [e.index["p"] for e in events] == [0, 1, 2, 3]
 
-    def test_combine_empty_returns_empty(self):
+
+class TestCombineDegenerate:
+    """combine() handles the N=0 and N=1 cases gracefully."""
+
+    def _mk(self, loops):
+        return RTMSequence(
+            time_plan={"interval": 1.0, "loops": loops},
+            stage_positions=[(0, 0, 0)],
+            channels=[{"config": "ch0", "exposure": 50}],
+        )
+
+    def test_empty_returns_empty(self):
         assert combine() == []
 
-    def test_combine_single_returns_flat_list(self):
-        a = self._mk(3)
-        events = combine(a, axis="t")
+    def test_single_returns_flat_list(self):
+        events = combine(self._mk(3), axis="t")
         assert len(events) == 3
+
+    def test_add_operator_is_removed(self):
+        """The + operator was removed in favor of explicit combine()."""
+        a = self._mk(2)
+        b = self._mk(2)
+        with pytest.raises(TypeError):
+            _ = a + b

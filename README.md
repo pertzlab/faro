@@ -79,13 +79,13 @@ The Controller converts RTMEvents to MDAEvents, queues them through the microsco
 
 ### Experiment Definition
 
-Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Compose multi-step experiments with `concat()` / `combine()`, which support two modes of composition:
+Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Compose multi-step experiments with `combine()`, which supports two modes of composition via the `axis` argument:
 
 ```python
-from faro.core.data_structures import Channel, PowerChannel, RTMSequence, concat, combine
+from faro.core.data_structures import Channel, PowerChannel, RTMSequence, combine
 ```
 
-**Sequential phases (time-chain).** Each phase runs after the previous one, same positions, with `t` indices and wall-clock times offset automatically:
+**Sequential phases (`axis="t"`).** Each phase runs after the previous one, same positions, with `t` indices and wall-clock times offset automatically:
 
 ```python
 baseline = RTMSequence(
@@ -98,13 +98,12 @@ treatment = RTMSequence(
     stage_positions=fov_positions,
     channels=[{"config": "miRFP", "exposure": 300}],
 )
+washout = RTMSequence(...)
 
-events = concat(baseline, treatment, axis="t")
-# Shortcut for multi-way: combine(baseline, treatment, washout, axis="t")
-# Two-way still works as a plain operator: baseline + treatment
+events = combine(baseline, treatment, washout, axis="t")
 ```
 
-**Parallel sub-experiments (position-interleave).** Two (or more) setups running concurrently on different subsets of FOVs — useful when FOVs need different stim patterns, different stim schedules, or different treatment metadata, but should share the clock. Each sub-experiment keeps its own `stim_frames` and `rtm_metadata`:
+**Parallel sub-experiments (`axis="p"`).** Two (or more) setups running concurrently on different subsets of FOVs — useful when FOVs need different stim patterns, different stim schedules, or different treatment metadata, but should share the clock. Each sub-experiment keeps its own `stim_frames` and `rtm_metadata`:
 
 ```python
 setup_a = RTMSequence(
@@ -124,20 +123,14 @@ setup_b = RTMSequence(
     rtm_metadata={"treatment": "drug"},
 )
 
-events = concat(setup_a, setup_b, axis="p")
+events = combine(setup_a, setup_b, axis="p")
 # At each timepoint: FOVs 0-4 image with setup_a's stim schedule,
 # FOVs 5-9 image with setup_b's — all in parallel on the same clock.
 ```
 
-**Precondition for `axis="p"`:** both sub-experiments must declare the same imaging channels. The writer allocates a single channel set across all positions, so heterogeneous channels per FOV are not supported today (tracked for the eventual useq-schema v2 migration). A `ValueError` is raised at concat time if the channel configs differ.
+**Precondition for `axis="p"`:** all sub-experiments must declare the same imaging channels. The writer allocates a single channel set across all positions, so heterogeneous channels per FOV are not supported today (tracked for the eventual useq-schema v2 migration). A `ValueError` is raised at call time if channel configs differ.
 
-| API | Purpose |
-|---|---|
-| `concat(a, b, axis="t")` | chain `b` after `a` in time (same FOVs, consecutive timepoints) |
-| `concat(a, b, axis="p")` | run `b` alongside `a` at new FOV indices (same clock, interleaved per timepoint) |
-| `combine(*seqs, axis="t")` | n-way time chain — equivalent to left-folding `concat` |
-| `combine(*seqs, axis="p")` | n-way parallel — combine any number of sub-experiments |
-| `a + b` | shorthand for `concat(a, b, axis="t")` |
+`combine()` is variadic (`combine(a, b, c, d, ..., axis=...)`), handles the N=0 and N=1 degenerate cases, and is the only composition primitive — there is deliberately no shorthand operator, so every multi-step experiment reads the composition axis explicitly.
 
 ### Stimulation
 
@@ -171,7 +164,7 @@ seq = RTMSequence(
 )
 ```
 
-Alternatively, define the reference as a separate phase and chain it with `concat`:
+Alternatively, define the reference as a separate phase and chain it with `combine`:
 
 ```python
 experiment = RTMSequence(time_plan=..., channels=..., ...)
@@ -181,7 +174,7 @@ ref_phase  = RTMSequence(
     channels=[{"config": "mCitrine", "exposure": 600}],
     rtm_metadata={"img_type": ImgType.IMG_REF},
 )
-events = concat(experiment, ref_phase, axis="t")
+events = combine(experiment, ref_phase, axis="t")
 ```
 
 ### Frame Specification

@@ -484,19 +484,6 @@ class RTMSequence(MDASequence):
                 metadata=merged_meta,
             )
 
-    def __add__(self, other: RTMSequence | list[RTMEvent]) -> list[RTMEvent]:
-        """Concatenate two RTMSequences along the time axis.
-
-        Shorthand for ``concat(self, other, axis="t")``. Phase ``other``
-        runs sequentially after ``self`` with its ``t`` indices and
-        ``min_start_time`` offset past the last event of ``self``.
-
-        Prefer the explicit :func:`concat` or :func:`combine` helpers for
-        anything other than trivial two-phase time chaining — they
-        support parallel (axis="p") combinations and multi-way merges.
-        """
-        return concat(self, other, axis="t")
-
     def check_fov_batching(
         self, time_per_fov: float, n_parallel: int | None = None,
     ) -> bool:
@@ -510,15 +497,9 @@ class RTMSequence(MDASequence):
         from faro.core.utils import check_fov_batching
         return check_fov_batching(list(self), time_per_fov, n_parallel)
 
-    def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:
-        """Support ``list[RTMEvent] + RTMSequence``."""
-        if isinstance(other, list):
-            return concat(other, self, axis="t")
-        return NotImplemented
-
 
 # ---------------------------------------------------------------------------
-# concat / combine — axis-keyed composition of experiments
+# combine — axis-keyed composition of experiments
 # ---------------------------------------------------------------------------
 
 
@@ -546,71 +527,26 @@ def _infer_interval(
     return min(gaps) if gaps else fallback
 
 
-def concat(
+def _combine_pair(
     a: RTMSequence | Iterable[RTMEvent],
     b: RTMSequence | Iterable[RTMEvent],
     *,
-    axis: str = "t",
-    offset_time: bool | None = None,
+    axis: str,
+    offset_time: bool,
 ) -> list[RTMEvent]:
-    """Combine two experiments by offsetting one axis of ``b`` past ``a``.
+    """Pairwise merge used by :func:`combine` (not a public API).
 
-    This is the general-purpose composition primitive. Two common shapes:
+    Offsets ``b``'s ``axis`` index past ``a``'s max, optionally shifts
+    ``b``'s ``min_start_time``, and either appends (axis="t") or
+    sorts-by-time to interleave (axis="p"). All the tricky semantics
+    of experiment composition live here; :func:`combine` just folds
+    this over a variadic input list.
 
-    - ``axis="t"`` (default, sequential):
-        ``b`` runs AFTER ``a`` in wall-clock time. ``b``'s ``t`` indices
-        and ``min_start_time`` are shifted past the last event of ``a``.
-        This is the phase-chain used for multi-step experiments like
-        ``baseline + treatment + washout``.
-
-    - ``axis="p"`` (parallel / interleave):
-        ``b`` runs ALONGSIDE ``a``, at additional position indices.
-        ``b``'s ``p`` indices are shifted past ``a``'s max; the
-        combined event list is sorted by time so FOVs from both
-        sub-experiments are visited at each timepoint. Useful for
-        multi-setup experiments: ``setup_a`` stimulates FOVs 0-4 on
-        one schedule, ``setup_b`` stimulates FOVs 5-9 on another,
-        both running concurrently.
-
-    Parameters
-    ----------
-    a, b:
-        Sources to combine. Either ``RTMSequence`` instances or already-
-        iterated ``list[RTMEvent]`` (or any iterable of events).
-    axis:
-        Which index key of ``b`` to offset past ``a``'s max. Defaults to
-        ``"t"``. Any key present on the events is valid; uncommon axes
-        (``"c"``, ``"z"``, ...) are accepted but rarely what you want.
-    offset_time:
-        Whether ``b``'s ``min_start_time`` is also shifted past ``a``'s
-        end. Defaults to ``True`` when ``axis="t"`` (so the phases
-        actually run sequentially), and ``False`` otherwise (so parallel
-        sub-experiments share the clock). Set explicitly to override —
-        for example, ``offset_time=True`` with ``axis="p"`` gives a
-        parallel block that starts with a wall-clock delay after ``a``.
-
-    Returns
-    -------
-    list[RTMEvent]
-        Flat event list ready to pass to ``ctrl.run_experiment``.
-
-    Preconditions
-    -------------
-    For ``axis="p"``, both inputs must declare the same imaging channel
-    configs. The writer today allocates ``(t, p, total_channels, y, x)``
-    with a single channel set across all positions, so heterogeneous
-    channels per FOV are unsupported in v1. (Future v2 sub-sequences will
-    make this a non-issue.) A ``ValueError`` is raised at concat time.
-
-    See Also
-    --------
-    combine : multi-way shortcut, ``combine(a, b, c, axis="t")``.
+    Note: the channel-match precondition for ``axis="p"`` is enforced
+    in :func:`combine` itself (which still sees the original sources),
+    not here — by the time ``_combine_pair`` runs, ``a`` has usually
+    already been flattened to a list.
     """
-    if offset_time is None:
-        offset_time = (axis == "t")
-
-    # Collect source events. Keep the original ``b`` reference around so
-    # ``_infer_interval`` can peek at its ``time_plan`` before we flatten.
     events_a = list(a)
     events_b = list(b)
 
@@ -618,17 +554,6 @@ def concat(
         return events_b
     if not events_b:
         return events_a
-
-    # Precondition: matching imaging channels for parallel-p concat.
-    if axis == "p" and isinstance(a, RTMSequence) and isinstance(b, RTMSequence):
-        ch_a = [getattr(ch, "config", None) for ch in a.channels]
-        ch_b = [getattr(ch, "config", None) for ch in b.channels]
-        if ch_a != ch_b:
-            raise ValueError(
-                f"concat(axis='p') requires matching imaging channels; "
-                f"got {ch_a} vs {ch_b}. Heterogeneous channels per position "
-                f"is a v2 feature — track the useq-schema v2 migration."
-            )
 
     # Axis offset: shift b's axis key past a's max.
     max_key = max(e.index.get(axis, 0) for e in events_a) + 1
@@ -669,20 +594,94 @@ def combine(
     axis: str = "t",
     offset_time: bool | None = None,
 ) -> list[RTMEvent]:
-    """Multi-way wrapper for :func:`concat`.
+    """Combine N experiments by offsetting one axis of each past the previous.
 
-    ``combine(a, b, c, axis="t")`` is equivalent to
-    ``concat(concat(a, b, axis="t"), c, axis="t")`` — it left-folds
-    concat across the sources.
+    The single, explicit composition primitive for multi-step experiments.
+    Two common shapes:
 
-    Useful for any n-way combination:
+    - ``axis="t"`` (default, sequential):
+        Each source runs AFTER the previous one in wall-clock time. Every
+        source's ``t`` indices and ``min_start_time`` are shifted past the
+        last event of the accumulated result. This is the phase-chain used
+        for multi-step experiments like ``baseline + treatment + washout``::
 
-    >>> events = combine(baseline, phase_1, phase_2, axis="t")
-    >>> events = combine(setup_a, setup_b, setup_c, axis="p")
+            events = combine(baseline, treatment, washout, axis="t")
+
+    - ``axis="p"`` (parallel / interleave):
+        Sources run ALONGSIDE each other, at additional position indices.
+        Each source's ``p`` indices are shifted past the accumulated max;
+        the combined event list is sorted by time so FOVs from every
+        sub-experiment are visited at each timepoint. Useful for
+        multi-setup experiments where stim schedules, treatments, or
+        metadata differ per FOV group but everything shares the clock::
+
+            events = combine(setup_a, setup_b, setup_c, axis="p")
+
+    Single-source and empty calls are degenerate cases::
+
+        combine()                   # -> []
+        combine(seq)                # -> list(seq)
+        combine(seq, axis="p")      # -> list(seq)
+
+    Parameters
+    ----------
+    *sources:
+        Two or more ``RTMSequence`` instances (or already-iterated
+        ``list[RTMEvent]``) to combine left-to-right.
+    axis:
+        Which index key to offset for each subsequent source. Defaults to
+        ``"t"``. Any key present on the events is valid; uncommon axes
+        (``"c"``, ``"z"``, ...) are accepted but rarely what you want.
+    offset_time:
+        Whether subsequent sources' ``min_start_time`` is also shifted
+        past the accumulated end. Defaults to ``True`` when ``axis="t"``
+        (so phases actually run sequentially), and ``False`` otherwise
+        (so parallel sub-experiments share the clock). Set explicitly to
+        override — e.g. ``offset_time=True`` with ``axis="p"`` gives a
+        parallel block that starts with a wall-clock delay.
+
+    Returns
+    -------
+    list[RTMEvent]
+        Flat event list ready to pass to ``ctrl.run_experiment``.
+
+    Raises
+    ------
+    ValueError
+        When ``axis="p"`` and two sources declare different imaging
+        channels. The v1 writer allocates a single channel set across all
+        positions, so heterogeneous channels per FOV are unsupported
+        until the useq-schema v2 migration lands.
     """
     if not sources:
         return []
+    if offset_time is None:
+        offset_time = (axis == "t")
+
+    # Precondition for axis="p": every RTMSequence source must declare
+    # the same imaging channels. The v1 writer allocates a single channel
+    # set across all positions, so heterogeneous channels per FOV are
+    # unsupported until v2 sub-sequences land. This check has to run on
+    # the raw sources (before the first _combine_pair flattens them),
+    # because once ``result`` is a plain ``list[RTMEvent]`` the original
+    # ``channels`` tuple is no longer recoverable.
+    if axis == "p":
+        seq_sources = [s for s in sources if isinstance(s, RTMSequence)]
+        if len(seq_sources) >= 2:
+            ref_channels = [getattr(ch, "config", None) for ch in seq_sources[0].channels]
+            for s in seq_sources[1:]:
+                other = [getattr(ch, "config", None) for ch in s.channels]
+                if other != ref_channels:
+                    raise ValueError(
+                        f"combine(axis='p') requires matching imaging channels; "
+                        f"got {ref_channels} vs {other}. Heterogeneous channels "
+                        f"per position is a v2 feature — track the useq-schema "
+                        f"v2 migration."
+                    )
+
     result: list[RTMEvent] = list(sources[0])
     for src in sources[1:]:
-        result = concat(result, src, axis=axis, offset_time=offset_time)
+        result = _combine_pair(
+            result, src, axis=axis, offset_time=offset_time,
+        )
     return result
