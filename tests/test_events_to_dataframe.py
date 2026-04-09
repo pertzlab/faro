@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from useq import MDASequence
 
-from faro.core.data_structures import Channel, ImgType, RTMSequence
+from faro.core.data_structures import Channel, ImgType, RTMSequence, combine
 from faro.core.utils import events_to_dataframe
 
 
@@ -66,7 +66,7 @@ class TestRefPhaseInDataframe:
             channels=[{"config": "mCitrine", "exposure": 600}],
             rtm_metadata={"img_type": ImgType.IMG_REF},
         )
-        events = list(phase1 + phase2)
+        events = combine(phase1, phase2, axis="t")
         df = events_to_dataframe(events)
 
         assert len(df) == 6  # 5 imaging + 1 ref
