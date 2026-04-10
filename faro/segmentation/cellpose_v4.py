@@ -40,6 +40,6 @@ class CellposeV4(Segmentator):
         if self.min_size > 0:
             # remove cells below threshold
             masks = skimage.morphology.remove_small_objects(
-                masks, max_size=self.min_size - 1, connectivity=1
+                masks, min_size=self.min_size, connectivity=1
             )
         return masks
