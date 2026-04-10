@@ -62,6 +62,7 @@ class Analyzer:
         writer: Writer | None = None,
         debug: bool = False,
         debug_every: int = 10,
+        stim_mask_timeout: float = 80,
     ):
         """
         Args:
@@ -69,6 +70,9 @@ class Analyzer:
             max_workers: Number of worker threads for pipeline (default: 4)
             max_queue_size: Maximum images in executor queue before deferring (default: 60)
             writer: Storage backend. Defaults to TiffWriter if pipeline has storage_path.
+            stim_mask_timeout: Seconds to wait for a stim mask from the pipeline
+                before recording a background error and falling through with None.
+                Increase for slow first-frame segmenters (cellpose SAM, remote).
         """
         self.pipeline = pipeline
         if writer is not None:
@@ -119,6 +123,7 @@ class Analyzer:
         # assert this list is empty at end of run to catch silent failures.
         self.background_errors: list[BackgroundError] = []
         self._error_lock = threading.Lock()
+        self._stim_mask_timeout = stim_mask_timeout
 
     def get_fov_state(self, fov_index: int) -> FovState:
         """Return the FovState for *fov_index*, creating it lazily if needed."""
@@ -129,7 +134,13 @@ class Analyzer:
     def _record_background_error(
         self, source: BackgroundErrorSource, exc: BaseException
     ) -> None:
-        """Log a background-thread exception and record it for later inspection."""
+        """Log a background-thread exception and record it for later inspection.
+
+        Must be called from inside an active ``except`` block — the
+        ``traceback.format_exc()`` call below reads the current
+        exception context and returns ``'NoneType: None\\n'`` if
+        there is none.
+        """
         tb = traceback.format_exc()
         msg = str(exc)
         print(f"[Analyzer] {source} error: {type(exc).__name__}: {msg}")
@@ -150,7 +161,7 @@ class Analyzer:
         return isinstance(self.pipeline.stimulator, (StimWithImage, StimWithPipeline))
 
     def get_stim_mask(
-        self, fov_index: int, metadata: dict, *, timeout: float = 80
+        self, fov_index: int, metadata: dict, *, timeout: float | None = None
     ) -> np.ndarray | None:
         """Return a stim mask array, or None if unavailable.
 
@@ -164,6 +175,8 @@ class Analyzer:
         stimulator = self.pipeline.stimulator
         if isinstance(stimulator, (StimWithImage, StimWithPipeline)):
             fov_state = self.get_fov_state(fov_index)
+            if timeout is None:
+                timeout = self._stim_mask_timeout
             try:
                 return fov_state.stim_mask_queue.get(block=True, timeout=timeout)
             except QueueEmpty as e:
@@ -774,13 +787,26 @@ class Controller:
                     and fov_index not in _stim_pending
                 )
 
-                for ev in rtm_event.plan_events(
+                # Defer stim-mask computation so imaging events reach
+                # the MDA queue first. plan_events returns a list, and
+                # build_slm blocks on get_stim_mask (up to 80 s). With
+                # the old code the imaging event sat un-queued while
+                # get_stim_mask waited for a pipeline mask that could
+                # never arrive — a deadlock that looked like a timeout.
+                planned = rtm_event.plan_events(
                     stim_mode=stim_mode,
-                    build_slm=self._build_stim_slm if self._mic.dmd else None,
+                    build_slm=None,
                     resolve_group=self._mic.resolve_group,
                     resolve_power=self._mic.resolve_power,
                     suppress_stim=suppress_stim,
-                ):
+                )
+                slm = None
+                for ev in planned:
+                    if ev.metadata.get("img_type") == ImgType.IMG_STIM:
+                        if slm is None and self._mic.dmd:
+                            slm = self._build_stim_slm(rtm_event)
+                        if slm is not None:
+                            ev = ev.model_copy(update={"slm_image": slm})
                     self._put_event(ev)
 
                 if stim_mode == StimMode.PREVIOUS and rtm_event.has_stim:

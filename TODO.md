@@ -4,13 +4,14 @@ Follow-ups from the Moench hardware test sweep (2026-04-09). The two
 hardware smoke tests (`tests/hardware/test_line_stimulation.py` and
 `tests/hardware/test_cell_migration.py`) now pass cleanly on Moench:
 
-| Test                          | Duration | Zombies | BG errors |
-| ----------------------------- | -------- | ------- | --------- |
-| `test_line_stimulation_smoke` | 52.2 s   | 0       | 0         |
-| `test_cell_migration_smoke`   | 280.2 s  | 0       | 0         |
+| Test                          | Duration (initial) | Duration (current) | Zombies | BG errors |
+| ----------------------------- | ------------------ | ------------------ | ------- | --------- |
+| `test_line_stimulation_smoke` | 52.2 s             | **20.1 s**         | 0       | 0         |
+| `test_cell_migration_smoke`   | 280.2 s            | **23.7 s**         | 0       | 0         |
+| **Both combined**             | ~330 s             | **58.8 s**         | 0       | 0         |
 
-The items below are issues the hardware run surfaced but that we
-haven't fixed yet.
+The items below are issues the hardware run surfaced. Items marked
+**Fixed** have been addressed; the rest are still open.
 
 ---
 
@@ -34,9 +35,22 @@ source references.
 
 ---
 
-## 2. First stim frame silently fires with no mask (data quality)
+## 2. First stim frame silently fires with no mask (data quality) — **Fixed**
 
-**Symptom.** On the first stim timestep of `test_cell_migration_smoke`:
+**Root cause found and fixed.** It was a deadlock, not a cellpose warmup issue.
+`plan_events` returns a list (not a generator) and computed the SLM mask
+via `build_slm` *before* any events were queued. So the imaging event
+(which triggers frame capture → pipeline → stim mask) sat un-queued
+while `get_stim_mask` waited for a mask that could never arrive. Cellpose
+was 1.5s init + 0.4-1.1s per inference — perfectly fast.
+
+Fix: the Controller dispatch loop now defers `build_slm` to when the
+first stim event is encountered, after all preceding imaging events have
+already been put in the MDA queue. Preserves ordering for both
+`stim_mode="current"` (imaging first, then stim) and
+`stim_mode="previous"` (stim first, mask from prior frame).
+
+**Previous symptom:**
 
 ```
 Warning: Stimulation mask not ready (timeout):
@@ -129,22 +143,12 @@ that the background-error recording surfaces the timeout either way.
 
 ---
 
-## 3. Cell migration test budget (test infra)
+## 3. Cell migration test budget (test infra) — **Fixed**
 
-**Current.** `test_cell_migration_smoke` runs in **280 s**. The test
-docstring claims "about a minute". User target is **≤ 3 min**.
-
-**What drives the time.**
-
-- `waitForDevice(Mosaic3)` ~60 s (see #1)
-- First-frame stim mask timeout ~80 s (see #2)
-- Cellpose GPU model load ~20–30 s
-- 4 frames × 5 s time plan = 20 s
-- Rest: imaging, stage, ref frames, teardown
-
-Fixing #1 + #2 should drop this to ~90–120 s, comfortably inside 3
-min. Until then, consider marking the test as `@pytest.mark.slow` so
-it isn't blocking on the 3-min budget.
+With #1 (Mosaic3 skip) and #2 (stim-mask deadlock fix),
+`test_cell_migration_smoke` dropped from **280 s → 24 s call time**
+(32 s total including setup/teardown). Both tests combined run in
+under 60 s.
 
 ---
 

@@ -233,9 +233,10 @@ def create_folders(path, folders):
 
 def labels_to_particles(labels, tracks, metadata=None):
     """Takes in a segmentation mask with labels and replaces them with track IDs that are consistent over time."""
-    # For every frame
-    # labels_stack = np.array(labels_stack)
     particles = np.zeros_like(labels)
+    required = {"fname", "label", "particle"}
+    if tracks.empty or not required.issubset(tracks.columns):
+        return particles
     if metadata is None:
         tracks_f = tracks[(tracks["timestep"] == tracks.timestep.max())]
     else:

@@ -171,8 +171,19 @@ class Moench(PyMMCoreMicroscope):
         self.mmc.setROI(self.ROI_X, self.ROI_Y, self.ROI_WIDTH, self.ROI_HEIGHT)
 
     def post_experiment(self):
-        """Post-process the experiment."""
-        self.wakeup_dmd.run()
+        """Stop the DMD wakeup loop after an experiment.
+
+        ``init_scope()`` starts the wakeup loop so the DMD doesn't
+        go to sleep during setup. During acquisition the MDA engine
+        drives the DMD directly, so the wakeup is redundant. After
+        the experiment we stop it so the wakeup thread isn't
+        contending with whatever the user does next (calibration,
+        another experiment, manual DMD control, etc.). If the DMD
+        needs to stay alive between experiments, call
+        ``self.wakeup_dmd.run()`` explicitly.
+        """
+        if self.wakeup_dmd is not None:
+            self.wakeup_dmd.stop()
 
     def shutdown(self):
         """Tear down hardware state so the microscope can be discarded.

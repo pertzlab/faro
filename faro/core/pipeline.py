@@ -66,18 +66,18 @@ def extract_and_merge_features(
     feature_extractor, segmentation_results, img, df_tracked, metadata
 ):
     """Run feature extraction and merge features into current-frame rows of df_tracked."""
-    if feature_extractor is not None:
-        features_df, masks_for_fe = feature_extractor.extract_features(
-            segmentation_results, img, df_tracked, metadata
-        )
-        feature_map = features_df.set_index("label")
-        current_mask = df_tracked["fname"] == metadata["fname"]
-        for col in feature_map.columns:
-            df_tracked.loc[current_mask, col] = df_tracked.loc[
-                current_mask, "label"
-            ].map(feature_map[col])
-        return masks_for_fe
-    return None
+    if feature_extractor is None or df_tracked.empty or "fname" not in df_tracked.columns:
+        return None
+    features_df, masks_for_fe = feature_extractor.extract_features(
+        segmentation_results, img, df_tracked, metadata
+    )
+    feature_map = features_df.set_index("label")
+    current_mask = df_tracked["fname"] == metadata["fname"]
+    for col in feature_map.columns:
+        df_tracked.loc[current_mask, col] = df_tracked.loc[
+            current_mask, "label"
+        ].map(feature_map[col])
+    return masks_for_fe
 
 
 def dispatch_stim_mask(
@@ -429,11 +429,13 @@ class ImageProcessingPipeline:
         # 2. Track (needs df_old from previous frame)
         df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
-        # 3. Feature extraction (now has access to df_tracked)
-        masks_for_fe = extract_and_merge_features(
-            self.feature_extractor, segmentation_results, img, df_tracked, metadata
-        )
-
+        # 3. Stim mask BEFORE feature extraction — dispatch_stim_mask
+        #    depends only on segmentation_results / df_tracked, not on
+        #    FE outputs. Putting the mask in the queue early unblocks
+        #    Controller._build_stim_slm which is waiting on
+        #    stim_mask_queue.get(). If this runs after FE and FE crashes
+        #    (e.g. KeyError on an empty DataFrame), the mask never gets
+        #    put and the Controller hangs for the full timeout.
         if metadata["stim"] == True:
             stim_mask = dispatch_stim_mask(
                 self.stimulator,
@@ -445,8 +447,18 @@ class ImageProcessingPipeline:
             if isinstance(self.stimulator, StimWithPipeline):
                 fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
+        # 4. Feature extraction (now has access to df_tracked)
+        masks_for_fe = extract_and_merge_features(
+            self.feature_extractor, segmentation_results, img, df_tracked, metadata
+        )
+
         if metadata.get("img_type") == ImgType.IMG_REF:
-            if self.feature_extractor_ref is not None and self.tracker is not None:
+            if (
+                self.feature_extractor_ref is not None
+                and self.tracker is not None
+                and not df_tracked.empty
+                and "particle" in df_tracked.columns
+            ):
                 df_tracked = self.feature_extractor_ref.extract_features(
                     segmentation_results,
                     img_ref if img_ref is not None else img,

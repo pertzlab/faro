@@ -279,13 +279,19 @@ def assert_clean_run(controller, tmp_path: Path, *, expect_tracks: bool) -> None
     continue, but a hardware test is meaningless if it swallows them)
     and confirms the run produced a napari-loadable OME-Zarr store.
     """
-    assert not controller.background_errors, (
-        "Background errors during acquisition:\n"
-        + "\n".join(
+    if controller.background_errors:
+        # Print full tracebacks to stdout so they appear in pytest -s
+        # output but don't bloat the assertion message.
+        for e in controller.background_errors:
+            print(f"\n--- [{e.source}] {e.exc_type} ---\n{e.traceback}")
+        summary = "\n".join(
             f"  [{e.source}] {e.exc_type}: {e.message}"
             for e in controller.background_errors
         )
-    )
+        raise AssertionError(
+            f"Background errors during acquisition:\n{summary}\n"
+            f"(full tracebacks printed above)"
+        )
 
     zarr_path = tmp_path / "acquisition.ome.zarr"
     assert zarr_path.is_dir(), f"OME-Zarr store not created at {zarr_path}"
