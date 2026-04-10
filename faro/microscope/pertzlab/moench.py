@@ -173,14 +173,9 @@ class Moench(PyMMCoreMicroscope):
     def post_experiment(self):
         """Stop the DMD wakeup loop after an experiment.
 
-        ``init_scope()`` starts the wakeup loop so the DMD doesn't
-        go to sleep during setup. During acquisition the MDA engine
-        drives the DMD directly, so the wakeup is redundant. After
-        the experiment we stop it so the wakeup thread isn't
-        contending with whatever the user does next (calibration,
-        another experiment, manual DMD control, etc.). If the DMD
-        needs to stay alive between experiments, call
-        ``self.wakeup_dmd.run()`` explicitly.
+        The MDA engine drives the DMD directly during acquisition,
+        so the wakeup loop is redundant. Stopping it avoids
+        contention with whatever the user does next.
         """
         if self.wakeup_dmd is not None:
             self.wakeup_dmd.stop()

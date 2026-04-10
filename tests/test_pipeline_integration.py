@@ -101,10 +101,13 @@ class CircleMicroscope(AbstractMicroscope):
     """Fake microscope that generates synthetic circle images.
 
     No pymmcore dependency. Fires callbacks from a daemon thread.
+    Pass ``blank_frames`` to return all-zeros on specific timepoints
+    (for testing no-cell edge cases).
     """
 
-    def __init__(self):
+    def __init__(self, blank_frames: set[int] = frozenset()):
         super().__init__()
+        self._blank_frames = blank_frames
         self._callback = None
         self._cancel = threading.Event()
 
@@ -122,13 +125,18 @@ class CircleMicroscope(AbstractMicroscope):
             for event in event_iter:
                 if self._cancel.is_set():
                     break
-                img = make_circle_image()
+                t = event.index.get("t", 0)
+                img = (
+                    np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint16)
+                    if t in self._blank_frames
+                    else make_circle_image()
+                )
                 if self._callback is not None:
                     self._callback(img, event)
 
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        return t
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
 
     def cancel_mda(self):
         self._cancel.set()
@@ -137,6 +145,16 @@ class CircleMicroscope(AbstractMicroscope):
 # ---------------------------------------------------------------------------
 # run_and_wait helper
 # ---------------------------------------------------------------------------
+
+
+def assert_no_background_errors(ctrl: Controller) -> None:
+    """Fail with a readable message if any background errors were recorded."""
+    if ctrl.background_errors:
+        summary = "\n".join(
+            f"  [{e.source}] {e.exc_type}: {e.message}"
+            for e in ctrl.background_errors
+        )
+        raise AssertionError(f"Background errors during acquisition:\n{summary}")
 
 
 def run_and_wait(ctrl: Controller, events: list[RTMEvent], stim_mode: str = "current"):
@@ -1362,56 +1380,6 @@ class TestStimMaskTimeout:
 
 
 # ===================================================================
-# FlickeringMicroscope — blank on some frames, circles on others
-# ===================================================================
-
-
-class FlickeringMicroscope(AbstractMicroscope):
-    """Microscope that returns blank (no-cell) images on specified frames.
-
-    ``blank_frames`` is a set of timepoint indices (from event.index["t"])
-    where the image is all-zeros.  All other frames get the standard
-    two-circle image.
-    """
-
-    def __init__(self, blank_frames: set[int]):
-        super().__init__()
-        self._blank_frames = blank_frames
-        self._callback = None
-        self._cancel = threading.Event()
-
-    def connect_frame(self, callback):
-        self._callback = callback
-
-    def disconnect_frame(self, callback):
-        if self._callback is callback:
-            self._callback = None
-
-    def run_mda(self, event_iter: Iterator[MDAEvent]) -> threading.Thread:
-        self._cancel.clear()
-
-        def _run():
-            for event in event_iter:
-                if self._cancel.is_set():
-                    break
-                t = event.index.get("t", 0)
-                img = (
-                    np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint16)
-                    if t in self._blank_frames
-                    else make_circle_image()
-                )
-                if self._callback is not None:
-                    self._callback(img, event)
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-        return thread
-
-    def cancel_mda(self):
-        self._cancel.set()
-
-
-# ===================================================================
 # Test Class: empty-frame edge cases (no cells detected)
 # ===================================================================
 
@@ -1425,39 +1393,30 @@ class TestEmptyFrameEdgeCases:
 
     def test_all_frames_blank_no_errors(self, tmp_dir):
         """Every frame is blank — pipeline runs, no background errors."""
-        mic = FlickeringMicroscope(blank_frames={0, 1, 2, 3, 4})
+        mic = CircleMicroscope(blank_frames={0, 1, 2, 3, 4})
         pipeline = _make_pipeline(tmp_dir, with_stim=False)
         ctrl = Controller(mic, pipeline)
         events = make_events(5)
         run_and_wait(ctrl, events)
-        assert ctrl.background_errors == [], (
-            "Background errors on all-blank run:\n"
-            + "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors)
-        )
+        assert_no_background_errors(ctrl)
 
     def test_all_frames_blank_with_stim_no_errors(self, tmp_dir):
         """Blank frames + stim active — stim mask dispatch must not crash."""
-        mic = FlickeringMicroscope(blank_frames={0, 1, 2, 3, 4})
+        mic = CircleMicroscope(blank_frames={0, 1, 2, 3, 4})
         pipeline = _make_pipeline(tmp_dir, with_stim=True)
         ctrl = Controller(mic, pipeline)
         events = make_events(5, stim_frames=(1, 2, 3, 4))
         run_and_wait(ctrl, events, stim_mode="current")
-        assert ctrl.background_errors == [], (
-            "Background errors on blank+stim run:\n"
-            + "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors)
-        )
+        assert_no_background_errors(ctrl)
 
     def test_cells_appear_after_blank_start(self, tmp_dir):
         """Frames 0-1 blank, frames 2-4 have cells — tracking picks up."""
-        mic = FlickeringMicroscope(blank_frames={0, 1})
+        mic = CircleMicroscope(blank_frames={0, 1})
         pipeline = _make_pipeline(tmp_dir, with_stim=False)
         ctrl = Controller(mic, pipeline)
         events = make_events(5)
         run_and_wait(ctrl, events)
-        assert ctrl.background_errors == [], (
-            "Background errors:\n"
-            + "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors)
-        )
+        assert_no_background_errors(ctrl)
         tracks_dir = os.path.join(tmp_dir, "tracks")
         parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
         assert parquet_files, "No parquet files written"
@@ -1475,15 +1434,12 @@ class TestEmptyFrameEdgeCases:
         The tracker should link across the gap (memory=3 allows up to 3
         missing frames) and produce the same 2 particle IDs throughout.
         """
-        mic = FlickeringMicroscope(blank_frames={2})
+        mic = CircleMicroscope(blank_frames={2})
         pipeline = _make_pipeline(tmp_dir, with_stim=False)
         ctrl = Controller(mic, pipeline)
         events = make_events(5)
         run_and_wait(ctrl, events)
-        assert ctrl.background_errors == [], (
-            "Background errors:\n"
-            + "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors)
-        )
+        assert_no_background_errors(ctrl)
         tracks_dir = os.path.join(tmp_dir, "tracks")
         parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
         df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
@@ -1497,12 +1453,9 @@ class TestEmptyFrameEdgeCases:
     def test_cells_disappear_reappear_with_stim(self, tmp_dir):
         """Same gap pattern but with stim active — verifies stim_mask_queue
         doesn't deadlock or crash when pipeline has no labels to stim."""
-        mic = FlickeringMicroscope(blank_frames={2})
+        mic = CircleMicroscope(blank_frames={2})
         pipeline = _make_pipeline(tmp_dir, with_stim=True)
         ctrl = Controller(mic, pipeline)
         events = make_events(5, stim_frames=(1, 2, 3, 4))
         run_and_wait(ctrl, events, stim_mode="current")
-        assert ctrl.background_errors == [], (
-            "Background errors:\n"
-            + "\n".join(f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors)
-        )
+        assert_no_background_errors(ctrl)

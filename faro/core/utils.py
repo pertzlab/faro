@@ -18,6 +18,8 @@ import dataclasses
 import re
 from pathlib import Path
 
+_TRACK_COLS_FOR_PARTICLES = frozenset({"fname", "label", "particle"})
+
 FovPosition = namedtuple("FovPosition", ["x", "y", "z", "name"])
 
 
@@ -234,8 +236,7 @@ def create_folders(path, folders):
 def labels_to_particles(labels, tracks, metadata=None):
     """Takes in a segmentation mask with labels and replaces them with track IDs that are consistent over time."""
     particles = np.zeros_like(labels)
-    required = {"fname", "label", "particle"}
-    if tracks.empty or not required.issubset(tracks.columns):
+    if tracks.empty or not _TRACK_COLS_FOR_PARTICLES.issubset(tracks.columns):
         return particles
     if metadata is None:
         tracks_f = tracks[(tracks["timestep"] == tracks.timestep.max())]

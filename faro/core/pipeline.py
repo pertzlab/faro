@@ -429,14 +429,8 @@ class ImageProcessingPipeline:
         # 2. Track (needs df_old from previous frame)
         df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
-        # 3. Stim mask BEFORE feature extraction — dispatch_stim_mask
-        #    depends only on segmentation_results / df_tracked, not on
-        #    FE outputs. Putting the mask in the queue early unblocks
-        #    Controller._build_stim_slm which is waiting on
-        #    stim_mask_queue.get(). If this runs after FE and FE crashes
-        #    (e.g. KeyError on an empty DataFrame), the mask never gets
-        #    put and the Controller hangs for the full timeout.
-        if metadata["stim"] == True:
+        # 3. Stim mask before FE so a FE crash can't deadlock the controller.
+        if metadata.get("stim"):
             stim_mask = dispatch_stim_mask(
                 self.stimulator,
                 segmentation_results,
