@@ -32,10 +32,7 @@ default. See ``tests/conftest.py`` for the gating logic.
 
 from __future__ import annotations
 
-import os
-
 import pytest
-import zarr
 from useq import Position, TIntervalLoops
 
 from faro.core.controller import Controller
@@ -47,6 +44,7 @@ from faro.core.data_structures import (
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
 from faro.stimulation.moving_line_20x import StimLine
+from tests.hardware.conftest import assert_clean_run
 
 
 N_FRAMES = 4
@@ -122,30 +120,4 @@ def test_line_stimulation_smoke(
     finally:
         controller.finish_experiment()
 
-    # Surface background-thread errors. Experiments intentionally keep
-    # running after storage / pipeline errors so a transient hardware
-    # glitch doesn't abort a long acquisition, but a hardware test is
-    # meaningless if it silently swallows errors.
-    assert not controller.background_errors, (
-        "Background errors during acquisition:\n"
-        + "\n".join(
-            f"  [{src}] {etype}: {msg}"
-            for src, etype, msg, _ in controller.background_errors
-        )
-    )
-
-    # ------------------------------------------------------------------
-    # Output assertions — minimal "did it produce a napari-loadable
-    # store?" smoke checks. No segmentation means no tracks/.
-    # ------------------------------------------------------------------
-    zarr_path = os.path.join(str(tmp_path), "acquisition.ome.zarr")
-    assert os.path.isdir(zarr_path), (
-        f"OME-Zarr store not created at {zarr_path}"
-    )
-
-    grp = zarr.open_group(zarr_path, mode="r")
-    assert "ome" in grp.attrs, (
-        "OME metadata missing on root group — store will not load in napari"
-    )
-
-    assert (tmp_path / "events.json").is_file(), "events.json not written"
+    assert_clean_run(controller, tmp_path, expect_tracks=False)

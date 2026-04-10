@@ -33,10 +33,7 @@ default. See ``tests/conftest.py`` for the gating logic.
 
 from __future__ import annotations
 
-import os
-
 import pytest
-import zarr
 from useq import Position, TIntervalLoops
 
 from faro.core.controller import Controller
@@ -53,6 +50,7 @@ from faro.feature_extraction.simple import SimpleFE
 from faro.segmentation.cellpose_v4 import CellposeV4
 from faro.stimulation.percentage_of_cell import StimPercentageOfCell
 from faro.tracking.trackpy import TrackerTrackpy
+from tests.hardware.conftest import assert_clean_run
 
 
 N_FRAMES = 4
@@ -132,38 +130,4 @@ def test_cell_migration_smoke(
     finally:
         controller.finish_experiment()
 
-    # Surface background-thread errors. Experiments intentionally keep
-    # running after storage / pipeline errors so a transient hardware
-    # glitch doesn't abort a long acquisition, but a hardware test is
-    # meaningless if it silently swallows errors.
-    assert not controller.background_errors, (
-        "Background errors during acquisition:\n"
-        + "\n".join(
-            f"  [{src}] {etype}: {msg}"
-            for src, etype, msg, _ in controller.background_errors
-        )
-    )
-
-    # ------------------------------------------------------------------
-    # Output assertions — keep these focused on "did the run produce
-    # something napari can open?" rather than per-frame correctness.
-    # ------------------------------------------------------------------
-    zarr_path = os.path.join(str(tmp_path), "acquisition.ome.zarr")
-    assert os.path.isdir(zarr_path), (
-        f"OME-Zarr store not created at {zarr_path}"
-    )
-
-    grp = zarr.open_group(zarr_path, mode="r")
-    assert "ome" in grp.attrs, (
-        "OME metadata missing on root group — store will not load in napari"
-    )
-
-    # ImageProcessingPipeline always creates tracks/. With the trackpy
-    # tracker we expect at least one parquet per FOV.
-    tracks_dir = tmp_path / "tracks"
-    assert tracks_dir.is_dir(), "tracks/ folder not created"
-    parquet_files = list(tracks_dir.glob("*.parquet"))
-    assert parquet_files, "no track parquet files written"
-
-    # OmeZarrWriter persists the event list as JSON for re-runs.
-    assert (tmp_path / "events.json").is_file(), "events.json not written"
+    assert_clean_run(controller, tmp_path, expect_tracks=True)

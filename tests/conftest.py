@@ -20,6 +20,11 @@ import os
 import pytest
 
 
+def resolve_scope(config: pytest.Config) -> str | None:
+    """Return the active scope, honoring ``--scope`` and ``FARO_SCOPE``."""
+    return config.getoption("--scope") or os.environ.get("FARO_SCOPE")
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Add ``--scope`` for selecting which Pertzlab microscope to drive."""
     parser.addoption(
@@ -39,8 +44,7 @@ def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     """Auto-skip ``@pytest.mark.hardware`` tests when no scope is selected."""
-    scope = config.getoption("--scope") or os.environ.get("FARO_SCOPE")
-    if scope:
+    if resolve_scope(config):
         return
     skip_marker = pytest.mark.skip(
         reason="hardware test — pass --scope or set FARO_SCOPE to enable"

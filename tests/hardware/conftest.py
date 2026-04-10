@@ -16,9 +16,13 @@ Safety:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
+import zarr
+
+from tests.conftest import resolve_scope
 
 
 # ---------------------------------------------------------------------------
@@ -88,14 +92,10 @@ SCOPE_DMD_PROFILES: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 
 
-def _resolve_scope(config: pytest.Config) -> str | None:
-    return config.getoption("--scope") or os.environ.get("FARO_SCOPE")
-
-
 @pytest.fixture(scope="session")
 def scope_name(request: pytest.FixtureRequest) -> str:
     """Return the active scope name, skipping if none is selected."""
-    name = _resolve_scope(request.config)
+    name = resolve_scope(request.config)
     if name is None:
         pytest.skip("hardware test — pass --scope or set FARO_SCOPE")
     return name
@@ -170,19 +170,17 @@ def microscope(scope_name: str, synthetic_affine: np.ndarray):
     else:
         raise ValueError(f"unknown scope: {scope_name!r}")
 
+    # Force a known camera binning BEFORE applying the ROI — most MM
+    # configs reset the ROI on a binning change, so the order matters.
+    # 2x2 keeps the test frame small and fast.
+    try:
+        mic.mmc.setConfig("Binning", "2x2")
+    except Exception as e:
+        print(f"[hardware fixture] could not set Binning=2x2 on {scope_name}: {e}")
+
     # Apply per-scope ROI when production code does so.
     if getattr(mic, "SET_ROI_REQUIRED", False) and hasattr(mic, "set_roi"):
         mic.set_roi()
-
-    # Force a known camera binning so the test's zarr store shape matches
-    # what the camera actually delivers. Binning is intentionally a
-    # standalone cfg group (not part of the light-path channel presets),
-    # so we can set it once here and every subsequent frame comes back at
-    # the same y/x. 2x2 keeps the test frame small and fast.
-    try:
-        mic.mmc.setConfig("Binning", "2x2")
-    except Exception:
-        pass
 
     yield mic
 
@@ -267,3 +265,39 @@ def safe_positions(microscope) -> list[dict]:
         mmc.setXYPosition(start_x, start_y)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Shared post-run assertions
+# ---------------------------------------------------------------------------
+
+
+def assert_clean_run(controller, tmp_path: Path, *, expect_tracks: bool) -> None:
+    """Post-run smoke checks shared by every hardware test.
+
+    Fails loudly on any background-thread error (experiments log-and-
+    continue, but a hardware test is meaningless if it swallows them)
+    and confirms the run produced a napari-loadable OME-Zarr store.
+    """
+    assert not controller.background_errors, (
+        "Background errors during acquisition:\n"
+        + "\n".join(
+            f"  [{e.source}] {e.exc_type}: {e.message}"
+            for e in controller.background_errors
+        )
+    )
+
+    zarr_path = tmp_path / "acquisition.ome.zarr"
+    assert zarr_path.is_dir(), f"OME-Zarr store not created at {zarr_path}"
+
+    grp = zarr.open_group(str(zarr_path), mode="r")
+    assert "ome" in grp.attrs, (
+        "OME metadata missing on root group — store will not load in napari"
+    )
+
+    assert (tmp_path / "events.json").is_file(), "events.json not written"
+
+    if expect_tracks:
+        tracks_dir = tmp_path / "tracks"
+        assert tracks_dir.is_dir(), "tracks/ folder not created"
+        assert list(tracks_dir.glob("*.parquet")), "no track parquet files written"
