@@ -26,6 +26,9 @@ def store_img(img: np.array, metadata, path: str, folder: str, *, writer=None):
     If *writer* is provided, delegates to the writer backend.
     Otherwise falls back to direct TIFF write (legacy path).
     """
+    if isinstance(img, (bool, np.bool_)):
+        h, w = metadata["img_shape"]
+        img = np.full((h, w), int(img), dtype=np.uint8)
     if writer is not None:
         writer.write(img, metadata, folder)
         return
