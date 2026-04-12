@@ -253,12 +253,12 @@ class TestPipelineComponents:
         assert abs(centroids[1][0] - CIRCLE2_CENTER[0]) < 1
         assert abs(centroids[1][1] - CIRCLE2_CENTER[1]) < 1
 
-    def test_trackpy_links_across_frames(self):
+    def test_tracker_links_across_frames(self, tracker_factory):
         img = make_circle_image()
         seg = OtsuSegmentator()
         labels = seg.segment(img)
         fe = SimpleFE("labels")
-        tracker = TrackerTrackpy(search_range=50, memory=3)
+        tracker = tracker_factory()
         fov_state = FovState()
 
         df_tracked = pd.DataFrame()
