@@ -276,6 +276,104 @@ class TestPipelineComponents:
 
 
 # ===================================================================
+# Test Class: transient occlusion — particle disappears for 1 frame
+# ===================================================================
+
+
+class _TransientOcclusionMicroscope(CircleMicroscope):
+    """CircleMicroscope variant that blanks circle 1 on a specific frame.
+
+    Used to verify the pipeline tracker re-links a particle after a
+    one-frame gap (within the tracker's memory window).
+    """
+
+    def __init__(self, drop_frame: int):
+        super().__init__()
+        self._drop_frame = drop_frame
+        self._frame_idx = 0
+
+    def run_mda(self, event_iter):
+        self._cancel.clear()
+        self._frame_idx = 0
+
+        def _run():
+            for event in event_iter:
+                if self._cancel.is_set():
+                    break
+                img = make_circle_image()
+                if self._frame_idx == self._drop_frame:
+                    # Zero out circle 1's region
+                    y, x = np.ogrid[:IMG_SIZE, :IMG_SIZE]
+                    mask1 = (y - CIRCLE1_CENTER[0]) ** 2 + (
+                        x - CIRCLE1_CENTER[1]
+                    ) ** 2 <= CIRCLE1_RADIUS**2
+                    img[mask1] = 0
+                self._frame_idx += 1
+                if self._callback is not None:
+                    self._callback(img, event)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
+
+
+class TestTransientOcclusion:
+    """5 frames, circle 1 missing on one frame. Tracker ``memory`` must re-link it.
+
+    Assertions are order-independent (the pipeline processes frames
+    concurrently, so ``fov_timestep`` labels may not match the real
+    acquisition order — the invariant is over particle trajectories,
+    not per-frame identity).
+    """
+
+    DROP_FRAME = 2
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir, tracker_factory):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=False, tracker=tracker_factory()
+        )
+        self.mic = _TransientOcclusionMicroscope(drop_frame=self.DROP_FRAME)
+        self.ctrl = Controller(self.mic, self.pipeline)
+        run_and_wait(self.ctrl, make_events(N_TIMEPOINTS))
+
+    def _load_tracks(self):
+        tracks_dir = os.path.join(self.path, "tracks")
+        parquets = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        assert parquets, "No tracks parquet written"
+        return pd.read_parquet(os.path.join(tracks_dir, parquets[0]))
+
+    def test_exactly_two_particles(self):
+        """After re-linking across the gap, only 2 tracks should exist."""
+        df = self._load_tracks()
+        assert df["particle"].nunique() == 2, (
+            f"Expected 2 unique particles, got {df['particle'].nunique()} — "
+            "returning detection likely spawned a new track instead of re-linking"
+        )
+
+    def test_track_lengths(self):
+        """One particle is seen N_TIMEPOINTS times (always-present),
+        the other is seen N_TIMEPOINTS - 1 times (missing on the occluded frame)."""
+        df = self._load_tracks()
+        counts = sorted(df.groupby("particle").size().tolist())
+        assert counts == [N_TIMEPOINTS - 1, N_TIMEPOINTS], (
+            f"Expected track lengths {[N_TIMEPOINTS - 1, N_TIMEPOINTS]}, got {counts}"
+        )
+
+    def test_particle_positions_stable(self):
+        """Each particle stays near its own circle center across all its frames."""
+        df = self._load_tracks()
+        for pid, group in df.groupby("particle"):
+            # Distance to whichever circle center the particle tracks
+            to_c1 = ((group[["x", "y"]] - CIRCLE1_CENTER).abs().sum(axis=1)).mean()
+            to_c2 = ((group[["x", "y"]] - CIRCLE2_CENTER).abs().sum(axis=1)).mean()
+            assert min(to_c1, to_c2) < 2.0, (
+                f"Particle {pid} drifts — closest circle distance {min(to_c1, to_c2):.1f}"
+            )
+
+
+# ===================================================================
 # Test Class 2: End-to-end, no stimulation
 # ===================================================================
 
