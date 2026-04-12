@@ -372,9 +372,16 @@ class ImageProcessingPipeline:
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: FovState = self._analyzer.get_fov_state(metadata["fov"])
 
+        # Authoritative acquisition order comes from the event, not from a
+        # counter incremented in pipeline.run() — that counter was racy under
+        # concurrent worker execution (see TracksDispenser). The counter is
+        # synced below, *after* the dispenser serializes workers, so trackers
+        # that still read it see the right value.
+        frame_idx = event.index.get("t", 0)
+
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" in metadata or "phase_name" in metadata:
-            metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+            metadata["fov_timestep"] = frame_idx
             filename_for_parquet = (
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
@@ -417,11 +424,12 @@ class ImageProcessingPipeline:
             timeout_time = self._queue_timeout
 
         try:
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
-
-        except Exception as e:
+            df_old = fov_obj.tracks_queue.get_for_frame(
+                frame_idx, timeout=timeout_time
+            )
+        except queue.Empty as e:
             print("Exception", e)
-            # If queue is empty → fallback to file-based recovery
+            # Predecessor never arrived → fallback to file-based recovery
             file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
             try:
                 df_old = pd.read_parquet(file_path)
@@ -429,41 +437,53 @@ class ImageProcessingPipeline:
                 df_old = pd.DataFrame()
                 print("Attention df lost")
 
-        # 2. Track (needs df_old from previous frame)
-        df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
+        # 2. Track (needs df_old from previous frame).
+        # Use try/finally so a crash here still unblocks the next frame —
+        # otherwise the dispenser would deadlock downstream workers.
+        # Sync the legacy counter here, inside the serialized section:
+        # the dispenser guarantees only one worker is between get_for_frame
+        # and put_for_frame per FOV, so ``fov_timestep_counter`` set here
+        # is safe for the tracker to read.
+        fov_obj.fov_timestep_counter = frame_idx
+        try:
+            df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
-        # 3. Feature extraction (now has access to df_tracked)
-        masks_for_fe = extract_and_merge_features(
-            self.feature_extractor, segmentation_results, img, df_tracked, metadata
-        )
-
-        if metadata["stim"] == True:
-            stim_mask = dispatch_stim_mask(
-                self.stimulator,
-                segmentation_results,
-                metadata,
-                img=img,
-                tracks=df_tracked,
+            # 3. Feature extraction (now has access to df_tracked)
+            masks_for_fe = extract_and_merge_features(
+                self.feature_extractor, segmentation_results, img, df_tracked, metadata
             )
-            if isinstance(self.stimulator, StimWithPipeline):
-                fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
-        if metadata.get("img_type") == ImgType.IMG_REF:
-            if self.feature_extractor_ref is not None and self.tracker is not None:
-                df_tracked = self.feature_extractor_ref.extract_features(
+            if metadata["stim"] == True:
+                stim_mask = dispatch_stim_mask(
+                    self.stimulator,
                     segmentation_results,
-                    img_ref if img_ref is not None else img,
-                    df_tracked,
                     metadata,
+                    img=img,
+                    tracks=df_tracked,
                 )
+                if isinstance(self.stimulator, StimWithPipeline):
+                    fov_obj.stim_mask_queue.put_nowait(stim_mask)
+
+            if metadata.get("img_type") == ImgType.IMG_REF:
+                if self.feature_extractor_ref is not None and self.tracker is not None:
+                    df_tracked = self.feature_extractor_ref.extract_features(
+                        segmentation_results,
+                        img_ref if img_ref is not None else img,
+                        df_tracked,
+                        metadata,
+                    )
+        except BaseException:
+            # Signal downstream workers that no df will be produced for this
+            # frame — they walk past skipped predecessors.
+            fov_obj.tracks_queue.skip_frame(frame_idx)
+            raise
 
         # --- Unblock the next frame ---
         # df_tracked is fully populated (features, stim, ref).
         # Parquet + TIFF saves below use their own data and unique filenames,
         # so they're safe to run concurrently with the next frame.
-        fov_obj.tracks_queue.put(df_tracked)
-        frame_counter = fov_obj.fov_timestep_counter
-        fov_obj.fov_timestep_counter += 1
+        fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
+        frame_counter = frame_idx
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
         df_to_save = convert_track_dtypes(df_tracked)

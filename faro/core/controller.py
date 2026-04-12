@@ -247,7 +247,12 @@ class Analyzer:
                             f"[Analyzer] Pipeline overloaded -> defer (active={self.active_pipeline_tasks}, max={self.max_queue_size}, pending_deferred={self._deferred_queue.qsize()})"
                         )
                 except Exception:
-                    pass  # Deferred queue also full - metadata lost (acceptable, storage is priority)
+                    # Deferred queue full — frame truly lost. Mark it skipped
+                    # on the tracks dispenser so downstream frames aren't stuck
+                    # waiting for its put forever.
+                    fov_idx = metadata.get("fov", 0)
+                    frame_idx = event.index.get("t", 0)
+                    self.get_fov_state(fov_idx).tracks_queue.skip_frame(frame_idx)
                 return
 
             # We have capacity, increment counter

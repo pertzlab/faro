@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Iterator
+from typing import Any, Iterator, Optional
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
@@ -12,15 +13,145 @@ from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
 
+class TracksDispenser:
+    """Frame-ordered handoff for df_tracked between pipeline workers.
+
+    Replaces the former ``tracks_queue: queue.SimpleQueue`` used to carry
+    tracking results between concurrent ``ImageProcessingPipeline.run``
+    invocations. ``SimpleQueue`` handed out entries FIFO by thread-wait-
+    arrival-order, so a frame whose segmentation finished first received
+    the oldest queued df regardless of acquisition order — causing frames
+    with lighter segmentation workloads to be mis-labelled as earlier
+    frames.
+
+    This class instead keys entries by the authoritative acquisition index
+    (``event.index["t"]``). Workers call :meth:`get_for_frame` with their
+    own frame index and block until the immediate predecessor has called
+    :meth:`put_for_frame`, guaranteeing the previous df_tracked regardless
+    of which thread reached the rendezvous first. Entries are pruned after
+    each successful ``get_for_frame`` so memory stays bounded at ~1 entry
+    per FOV in steady state.
+
+    Thread-safe. All public methods acquire an internal condition variable.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, pd.DataFrame] = {}
+        self._skipped: set[int] = set()
+        self._cond = threading.Condition()
+
+    def put_for_frame(self, idx: int, df: pd.DataFrame) -> None:
+        """Record *df* as this frame's tracked DataFrame.
+
+        Wakes any worker blocked in :meth:`get_for_frame` waiting for this
+        or a later predecessor.
+        """
+        with self._cond:
+            self._entries[idx] = df
+            self._cond.notify_all()
+
+    def skip_frame(self, idx: int) -> None:
+        """Mark a frame as skipped — no df will be produced for it.
+
+        Callers of :meth:`get_for_frame` walk past skipped frames to find
+        the most recent actual put. Use this when a frame is dropped
+        entirely (e.g. pipeline queue saturated) so downstream frames
+        don't block indefinitely.
+        """
+        with self._cond:
+            self._skipped.add(idx)
+            self._cond.notify_all()
+
+    def get_for_frame(
+        self, idx: int, timeout: Optional[float] = None
+    ) -> pd.DataFrame:
+        """Return the df_tracked from the most recent resolved predecessor.
+
+        Blocks until the immediate predecessor is resolved (either put or
+        marked skipped). If the entire predecessor chain back to 0 is
+        skipped, returns an empty DataFrame (first frame of the experiment
+        has the same initial state).
+
+        Args:
+            idx: The frame index whose predecessor is wanted.
+            timeout: Maximum seconds to block. ``None`` means wait
+                forever.
+
+        Raises:
+            queue.Empty: if *timeout* elapses without the predecessor
+                becoming available.
+        """
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
+        with self._cond:
+            while True:
+                status, info = self._resolve_predecessor_locked(idx)
+                if status == "found":
+                    df = self._entries[info]
+                    self._prune_through_locked(info)
+                    return df
+                if status == "empty":
+                    return pd.DataFrame()
+                # status == "waiting"; info = the unresolved index
+                remaining = (
+                    (deadline - time.monotonic()) if deadline is not None else None
+                )
+                if remaining is not None and remaining <= 0:
+                    raise queue.Empty(
+                        f"TracksDispenser: timeout waiting for frame {info}"
+                    )
+                self._cond.wait(remaining)
+
+    def reset(self) -> None:
+        """Clear all state. Used between phases when frame indices restart."""
+        with self._cond:
+            self._entries.clear()
+            self._skipped.clear()
+            self._cond.notify_all()
+
+    def _resolve_predecessor_locked(
+        self, idx: int
+    ) -> tuple[str, Optional[int]]:
+        """Walk backward from ``idx - 1`` past skipped frames.
+
+        Returns ``("found", k)`` if entry k is the nearest resolved put,
+        ``("empty", None)`` if we walked past 0 without hitting an entry,
+        or ``("waiting", k)`` if index k is unresolved (caller must wait).
+
+        Caller must hold ``_cond``.
+        """
+        prev = idx - 1
+        while prev >= 0:
+            if prev in self._entries:
+                return "found", prev
+            if prev in self._skipped:
+                prev -= 1
+                continue
+            return "waiting", prev
+        return "empty", None
+
+    def _prune_through_locked(self, idx: int) -> None:
+        """Drop entries and skip markers with index ``<= idx``.
+
+        Called after a successful ``get_for_frame`` — once frame N has
+        consumed entry N-1, no future frame will ask for anything
+        ``<= N-1`` (each frame asks only for its immediate predecessor).
+        """
+        for k in list(self._entries):
+            if k <= idx:
+                del self._entries[k]
+        for k in list(self._skipped):
+            if k <= idx:
+                self._skipped.remove(k)
+
+
 class FovState:
     """Per-FOV mutable state for tracking and stimulation."""
 
     def __init__(self):
         self.stim_mask_queue = queue.SimpleQueue()
-        self.tracks_queue = queue.SimpleQueue()
+        self.tracks_queue = TracksDispenser()
         self.parquet_lock = threading.Lock()
         self.linker = None
-        self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
         self.n_cells_latest = 0
 
