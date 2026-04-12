@@ -34,6 +34,7 @@ from faro.microscope.base import AbstractMicroscope
 from faro.segmentation.base import OtsuSegmentator
 from faro.stimulation.base import Stim, StimWithImage, StimWholeFOV
 from faro.stimulation.center_circle import CenterCircle
+from faro.tracking.motile_tracker import TrackerMotile
 from faro.tracking.trackpy import TrackerTrackpy
 
 # ---------------------------------------------------------------------------
@@ -170,12 +171,26 @@ def tmp_dir():
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _make_pipeline(path, *, with_stim=False):
+# Shared parametrization over tracker implementations for end-to-end
+# test classes where the tracker choice is a meaningful variable.
+# Tests opt in by adding ``tracker_factory`` to their fixture chain.
+@pytest.fixture(
+    params=[
+        lambda: TrackerTrackpy(search_range=50, memory=3),
+        lambda: TrackerMotile(search_range=50, memory=3),
+    ],
+    ids=["Trackpy", "Motile"],
+)
+def tracker_factory(request):
+    return request.param
+
+
+def _make_pipeline(path, *, with_stim=False, tracker=None):
     """Build a pipeline with real components for integration testing."""
     return ImageProcessingPipeline(
         storage_path=path,
         segmentators=[SegmentationMethod("labels", OtsuSegmentator(), 0, False)],
-        tracker=TrackerTrackpy(search_range=50, memory=3),
+        tracker=tracker if tracker is not None else TrackerTrackpy(search_range=50, memory=3),
         feature_extractor=SimpleFE("labels"),
         stimulator=CenterCircle() if with_stim else None,
     )
@@ -269,9 +284,11 @@ class TestEndToEndNoStim:
     """5 timepoints, no stimulation — full Controller → Microscope → Pipeline loop."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
+    def setup(self, tmp_dir, tracker_factory):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline(self.path, with_stim=False)
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=False, tracker=tracker_factory()
+        )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
         self.events = make_events(N_TIMEPOINTS)
@@ -355,9 +372,11 @@ class TestEndToEndStimCurrent:
     STIM_FRAMES = (2, 3, 4)
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
+    def setup(self, tmp_dir, tracker_factory):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline(self.path, with_stim=True)
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=True, tracker=tracker_factory()
+        )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
         self.events = make_events(N_TIMEPOINTS, stim_frames=self.STIM_FRAMES)
@@ -401,9 +420,11 @@ class TestEndToEndStimPrevious:
     STIM_FRAMES = (2, 3, 4)
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
+    def setup(self, tmp_dir, tracker_factory):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline(self.path, with_stim=True)
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=True, tracker=tracker_factory()
+        )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
         self.events = make_events(N_TIMEPOINTS, stim_frames=self.STIM_FRAMES)
@@ -998,9 +1019,11 @@ class TestContinueExperiment:
     """Run 3 frames, continue with 3 more, verify seamless continuation."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
+    def setup(self, tmp_dir, tracker_factory):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline(self.path, with_stim=False)
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=False, tracker=tracker_factory()
+        )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
 
@@ -1069,9 +1092,11 @@ class TestExtendExperiment:
     """Start 3 frames, extend with 3 more mid-run, verify all processed."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
+    def setup(self, tmp_dir, tracker_factory):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline(self.path, with_stim=False)
+        self.pipeline = _make_pipeline(
+            self.path, with_stim=False, tracker=tracker_factory()
+        )
         self.mic = CircleMicroscope()
         self.ctrl = Controller(self.mic, self.pipeline)
 
@@ -1124,8 +1149,10 @@ class TestExtendExperiment:
 class TestContinueWithoutRunRaises:
     """Calling continue_experiment without run_experiment should raise."""
 
-    def test_raises_runtime_error(self, tmp_dir):
-        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+    def test_raises_runtime_error(self, tmp_dir, tracker_factory):
+        pipeline = _make_pipeline(
+            tmp_dir, with_stim=False, tracker=tracker_factory()
+        )
         mic = CircleMicroscope()
         ctrl = Controller(mic, pipeline)
         events = make_events(3)

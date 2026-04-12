@@ -15,9 +15,16 @@ that the option is recognized regardless of which subdirectory of
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
+
+# motile v0.4 emits a DEBUG record per variable with a ``%.3f`` format
+# that blows up when pytest captures DEBUG (some numpy scalar subclasses
+# do not implement __float__ cleanly in logging's lazy formatter).
+# Silencing at INFO keeps the underlying solve intact.
+logging.getLogger("motile").setLevel(logging.INFO)
 
 
 def resolve_scope(config: pytest.Config) -> str | None:
