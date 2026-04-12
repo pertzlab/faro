@@ -419,7 +419,7 @@ class ImageProcessingPipeline:
             timeout_time = self._queue_timeout
 
         try:
-            df_old = fov_obj.tracks_queue.get_for_frame(
+            df_old = fov_obj.tracks_queue.get_predecessor(
                 frame_idx, timeout=timeout_time
             )
         except queue.Empty as e:
@@ -429,15 +429,20 @@ class ImageProcessingPipeline:
             try:
                 df_old = pd.read_parquet(file_path)
             except FileNotFoundError:
-                df_old = pd.DataFrame()
+                df_old = None
                 print("Attention df lost")
+        if df_old is None:
+            df_old = pd.DataFrame()
 
-        # The dispenser guarantees only one worker is between get_for_frame and
-        # put_for_frame per FOV, so setting the legacy counter here is safe for
-        # the tracker to read. If anything below raises, the finally block calls
-        # skip_frame so downstream workers don't deadlock on the missing put.
+        # The dispenser guarantees only one worker is between get_predecessor
+        # and put_for_frame per FOV, so setting the legacy counter here is safe
+        # for the tracker to read. If anything below raises, the finally block
+        # skips both dispensers so downstream workers don't deadlock.
         fov_obj.fov_timestep_counter = frame_idx
         tracked_ok = False
+        stim_expected = metadata["stim"] == True and isinstance(
+            self.stimulator, StimWithPipeline
+        )
         try:
             df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
@@ -454,7 +459,7 @@ class ImageProcessingPipeline:
                     tracks=df_tracked,
                 )
                 if isinstance(self.stimulator, StimWithPipeline):
-                    fov_obj.stim_mask_queue.put_nowait(stim_mask)
+                    fov_obj.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
 
             if metadata.get("img_type") == ImgType.IMG_REF:
                 if self.feature_extractor_ref is not None and self.tracker is not None:
@@ -470,6 +475,8 @@ class ImageProcessingPipeline:
                 fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
             else:
                 fov_obj.tracks_queue.skip_frame(frame_idx)
+                if stim_expected:
+                    fov_obj.stim_mask_queue.skip_frame(frame_idx)
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
         df_to_save = convert_track_dtypes(df_tracked)

@@ -130,8 +130,11 @@ class Analyzer:
         stimulator = self.pipeline.stimulator
         if isinstance(stimulator, (StimWithImage, StimWithPipeline)):
             fov_state = self.get_fov_state(fov_index)
+            frame_idx = metadata.get("timestep", 0)
             try:
-                return fov_state.stim_mask_queue.get(block=True, timeout=timeout)
+                return fov_state.stim_mask_queue.get_at_frame(
+                    frame_idx, timeout=timeout
+                )
             except Exception as e:
                 print(f"Warning: Stimulation mask not ready (timeout): {e}")
                 return None
@@ -167,7 +170,9 @@ class Analyzer:
                 if metadata.get("stim", False):
                     if isinstance(self.pipeline.stimulator, StimWithImage):
                         if metadata["img_type"] == ImgType.IMG_RAW:
-                            self._put_stim_mask_if_no_labels(metadata=metadata, img=img)
+                            self._put_stim_mask_if_no_labels(
+                                event=event, metadata=metadata, img=img
+                            )
 
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
@@ -199,6 +204,7 @@ class Analyzer:
 
     def _put_stim_mask_if_no_labels(
         self,
+        event: MDAEvent,
         metadata: dict,
         img: np.ndarray = None,
     ) -> None:
@@ -209,15 +215,18 @@ class Analyzer:
             )
         stimulator = self.pipeline.stimulator
         fov_state = self.get_fov_state(metadata["fov"])
-        if isinstance(stimulator, StimWithImage):
-            stim_mask, _ = stimulator.get_stim_mask(metadata=metadata, img=img)
-        else:
-            # Base Stim — needs nothing
-            metadata["img_shape"] = (img.shape[-2], img.shape[-1])
-            stim_mask, _ = stimulator.get_stim_mask(metadata=metadata)
-        fov_state.stim_mask_queue.put(stim_mask)
-
-        return
+        frame_idx = event.index.get("t", 0)
+        try:
+            if isinstance(stimulator, StimWithImage):
+                stim_mask, _ = stimulator.get_stim_mask(metadata=metadata, img=img)
+            else:
+                # Base Stim — needs nothing
+                metadata["img_shape"] = (img.shape[-2], img.shape[-1])
+                stim_mask, _ = stimulator.get_stim_mask(metadata=metadata)
+        except Exception:
+            fov_state.stim_mask_queue.skip_frame(frame_idx)
+            raise
+        fov_state.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
 
     def _try_submit_pipeline(
         self, img: np.array, event: MDAEvent, metadata: dict, folder: str

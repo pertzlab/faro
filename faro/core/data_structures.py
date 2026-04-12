@@ -5,7 +5,9 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Iterator, Literal, Optional
+from typing import Any, Generic, Iterator, Literal, Optional, TypeVar
+
+_T = TypeVar("_T")
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
@@ -13,64 +15,67 @@ from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
 
-class TracksDispenser:
-    """Frame-ordered handoff for df_tracked between pipeline workers.
+class FrameDispenser(Generic[_T]):
+    """Frame-ordered handoff for per-frame values between pipeline workers.
 
-    Replaces the former ``tracks_queue: queue.SimpleQueue`` used to carry
-    tracking results between concurrent ``ImageProcessingPipeline.run``
-    invocations. ``SimpleQueue`` handed out entries FIFO by thread-wait-
-    arrival-order, so a frame whose segmentation finished first received
-    the oldest queued df regardless of acquisition order — causing frames
-    with lighter segmentation workloads to be mis-labelled as earlier
-    frames.
+    Replaces ``queue.SimpleQueue`` in places where values must be associated
+    with the frame that produced them. A SimpleQueue hands out entries FIFO
+    by thread-wait-arrival-order; concurrent pipeline workers could beat
+    earlier frames to the queue and mix up which value went with which
+    frame (see the TracksDispenser bug rationale — same pattern applies to
+    stim masks and any other per-frame handoff).
 
-    This class instead keys entries by the authoritative acquisition index
-    (``event.index["t"]``). Workers call :meth:`get_for_frame` with their
-    own frame index and block until the immediate predecessor has called
-    :meth:`put_for_frame`, guaranteeing the previous df_tracked regardless
-    of which thread reached the rendezvous first. Entries are pruned after
-    each successful ``get_for_frame`` so memory stays bounded at ~1 entry
-    per FOV in steady state.
+    Values are keyed by an integer frame index (``event.index["t"]``).
+    Two consumption modes are supported:
+
+    - :meth:`get_predecessor` — wait for the most recent put *before* this
+      frame (walking past skipped frames). Used for tracking where frame N
+      needs frame N-1's accumulated df.
+    - :meth:`get_at_frame` — wait for *this* frame's put specifically.
+      Used for stim masks where frame N's stim event needs exactly frame
+      N's mask.
+
+    Entries are pruned after each successful :meth:`get_predecessor` so
+    memory stays bounded at ~1 entry per FOV in steady state.
 
     Thread-safe. All public methods acquire an internal condition variable.
     """
 
     def __init__(self) -> None:
-        self._entries: dict[int, pd.DataFrame] = {}
+        self._entries: dict[int, _T] = {}
         self._skipped: set[int] = set()
         self._cond = threading.Condition()
 
-    def put_for_frame(self, idx: int, df: pd.DataFrame) -> None:
-        """Record *df* as this frame's tracked DataFrame.
+    def put_for_frame(self, idx: int, value: _T) -> None:
+        """Record *value* as this frame's output.
 
-        Wakes any worker blocked in :meth:`get_for_frame` waiting for this
-        or a later predecessor.
+        Wakes any worker blocked in a ``get_*`` call.
         """
         with self._cond:
-            self._entries[idx] = df
+            self._entries[idx] = value
             self._cond.notify_all()
 
     def skip_frame(self, idx: int) -> None:
-        """Mark a frame as skipped — no df will be produced for it.
+        """Mark a frame as skipped — no value will be produced for it.
 
-        Callers of :meth:`get_for_frame` walk past skipped frames to find
-        the most recent actual put. Use this when a frame is dropped
-        entirely (e.g. pipeline queue saturated) so downstream frames
-        don't block indefinitely.
+        :meth:`get_predecessor` walks past skipped frames to find the
+        most recent actual put; :meth:`get_at_frame` returns ``None``.
+        Use this when a frame is dropped (e.g. pipeline queue saturated,
+        exception) so downstream waiters don't block indefinitely.
         """
         with self._cond:
             self._skipped.add(idx)
             self._cond.notify_all()
 
-    def get_for_frame(
+    def get_predecessor(
         self, idx: int, timeout: Optional[float] = None
-    ) -> pd.DataFrame:
-        """Return the df_tracked from the most recent resolved predecessor.
+    ) -> Optional[_T]:
+        """Return the value from the most recent resolved predecessor.
 
         Blocks until the immediate predecessor is resolved (either put or
-        marked skipped). If the entire predecessor chain back to 0 is
-        skipped, returns an empty DataFrame (first frame of the experiment
-        has the same initial state).
+        marked skipped). Walks past skipped frames. Returns ``None`` if
+        the entire predecessor chain back to 0 is skipped or empty
+        (typically meaning this is the first frame of the experiment).
 
         Args:
             idx: The frame index whose predecessor is wanted.
@@ -86,18 +91,52 @@ class TracksDispenser:
             while True:
                 status, info = self._resolve_predecessor_locked(idx)
                 if status == "found":
-                    df = self._entries[info]
+                    value = self._entries[info]
                     self._prune_through_locked(info)
-                    return df
+                    return value
                 if status == "empty":
                     # Prune now — the tail of _skipped has no future consumer.
                     self._prune_through_locked(idx - 1)
-                    return pd.DataFrame()
+                    return None
                 # status == "waiting"; info = the unresolved index
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     raise queue.Empty(
-                        f"TracksDispenser: timeout waiting for frame {info}"
+                        f"FrameDispenser: timeout waiting for frame {info}"
+                    )
+                self._cond.wait(remaining)
+
+    def get_at_frame(
+        self, idx: int, timeout: Optional[float] = None
+    ) -> Optional[_T]:
+        """Return the value put *at* frame ``idx``.
+
+        Blocks until ``idx`` is resolved (either put or marked skipped).
+        Returns the value if put, or ``None`` if skipped.
+
+        Args:
+            idx: The frame index to wait for.
+            timeout: Maximum seconds to block. ``None`` means wait
+                forever.
+
+        Raises:
+            queue.Empty: if *timeout* elapses without ``idx`` being
+                resolved.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while True:
+                if idx in self._entries:
+                    value = self._entries.pop(idx)
+                    self._skipped.discard(idx)
+                    return value
+                if idx in self._skipped:
+                    self._skipped.discard(idx)
+                    return None
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise queue.Empty(
+                        f"FrameDispenser: timeout waiting for frame {idx}"
                     )
                 self._cond.wait(remaining)
 
@@ -135,7 +174,7 @@ class TracksDispenser:
     def _prune_through_locked(self, idx: int) -> None:
         """Drop entries and skip markers with index ``<= idx``.
 
-        Called after a successful ``get_for_frame`` — once frame N has
+        Called after a successful ``get_predecessor`` — once frame N has
         consumed entry N-1, no future frame will ask for anything
         ``<= N-1`` (each frame asks only for its immediate predecessor).
         """
@@ -151,8 +190,8 @@ class FovState:
     """Per-FOV mutable state for tracking and stimulation."""
 
     def __init__(self):
-        self.stim_mask_queue = queue.SimpleQueue()
-        self.tracks_queue = TracksDispenser()
+        self.stim_mask_queue: FrameDispenser[Any] = FrameDispenser()
+        self.tracks_queue: FrameDispenser[pd.DataFrame] = FrameDispenser()
         self.parquet_lock = threading.Lock()
         self.linker = None
         self.fov_timestep_counter = 0
