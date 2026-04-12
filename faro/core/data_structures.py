@@ -5,14 +5,21 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Generic, Iterator, Literal, Optional, TypeVar
+from typing import Any, Generic, Iterator, Literal, Optional, TypeVar, Union
 import numpy as np
 import pandas as pd
-
-_T = TypeVar("_T")
 from pydantic import Field, field_validator, model_validator
 from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
+
+_T = TypeVar("_T")
+
+# A stimulation mask is either a 2D binary array or a scalar ``True``
+# (whole-FOV on) sentinel — ``StimWholeFOV.get_stim_mask`` returns the
+# latter to avoid allocating an IMG_SIZE-sized array just to say "fire
+# everything". ``None`` is reserved for the "frame skipped" signal
+# surfaced by :meth:`FrameDispenser.get_at_frame`.
+StimMask = Union[np.ndarray, bool]
 
 
 class FrameDispenser(Generic[_T]):
@@ -199,7 +206,7 @@ class FovState:
     """Per-FOV mutable state for tracking and stimulation."""
 
     def __init__(self):
-        self.stim_mask_queue: FrameDispenser[Any] = FrameDispenser()
+        self.stim_mask_queue: FrameDispenser[StimMask] = FrameDispenser()
         self.tracks_queue: FrameDispenser[pd.DataFrame] = FrameDispenser()
         self.parquet_lock = threading.Lock()
         self.linker = None

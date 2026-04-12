@@ -132,12 +132,18 @@ class Analyzer:
             fov_state = self.get_fov_state(fov_index)
             frame_idx = metadata.get("timestep", 0)
             try:
-                return fov_state.stim_mask_queue.get_at_frame(
+                mask = fov_state.stim_mask_queue.get_at_frame(
                     frame_idx, timeout=timeout
                 )
             except Exception as e:
-                print(f"Warning: Stimulation mask not ready (timeout): {e}")
+                # Pipeline never produced or signalled for this frame.
+                print(f"Warning: Stimulation mask timed out for frame {frame_idx}: {e}")
                 return None
+            if mask is None:
+                # Pipeline explicitly skipped this frame (tracking/stim crashed).
+                # A background_error was already recorded by the pipeline path.
+                print(f"Warning: Stimulation mask skipped for frame {frame_idx}")
+            return mask
         else:
             metadata["img_shape"] = metadata.get("img_shape", (1024, 1024))
             stim_mask, _ = stimulator.get_stim_mask(metadata=metadata)

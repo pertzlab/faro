@@ -5,7 +5,7 @@ FrameDispenser replaces the former ``FovState.tracks_queue: SimpleQueue``
 out entries FIFO by thread-arrival-order. That was the root cause of the
 "frames processed out of acquisition order" race in
 ``ImageProcessingPipeline.run``. See
-``rtm_pymmcore/core/data_structures.py`` for the full rationale.
+``faro/core/data_structures.py`` for the full rationale.
 
 The dispenser supports two consumption modes:
   - ``get_predecessor(idx)`` — tracking needs frame N-1's df for frame N
@@ -21,7 +21,7 @@ import time
 import pandas as pd
 import pytest
 
-from rtm_pymmcore.core.data_structures import FrameDispenser
+from faro.core.data_structures import FrameDispenser
 
 
 def _df(label: str) -> pd.DataFrame:
