@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Literal, Optional
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
@@ -81,7 +81,7 @@ class TracksDispenser:
             queue.Empty: if *timeout* elapses without the predecessor
                 becoming available.
         """
-        deadline = (time.monotonic() + timeout) if timeout is not None else None
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._cond:
             while True:
                 status, info = self._resolve_predecessor_locked(idx)
@@ -90,11 +90,11 @@ class TracksDispenser:
                     self._prune_through_locked(info)
                     return df
                 if status == "empty":
+                    # Prune now — the tail of _skipped has no future consumer.
+                    self._prune_through_locked(idx - 1)
                     return pd.DataFrame()
                 # status == "waiting"; info = the unresolved index
-                remaining = (
-                    (deadline - time.monotonic()) if deadline is not None else None
-                )
+                remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
                     raise queue.Empty(
                         f"TracksDispenser: timeout waiting for frame {info}"
@@ -102,7 +102,10 @@ class TracksDispenser:
                 self._cond.wait(remaining)
 
     def reset(self) -> None:
-        """Clear all state. Used between phases when frame indices restart."""
+        """Clear all state. Call only when no workers are in-flight —
+        waiters with ``timeout=None`` would otherwise block on a chain
+        whose predecessors you just erased.
+        """
         with self._cond:
             self._entries.clear()
             self._skipped.clear()
@@ -110,7 +113,7 @@ class TracksDispenser:
 
     def _resolve_predecessor_locked(
         self, idx: int
-    ) -> tuple[str, Optional[int]]:
+    ) -> tuple[Literal["found", "empty", "waiting"], Optional[int]]:
         """Walk backward from ``idx - 1`` past skipped frames.
 
         Returns ``("found", k)`` if entry k is the nearest resolved put,
