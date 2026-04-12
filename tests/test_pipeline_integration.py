@@ -372,6 +372,39 @@ class TestTransientOcclusion:
                 f"Particle {pid} drifts — closest circle distance {min(to_c1, to_c2):.1f}"
             )
 
+    @pytest.mark.xfail(
+        strict=False,
+        reason=(
+            "Pipeline race condition: ImageProcessingPipeline.run() is scheduled "
+            "on a ThreadPoolExecutor, so frames with faster segmentation can reach "
+            "the tracker first and receive a lower fov_timestep than frames acquired "
+            "earlier. The blanked frame segments faster (one circle, not two) and "
+            "gets mislabelled. Remove this xfail when the pipeline serializes frame "
+            "ordering end-to-end."
+        ),
+    )
+    def test_circle1_particle_id_survives_gap(self):
+        """Circle 1's particle ID survives a one-frame gap at a specific fov_timestep.
+
+        This is the stronger per-frame invariant. It currently fails because of
+        a pipeline race, but it's exactly what a user would expect to hold.
+        Keeping the test as xfail so it flips to passing once the race is fixed.
+        """
+        df = self._load_tracks()
+        frame0 = df[df["fov_timestep"] == 0]
+        c1_row = frame0.iloc[
+            (frame0[["x", "y"]] - CIRCLE1_CENTER).abs().sum(axis=1).argmin()
+        ]
+        c1_particle = int(c1_row["particle"])
+
+        frames_seen = sorted(
+            df.loc[df["particle"] == c1_particle, "fov_timestep"].tolist()
+        )
+        expected = [t for t in range(N_TIMEPOINTS) if t != self.DROP_FRAME]
+        assert frames_seen == expected, (
+            f"Circle-1 particle {c1_particle} seen in {frames_seen}, expected {expected}"
+        )
+
 
 # ===================================================================
 # Test Class 2: End-to-end, no stimulation
