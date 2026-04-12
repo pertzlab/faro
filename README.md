@@ -61,7 +61,7 @@ The pipeline is modular, each component is independent and can be swapped or set
 | **Segmentation** | Identify cells in images | `OtsuSegmentator`, `SegmentorCellpose`, `SegmentatorStardist`, remote via [imaging-server-kit](https://github.com/imaging-server-kit) |
 | **Stimulation** | Generate masks for DMD/SLM | `StimWholeFOV`, `StimPercentageOfCell`, `CenterCircle`, `StimLine` |
 | **Feature extraction** | Measure cell properties | `SimpleFE` (position, area), `FE_ErkKtr` (ERK-KTR c/n ratio) |
-| **Tracking** | Link cells across frames | `TrackerTrackpy` (via [trackpy](https://github.com/soft-matter/trackpy)) |
+| **Tracking** | Link cells across frames | `TrackerTrackpy` (via [trackpy](https://github.com/soft-matter/trackpy)), `TrackerMotile` (ILP via [motile](https://github.com/funkelab/motile), supports divisions/merges) |
 
 ```python
 pipeline = ImageProcessingPipeline(

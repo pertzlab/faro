@@ -23,6 +23,7 @@ class FovState:
         self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
         self.n_cells_latest = 0
+        self.next_particle_id = 0
 
 
 @dataclass
