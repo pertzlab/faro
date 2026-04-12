@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from faro.core.data_structures import FovState
+from faro.core.pipeline import dispatch_stim_mask
 from faro.feature_extraction.base import FeatureExtractor
 from faro.feature_extraction.erk_ktr import FE_ErkKtr
 from faro.feature_extraction.simple import SimpleFE
@@ -32,6 +33,7 @@ from faro.stimulation.base import (
 )
 from faro.stimulation.center_circle import CenterCircle
 from faro.stimulation.moving_line_20x import StimLine
+from faro.tracking.motile_tracker import TrackerMotile
 from faro.tracking.trackpy import TrackerTrackpy
 
 # ---------------------------------------------------------------------------
@@ -170,19 +172,28 @@ def _detections(positions, timestep_label_start=1):
 
 class TestTrackingContract:
 
-    def test_first_frame_returns_valid_df(self):
-        tracker = TrackerTrackpy(search_range=50, memory=3)
+    @pytest.fixture(
+        params=[
+            lambda: TrackerTrackpy(search_range=50, memory=3),
+            lambda: TrackerMotile(search_range=50, memory=3),
+        ],
+        ids=["Trackpy", "Motile"],
+    )
+    def tracker(self, request):
+        return request.param()
+
+    @pytest.fixture
+    def fov(self):
         fov = FovState()
         _ = fov.tracks_queue.get()  # drain the initial empty df
+        return fov
+
+    def test_first_frame_returns_valid_df(self, tracker, fov):
         df_new = _detections([(40, 40), (90, 90)])
         result = tracker.track_cells(pd.DataFrame(), df_new, fov)
         _assert_valid_tracking(result)
 
-    def test_two_frames_returns_valid_df(self):
-        tracker = TrackerTrackpy(search_range=50, memory=3)
-        fov = FovState()
-        _ = fov.tracks_queue.get()
-
+    def test_two_frames_returns_valid_df(self, tracker, fov):
         df1 = _detections([(40, 40), (90, 90)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
         fov.fov_timestep_counter += 1
@@ -191,11 +202,7 @@ class TestTrackingContract:
         result = tracker.track_cells(df_tracked, df2, fov)
         _assert_valid_tracking(result)
 
-    def test_consistent_particle_ids_across_frames(self):
-        tracker = TrackerTrackpy(search_range=50, memory=3)
-        fov = FovState()
-        _ = fov.tracks_queue.get()
-
+    def test_consistent_particle_ids_across_frames(self, tracker, fov):
         df1 = _detections([(40, 40), (90, 90)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
         fov.fov_timestep_counter += 1
@@ -208,12 +215,8 @@ class TestTrackingContract:
             result["particle"].nunique() == 2
         ), "Two stationary particles should keep two unique IDs"
 
-    def test_empty_second_frame(self):
+    def test_empty_second_frame(self, tracker, fov):
         """No detections in a frame should not crash."""
-        tracker = TrackerTrackpy(search_range=50, memory=3)
-        fov = FovState()
-        _ = fov.tracks_queue.get()
-
         df1 = _detections([(40, 40)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
         fov.fov_timestep_counter += 1
@@ -222,12 +225,8 @@ class TestTrackingContract:
         result = tracker.track_cells(df_tracked, df2, fov)
         _assert_valid_tracking(result)
 
-    def test_particle_memory(self):
+    def test_particle_memory(self, tracker, fov):
         """A particle missing for <= memory frames should be re-linked."""
-        tracker = TrackerTrackpy(search_range=50, memory=3)
-        fov = FovState()
-        _ = fov.tracks_queue.get()
-
         # Frame 0: particle at (40,40)
         df_tracked = tracker.track_cells(pd.DataFrame(), _detections([(40, 40)]), fov)
         fov.fov_timestep_counter += 1
@@ -263,6 +262,51 @@ def _assert_valid_stim_mask(result, expected_shape):
         mask.shape == expected_shape
     ), f"Mask shape {mask.shape} != expected {expected_shape}"
     assert mask.dtype == np.uint8, f"Mask must be uint8, got {mask.dtype}"
+
+
+class TestStimContractParametrized:
+    """Every stim, dispatched via the pipeline helper, returns a valid output.
+
+    Uses :func:`~faro.core.pipeline.dispatch_stim_mask` so subclasses of
+    ``Stim``, ``StimWithImage`` and ``StimWithPipeline`` can all share this
+    test. Class-specific semantic checks live in :class:`TestStimContract`.
+    """
+
+    @pytest.fixture(
+        params=[
+            StimNothing(),
+            CenterCircle(),
+            StimTopEdgeMeta(),
+            StimLine(
+                first_stim_frame=0,
+                frames_for_1_loop=10,
+                stripe_width=20,
+                n_frames_total=30,
+                mask_height=IMG_H,
+                mask_width=IMG_W,
+            ),
+        ],
+        ids=["Nothing", "CenterCircle", "TopEdgeMeta", "Line"],
+    )
+    def stimulator(self, request):
+        return request.param
+
+    def test_returns_valid_mask(self, stimulator):
+        segmentation_results = {"labels": _label_image()}
+        metadata = {
+            "img_shape": (IMG_H, IMG_W),
+            "timestep": 3,
+            "stim": True,
+            "stim_fraction": 0.5,
+        }
+        mask = dispatch_stim_mask(
+            stimulator, segmentation_results, metadata, img=None, tracks=None
+        )
+        # dispatch_stim_mask returns np.ndarray for mask-producing stims.
+        # StimWholeFOV (returns True) is exercised in TestStimContract below.
+        assert isinstance(mask, np.ndarray)
+        assert mask.shape == (IMG_H, IMG_W)
+        assert mask.dtype == np.uint8
 
 
 class TestStimContract:
@@ -364,6 +408,49 @@ def _assert_valid_features(result):
         table, pd.DataFrame
     ), f"Feature table must be pd.DataFrame, got {type(table).__name__}"
     assert "label" in table.columns, "Feature table must contain 'label' column"
+
+
+class TestFeatureExtractionContractParametrized:
+    """Contract that every FeatureExtractor must satisfy.
+
+    Covers the shared interface (``extract_positions`` / ``extract_features``).
+    Class-specific output columns are checked in
+    :class:`TestFeatureExtractionContract` below.
+    """
+
+    @pytest.fixture(
+        params=[
+            lambda: SimpleFE(used_mask="labels"),
+            lambda: FE_ErkKtr(used_mask="labels", margin=2, distance=4),
+        ],
+        ids=["SimpleFE", "ErkKtr"],
+    )
+    def fe(self, request):
+        return request.param()
+
+    def test_extract_positions(self, fe):
+        labels = {"labels": _label_image()}
+        result = fe.extract_positions(labels)
+        _assert_valid_positions(result)
+        assert len(result) == 2, "Should find 2 objects"
+
+    def test_extract_features(self, fe):
+        labels = {"labels": _label_image()}
+        # ERK-KTR expects >= 2 channels; stack three so both FEs are happy.
+        img = np.stack([_circle_image(), _circle_image(), _circle_image()])
+        result = fe.extract_features(labels, img)
+        _assert_valid_features(result)
+
+    def test_extract_features_empty_labels(self, fe):
+        labels = {"labels": np.zeros((IMG_H, IMG_W), dtype=np.int32)}
+        img = np.stack([
+            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+        ])
+        result = fe.extract_features(labels, img)
+        _assert_valid_features(result)
+        assert len(result[0]) == 0, "No labels should produce empty table"
 
 
 class TestFeatureExtractionContract:
