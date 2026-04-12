@@ -6,10 +6,10 @@ import time
 from dataclasses import asdict, dataclass
 import enum
 from typing import Any, Generic, Iterator, Literal, Optional, TypeVar
-
-_T = TypeVar("_T")
 import numpy as np
 import pandas as pd
+
+_T = TypeVar("_T")
 from pydantic import Field, field_validator, model_validator
 from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
@@ -26,17 +26,19 @@ class FrameDispenser(Generic[_T]):
     stim masks and any other per-frame handoff).
 
     Values are keyed by an integer frame index (``event.index["t"]``).
-    Two consumption modes are supported:
+    Two consumption modes are supported with **different `None` semantics
+    and different memory behaviour**:
 
     - :meth:`get_predecessor` — wait for the most recent put *before* this
       frame (walking past skipped frames). Used for tracking where frame N
-      needs frame N-1's accumulated df.
+      needs frame N-1's accumulated df. Returns ``None`` only when the
+      whole predecessor chain is empty (legitimate first-frame state).
+      Prunes entries ``<=`` the consumed predecessor.
     - :meth:`get_at_frame` — wait for *this* frame's put specifically.
       Used for stim masks where frame N's stim event needs exactly frame
-      N's mask.
-
-    Entries are pruned after each successful :meth:`get_predecessor` so
-    memory stays bounded at ~1 entry per FOV in steady state.
+      N's mask. Returns ``None`` when the frame was skipped (upstream
+      failure, degraded). Pops the entry on read and prunes everything
+      ``< idx`` (assumes monotonic consumption).
 
     Thread-safe. All public methods acquire an internal condition variable.
     """
@@ -112,7 +114,12 @@ class FrameDispenser(Generic[_T]):
         """Return the value put *at* frame ``idx``.
 
         Blocks until ``idx`` is resolved (either put or marked skipped).
-        Returns the value if put, or ``None`` if skipped.
+        Returns the value if put, or ``None`` if skipped. The entry is
+        consumed on successful read — a retry with the same ``idx`` will
+        block/time out.
+
+        Prunes all stale entries and skip markers ``< idx``; callers must
+        consume frames in monotonically non-decreasing order.
 
         Args:
             idx: The frame index to wait for.
@@ -129,9 +136,11 @@ class FrameDispenser(Generic[_T]):
                 if idx in self._entries:
                     value = self._entries.pop(idx)
                     self._skipped.discard(idx)
+                    self._prune_through_locked(idx - 1)
                     return value
                 if idx in self._skipped:
                     self._skipped.discard(idx)
+                    self._prune_through_locked(idx - 1)
                     return None
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:

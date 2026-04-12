@@ -134,6 +134,19 @@ class TestGetAtFrame:
         with pytest.raises(queue.Empty):
             d.get_at_frame(5, timeout=0.05)
 
+    def test_stale_entries_pruned_on_consumption(self):
+        """Entries and skip markers with idx < consumed must be cleared so an
+        experiment of many stim events doesn't leak unbounded memory when some
+        frames are skipped without a matching get.
+        """
+        d = FrameDispenser()
+        d.put_for_frame(0, "mask-0")  # abandoned — no consumer
+        d.skip_frame(2)  # abandoned — no consumer
+        d.put_for_frame(5, "mask-5")
+        d.get_at_frame(5)
+        assert d._entries == {}
+        assert d._skipped == set()
+
 
 class TestPruning:
 

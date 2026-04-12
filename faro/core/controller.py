@@ -171,7 +171,7 @@ class Analyzer:
                     if isinstance(self.pipeline.stimulator, StimWithImage):
                         if metadata["img_type"] == ImgType.IMG_RAW:
                             self._put_stim_mask_if_no_labels(
-                                event=event, metadata=metadata, img=img
+                                metadata=metadata, img=img
                             )
 
                 # PRIORITY 2: Pipeline only if resources available
@@ -204,7 +204,6 @@ class Analyzer:
 
     def _put_stim_mask_if_no_labels(
         self,
-        event: MDAEvent,
         metadata: dict,
         img: np.ndarray = None,
     ) -> None:
@@ -215,7 +214,7 @@ class Analyzer:
             )
         stimulator = self.pipeline.stimulator
         fov_state = self.get_fov_state(metadata["fov"])
-        frame_idx = event.index.get("t", 0)
+        frame_idx = metadata.get("timestep", 0)
         try:
             if isinstance(stimulator, StimWithImage):
                 stim_mask, _ = stimulator.get_stim_mask(metadata=metadata, img=img)
