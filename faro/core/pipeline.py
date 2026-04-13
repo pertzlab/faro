@@ -440,7 +440,7 @@ class ImageProcessingPipeline:
         # skips both dispensers so downstream workers don't deadlock.
         fov_obj.fov_timestep_counter = frame_idx
         tracked_ok = False
-        stim_done = False  # stim_mask actually put on the dispenser
+        stim_mask_put = False  # did we put a mask on the stim dispenser?
         uses_pipeline_stim = isinstance(self.stimulator, StimWithPipeline)
         uses_image_stim = isinstance(self.stimulator, StimWithImage)
         analyzer_mode = self._analyzer.stim_mode if self._analyzer is not None else None
@@ -451,9 +451,11 @@ class ImageProcessingPipeline:
         #    for firing, but the pipeline still needs a local copy to store.
         # StimWithImage's mask is produced by the storage_worker; the pipeline
         # only peeks the dispenser for the storage step.
-        stim_needs_compute = (self.stimulator is not None and not uses_image_stim) and (
-            metadata["stim"] == True
-            or (uses_pipeline_stim and analyzer_mode == "previous")
+        pipeline_will_produce_mask = uses_pipeline_stim and (
+            metadata["stim"] or analyzer_mode == "previous"
+        )
+        stim_needs_compute = pipeline_will_produce_mask or (
+            self.stimulator is not None and not uses_image_stim and metadata["stim"]
         )
         stim_mask = None  # local for storage
         try:
@@ -473,7 +475,7 @@ class ImageProcessingPipeline:
                 )
                 if uses_pipeline_stim:
                     fov_obj.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
-                    stim_done = True
+                    stim_mask_put = True
 
             if metadata.get("img_type") == ImgType.IMG_REF:
                 if self.feature_extractor_ref is not None and self.tracker is not None:
@@ -493,11 +495,7 @@ class ImageProcessingPipeline:
             # that's the only path the pipeline puts on. Other paths produce
             # via storage_worker (StimWithImage) or synchronously in the
             # controller (base Stim) and have their own failure semantics.
-            if (
-                uses_pipeline_stim
-                and (metadata["stim"] == True or analyzer_mode == "previous")
-                and not stim_done
-            ):
+            if pipeline_will_produce_mask and not stim_mask_put:
                 fov_obj.stim_mask_queue.skip_frame(frame_idx)
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---

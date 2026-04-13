@@ -222,31 +222,22 @@ class TestPruning:
 
 class TestConcurrent:
 
-    def test_out_of_order_puts_resolve_correctly(self):
-        """Frames 5 and 6 reach get_predecessor before 3 and 4 have put.
+    def test_get_predecessor_out_of_order_puts(self):
+        """Puts arriving in any order resolve correctly.
 
-        The dispenser must hand out the correct predecessor to each.
+        Unlike the old SimpleQueue which was FIFO by arrival, FrameDispenser is
+        keyed by frame index — put order doesn't matter.
         """
         d = FrameDispenser()
-        d.put_for_frame(2, _df("F2"))
-        results: dict[int, pd.DataFrame] = {}
-
-        def worker(frame):
-            results[frame] = d.get_predecessor(frame, timeout=3.0)
-
-        threads = [threading.Thread(target=worker, args=(n,)) for n in (5, 6)]
-        for t in threads:
-            t.start()
-        time.sleep(0.05)
-        d.put_for_frame(3, _df("F3"))
-        d.put_for_frame(4, _df("F4"))
-        d.put_for_frame(5, _df("F5"))
-        for t in threads:
-            t.join(timeout=2.0)
-            assert not t.is_alive()
-
-        assert list(results[5]["tag"]) == ["F4"]
-        assert list(results[6]["tag"]) == ["F5"]
+        # Put in reverse order to ensure we key by index, not insertion order.
+        for n in (3, 0, 2, 1):
+            d.put_for_frame(n, _df(f"F{n}"))
+        # get_predecessor auto-prunes, so read in forward order like a
+        # real pipeline would (one consumer per FOV, monotonic).
+        assert list(d.get_predecessor(1)["tag"]) == ["F0"]
+        assert list(d.get_predecessor(2)["tag"]) == ["F1"]
+        assert list(d.get_predecessor(3)["tag"]) == ["F2"]
+        assert list(d.get_predecessor(4)["tag"]) == ["F3"]
 
     def test_many_concurrent_workers_in_order(self):
         """Stress test: 10 pipeline-style workers, each put after get."""

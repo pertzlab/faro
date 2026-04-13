@@ -584,17 +584,13 @@ class Controller:
             raise RuntimeError(
                 "No experiment to continue. Call run_experiment() first."
             )
-        if (
-            self._analyzer.stim_mode is not None
-            and self._analyzer.stim_mode != stim_mode
-        ):
+        if self._analyzer.stim_mode != stim_mode:
             raise RuntimeError(
                 f"Cannot continue experiment with stim_mode={stim_mode!r}; the "
                 f"running experiment is in {self._analyzer.stim_mode!r} mode. "
                 "Call finish_experiment() first to start a new experiment with a "
                 "different mode."
             )
-        self._analyzer.stim_mode = stim_mode
 
         events = list(events)
         if validate:

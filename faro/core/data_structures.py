@@ -168,8 +168,8 @@ class FrameDispenser(Generic[_T]):
     def prune_below(self, idx: int) -> None:
         """Remove all entries and skip markers with key ``< idx``.
 
-        Public counterpart to the auto-pruning ``get_predecessor`` does
-        internally. Callers using :meth:`wait_for_frame` must prune
+        Public counterpart to the auto-pruning that ``get_predecessor``
+        does internally. Callers using :meth:`wait_for_frame` must prune
         explicitly, otherwise the dispenser grows with every put.
         """
         with self._cond:

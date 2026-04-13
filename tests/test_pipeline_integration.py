@@ -728,6 +728,10 @@ class TestStimModePreviousPipelineCrashDoesNotDeadlock:
 class _CountingStim(StimWithPipeline):
     """StimWithPipeline that records every ``get_stim_mask`` call so tests
     can assert pipelines don't compute on frames that won't consume the result.
+
+    ``call_timesteps`` is appended from the pipeline worker thread and read by
+    the test thread after ``run_and_wait`` joins — that join establishes the
+    happens-before needed for safe reads; ``list.append`` is atomic in CPython.
     """
 
     required_metadata: set[str] = {"img_shape"}
@@ -798,63 +802,42 @@ class TestContinueExperimentModeMismatchRaises:
             ctrl.finish_experiment()
 
 
-class TestStimMaskFileReflectsFiredPrevious:
-    """The stim_mask .tiff under frame t in previous mode shows what actually
-    fired at t (the mask computed at frame t-1), not the mask computed at t.
+@pytest.mark.parametrize(
+    "stim_mode, tag_offset",
+    [("current", 0), ("previous", -1)],
+)
+class TestStimMaskFileReflectsFired:
+    """The stim_mask .tiff under frame t stores what actually fired at t.
+
+    ``current`` mode → offset 0 (stored = mask computed at t).
+    ``previous`` mode → offset -1 (stored = mask computed at t-1).
+    Non-stim frames always store zeros.
     """
 
-    @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
-        self.path = tmp_dir
-        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
-        self.mic = CircleMicroscope(dmd=FakeDMD())
-        self.ctrl = Controller(self.mic, self.pipeline)
-        events = make_events(5, stim_frames=(2, 3))
-        run_and_wait(self.ctrl, events, stim_mode="previous")
+    STIM_FRAMES = (2, 3)
+    N_FRAMES = 5
 
-    def test_stored_mask_is_fired_mask(self):
-        stim_dir = os.path.join(self.path, "stim_mask")
-        # non-stim frames → zeros (not the computed mask)
-        for t in (0, 1, 4):
-            path = os.path.join(stim_dir, f"000_{t:05d}.tiff")
-            mask = tifffile.imread(path)
-            assert mask.max() == 0, f"frame {t} should store zeros, got {mask.max()}"
-        # stim frames → tagged with the PREDECESSOR's timestep
-        for stim_t, expected_tag in ((2, 1), (3, 2)):
-            path = os.path.join(stim_dir, f"000_{stim_t:05d}.tiff")
-            mask = tifffile.imread(path)
-            unique = np.unique(mask)
-            assert unique.size == 1 and int(unique.item()) == expected_tag, (
-                f"stim frame {stim_t} should store mask from frame {expected_tag}, "
-                f"got {unique.tolist()}"
-            )
+    def test_stored_mask_is_fired_mask(self, tmp_dir, stim_mode, tag_offset):
+        pipeline = _make_pipeline_with_stim(tmp_dir, _FrameTaggingStim())
+        ctrl = Controller(CircleMicroscope(dmd=FakeDMD()), pipeline)
+        events = make_events(self.N_FRAMES, stim_frames=self.STIM_FRAMES)
+        run_and_wait(ctrl, events, stim_mode=stim_mode)
 
-
-class TestStimMaskFileReflectsFiredCurrent:
-    """Same assertion in ``current`` mode: stored mask matches fired mask
-    (= computed-at-t, since current mode has no offset).
-    """
-
-    @pytest.fixture(autouse=True)
-    def setup(self, tmp_dir):
-        self.path = tmp_dir
-        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
-        self.mic = CircleMicroscope(dmd=FakeDMD())
-        self.ctrl = Controller(self.mic, self.pipeline)
-        events = make_events(5, stim_frames=(2, 3))
-        run_and_wait(self.ctrl, events, stim_mode="current")
-
-    def test_stored_mask_is_fired_mask(self):
-        stim_dir = os.path.join(self.path, "stim_mask")
-        for t in (0, 1, 4):
+        stim_dir = os.path.join(tmp_dir, "stim_mask")
+        for t in range(self.N_FRAMES):
             mask = tifffile.imread(os.path.join(stim_dir, f"000_{t:05d}.tiff"))
-            assert mask.max() == 0, f"frame {t} should store zeros"
-        for stim_t in (2, 3):
-            mask = tifffile.imread(os.path.join(stim_dir, f"000_{stim_t:05d}.tiff"))
-            unique = np.unique(mask)
-            assert (
-                unique.size == 1 and int(unique.item()) == stim_t
-            ), f"stim frame {stim_t} should store its own-frame mask"
+            if t in self.STIM_FRAMES:
+                expected = t + tag_offset
+                unique = np.unique(mask)
+                assert unique.size == 1 and int(unique.item()) == expected, (
+                    f"[{stim_mode}] frame {t} should store mask from frame "
+                    f"{expected}, got {unique.tolist()}"
+                )
+            else:
+                assert mask.max() == 0, (
+                    f"[{stim_mode}] frame {t} (non-stim) should store zeros, "
+                    f"got {mask.max()}"
+                )
 
 
 # ===================================================================
