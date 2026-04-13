@@ -597,6 +597,132 @@ class TestStimModeMaskSelectionPrevious:
             )
 
 
+class TestStimModeCurrentAtFrameZero:
+    """Symmetric edge case to ``previous`` at frame 0: ``current`` at t=0 must
+    work (stim fires after t=0's own pipeline finishes and puts mask_0).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(3, stim_frames=(0,))
+        run_and_wait(self.ctrl, events, stim_mode="current")
+
+    def test_frame_zero_stim_fires_with_own_mask(self):
+        assert len(self.mic.slm_events) == 1
+        event_t, slm_image = self.mic.slm_events[0]
+        assert event_t == 0
+        assert _sole_mask_value(slm_image) == 0
+
+
+def _make_multi_fov_events(
+    n_timepoints: int, *, stim_frames_per_fov: dict[int, tuple[int, ...]]
+) -> list[RTMEvent]:
+    """Build events interleaved across multiple FOVs.
+
+    ``stim_frames_per_fov`` maps ``fov_index`` → set of timepoints that carry
+    a stim channel for that FOV. Events are ordered by ``(t, p)``.
+    """
+    stim_ch = (Channel(config="stim-405", exposure=100),)
+    events = []
+    for t in range(n_timepoints):
+        for fov in sorted(stim_frames_per_fov):
+            has_stim = t in stim_frames_per_fov[fov]
+            events.append(
+                RTMEvent(
+                    index={"t": t, "p": fov},
+                    channels=(Channel(config="phase-contrast", exposure=50),),
+                    stim_channels=stim_ch if has_stim else (),
+                    metadata={},
+                )
+            )
+    return events
+
+
+class TestStimModePreviousMultiFov:
+    """Each FOV maintains independent dispenser state and its own
+    ``_stim_pending`` entry, so stim events in FOV 1 must never consume a
+    mask produced by FOV 0 (or vice versa).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        # FOV 0: stim on frames (2, 3, 4); FOV 1: stim on frames (3, 4).
+        events = _make_multi_fov_events(
+            5, stim_frames_per_fov={0: (2, 3, 4), 1: (3, 4)}
+        )
+        run_and_wait(self.ctrl, events, stim_mode="previous")
+
+    def test_each_fov_uses_its_own_previous_mask(self):
+        # All tagged masks encode the producing frame; there's no FOV in the
+        # tag, but because each FOV has its own dispenser, the tag value also
+        # identifies which frame was the *predecessor in this FOV's stream*.
+        # FOV 0 first stim at t=2 is skipped by _stim_pending guard →
+        #   slm_events contains (3, mask_from_t=2) and (4, mask_from_t=3).
+        # FOV 1 first stim at t=3 is skipped →
+        #   slm_events contains (4, mask_from_t=3_in_fov1).
+        # _FrameTaggingStim tags by timestep only, so the mask value is
+        # the predecessor's t independent of FOV.
+        events_by_fov_tag = sorted(
+            (t, _sole_mask_value(slm)) for t, slm in self.mic.slm_events
+        )
+        assert events_by_fov_tag == [(3, 2), (4, 3), (4, 3)]
+
+
+class _StimStimulator(StimWithPipeline):
+    """StimWithPipeline that raises on a configured frame, to test that a
+    pipeline crash mid-run still resolves the stim dispenser (skip_frame)
+    and doesn't deadlock the next frame's "previous"-mode consumer.
+    """
+
+    required_metadata: set[str] = {"img_shape", "timestep"}
+
+    def __init__(self, crash_on_frame: int):
+        self.crash_on_frame = crash_on_frame
+
+    def get_stim_mask(self, *, label_images, metadata: dict, img=None, tracks=None):
+        if metadata["timestep"] == self.crash_on_frame:
+            raise RuntimeError("intentional crash for test")
+        h, w = metadata["img_shape"]
+        return np.full((h, w), metadata["timestep"], dtype=np.uint8), None
+
+
+class TestStimModePreviousPipelineCrashDoesNotDeadlock:
+    """If frame t's pipeline crashes inside the stim branch, the try/finally
+    must call ``skip_frame`` on stim_mask_queue so frame t+1's "previous"-mode
+    consumer sees a skipped predecessor (None) rather than blocking until
+    the 80 s timeout.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(
+            self.path, _StimStimulator(crash_on_frame=2)
+        )
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(4, stim_frames=(2, 3))
+        run_and_wait(self.ctrl, events, stim_mode="previous")
+
+    def test_next_frame_stim_gracefully_falls_back(self):
+        # Frame 2 (first stim) is skipped by _stim_pending guard — it would
+        # have crashed had it fired. Frame 3 fires in previous mode, asks
+        # for frame 2's mask, finds it skipped (crash finally → skip_frame),
+        # falls back to SLMImage(data=False).
+        assert len(self.mic.slm_events) == 1
+        event_t, slm = self.mic.slm_events[0]
+        assert event_t == 3
+        assert slm.data is False
+
+
 # ===================================================================
 # Test Class 5: Stim (metadata-only) shortcut — mode="current"
 # ===================================================================
