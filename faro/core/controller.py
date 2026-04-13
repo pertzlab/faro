@@ -859,6 +859,16 @@ class Controller:
         t = rtm_event.index.get("t", 0)
         if stim_mode == "previous":
             t -= 1
+            if t < 0:
+                # No previous-timepoint mask exists at frame 0. Avoid an
+                # 80 s wait on a frame that will never be produced, and
+                # a StimLine-style base Stim silently evaluating the
+                # stripe formula on a negative timestep.
+                return SLMImage(
+                    data=False,
+                    device=self._mic.dmd.name,
+                    exposure=stim_ch.exposure,
+                )
         meta = {
             **rtm_event.metadata,
             "fov": fov_index,

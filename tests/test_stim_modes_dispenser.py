@@ -108,3 +108,13 @@ def test_previous_mode_falls_back_to_no_stim_when_predecessor_skipped(ctrl_and_s
     rtm_event = _stim_event(t=1)  # t-1 = 0 was skipped
     slm = ctrl._build_stim_slm(rtm_event, stim_mode="previous")
     assert slm.data is False
+
+
+def test_previous_mode_at_frame_0_returns_no_stim(ctrl_and_state):
+    """At frame 0 there is no t-1 — ``_build_stim_slm`` must short-circuit to
+    ``data=False`` without touching the dispenser (which would time out on -1).
+    """
+    ctrl, _ = ctrl_and_state
+    rtm_event = _stim_event(t=0)
+    slm = ctrl._build_stim_slm(rtm_event, stim_mode="previous")
+    assert slm.data is False
