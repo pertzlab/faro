@@ -35,14 +35,7 @@ from faro.stimulation.base import StimWithPipeline
 from faro.stimulation.center_circle import CenterCircle
 from faro.tracking.trackpy import TrackerTrackpy
 
-
-class _FakeDMD:
-    """Minimal DMD stand-in: enough for ``Controller._build_stim_slm`` to run."""
-
-    name = "FakeDMD"
-
-    def affine_transform(self, img):
-        return img
+from .conftest import FakeDMD
 
 
 class _FakeMicroscope(AbstractMicroscope):
@@ -50,7 +43,7 @@ class _FakeMicroscope(AbstractMicroscope):
 
     def __init__(self):
         super().__init__()
-        self.dmd = _FakeDMD()
+        self.dmd = FakeDMD()
 
 
 def _stim_event(t: int, fov: int = 0) -> RTMEvent:
