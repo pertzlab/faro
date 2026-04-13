@@ -115,9 +115,7 @@ class FrameDispenser(Generic[_T]):
                     )
                 self._cond.wait(remaining)
 
-    def get_at_frame(
-        self, idx: int, timeout: Optional[float] = None
-    ) -> Optional[_T]:
+    def get_at_frame(self, idx: int, timeout: Optional[float] = None) -> Optional[_T]:
         """Return the value put *at* frame ``idx``.
 
         Blocks until ``idx`` is resolved (either put or marked skipped).
@@ -225,6 +223,7 @@ class SegmentationMethod:
 @dataclass
 class Channel:
     """Acquisition channel (useq-compatible field names)."""
+
     config: str
     exposure: float = None
     group: str = None
@@ -237,6 +236,7 @@ class PowerChannel(Channel):
     Only ``power`` is needed — the microscope resolves which device/property
     to set based on its hardware configuration.
     """
+
     power: int = None
 
 
@@ -347,8 +347,9 @@ class RTMEvent(MDAEvent):
     class Config:
         arbitrary_types_allowed = True
 
-    def to_mda_events(self, *, resolve_group=None, resolve_power=None,
-                      dmd=None, stim_slm_image=None) -> list[MDAEvent]:
+    def to_mda_events(
+        self, *, resolve_group=None, resolve_power=None, dmd=None, stim_slm_image=None
+    ) -> list[MDAEvent]:
         """Convert to standard useq MDAEvents.
 
         Args:
@@ -403,45 +404,51 @@ class RTMEvent(MDAEvent):
         # Imaging channels
         for i, ch in enumerate(self.channels):
             ch_dict, props = _resolve_ch(ch)
-            events.append(MDAEvent(
-                index={**dict(self.index), "c": i},
-                channel=ch_dict,
-                exposure=ch.exposure,
-                x_pos=self.x_pos if i == 0 else None,
-                y_pos=self.y_pos if i == 0 else None,
-                z_pos=self.z_pos,
-                min_start_time=self.min_start_time,
-                metadata={**base_meta, "img_type": img_type},
-                properties=props,
-            ))
+            events.append(
+                MDAEvent(
+                    index={**dict(self.index), "c": i},
+                    channel=ch_dict,
+                    exposure=ch.exposure,
+                    x_pos=self.x_pos if i == 0 else None,
+                    y_pos=self.y_pos if i == 0 else None,
+                    z_pos=self.z_pos,
+                    min_start_time=self.min_start_time,
+                    metadata={**base_meta, "img_type": img_type},
+                    properties=props,
+                )
+            )
 
         # Stim channels
         if has_stim:
             for ch in self.stim_channels:
                 ch_dict, props = _resolve_ch(ch)
-                events.append(MDAEvent(
-                    index=dict(self.index),  # no "c" for stim
-                    channel=ch_dict,
-                    exposure=ch.exposure,
-                    min_start_time=self.min_start_time,
-                    metadata={**base_meta, "img_type": ImgType.IMG_STIM},
-                    properties=props,
-                    slm_image=stim_slm_image,  # filled by Controller
-                ))
+                events.append(
+                    MDAEvent(
+                        index=dict(self.index),  # no "c" for stim
+                        channel=ch_dict,
+                        exposure=ch.exposure,
+                        min_start_time=self.min_start_time,
+                        metadata={**base_meta, "img_type": ImgType.IMG_STIM},
+                        properties=props,
+                        slm_image=stim_slm_image,  # filled by Controller
+                    )
+                )
 
         # Ref channels
         if self.ref_channels:
             n_img = len(self.channels)
             for j, ch in enumerate(self.ref_channels):
                 ch_dict, props = _resolve_ch(ch)
-                events.append(MDAEvent(
-                    index={**dict(self.index), "c": n_img + j},
-                    channel=ch_dict,
-                    exposure=ch.exposure,
-                    min_start_time=self.min_start_time,
-                    metadata={**base_meta, "img_type": ImgType.IMG_REF},
-                    properties=props,
-                ))
+                events.append(
+                    MDAEvent(
+                        index={**dict(self.index), "c": n_img + j},
+                        channel=ch_dict,
+                        exposure=ch.exposure,
+                        min_start_time=self.min_start_time,
+                        metadata={**base_meta, "img_type": ImgType.IMG_REF},
+                        properties=props,
+                    )
+                )
 
         return events
 
@@ -485,7 +492,9 @@ class RTMSequence(MDASequence):
 
     stim_channels: tuple[Channel, ...] = ()
     stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
-    stim_exposure: None | float | int | tuple[float | int, ...] | list[float | int] = None
+    stim_exposure: None | float | int | tuple[float | int, ...] | list[float | int] = (
+        None
+    )
     ref_channels: tuple[Channel, ...] = ()
     ref_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -572,7 +581,9 @@ class RTMSequence(MDASequence):
 
         # Build per-frame stim exposure mapping
         stim_exposure_map: dict[int, float | int] | None = None
-        if self.stim_exposure is not None and not isinstance(self.stim_exposure, (int, float)):
+        if self.stim_exposure is not None and not isinstance(
+            self.stim_exposure, (int, float)
+        ):
             # Map each stim frame to its corresponding exposure
             sorted_stim_frames = sorted(stim_set)
             stim_exposure_map = dict(zip(sorted_stim_frames, self.stim_exposure))
@@ -583,7 +594,11 @@ class RTMSequence(MDASequence):
                     stim = stim_tuple
                 elif isinstance(self.stim_exposure, (int, float)):
                     stim = tuple(
-                        Channel(config=ch.config, exposure=self.stim_exposure, group=ch.group)
+                        Channel(
+                            config=ch.config,
+                            exposure=self.stim_exposure,
+                            group=ch.group,
+                        )
                         for ch in stim_tuple
                     )
                 else:
@@ -610,7 +625,8 @@ class RTMSequence(MDASequence):
 
     @staticmethod
     def _offset_events(
-        events_a: list[RTMEvent], events_b: list[RTMEvent],
+        events_a: list[RTMEvent],
+        events_b: list[RTMEvent],
     ) -> list[RTMEvent]:
         """Append *events_b* to *events_a* with offset timepoints and times."""
         if not events_a:
@@ -621,9 +637,7 @@ class RTMSequence(MDASequence):
         max_t = max(e.index.get("t", 0) for e in events_a) + 1
         max_time = max(e.min_start_time or 0 for e in events_a)
         if len(events_b) >= 2:
-            dt = (events_b[1].min_start_time or 0) - (
-                events_b[0].min_start_time or 0
-            )
+            dt = (events_b[1].min_start_time or 0) - (events_b[0].min_start_time or 0)
         else:
             dt = 1.0
         time_offset = max_time + dt
@@ -654,7 +668,9 @@ class RTMSequence(MDASequence):
         return self._offset_events(events_a, events_b)
 
     def check_fov_batching(
-        self, time_per_fov: float, n_parallel: int | None = None,
+        self,
+        time_per_fov: float,
+        n_parallel: int | None = None,
     ) -> bool:
         """Check whether all FOVs in this sequence can be imaged in parallel.
 
@@ -664,6 +680,7 @@ class RTMSequence(MDASequence):
                 ``time_per_fov`` and the sequence's timepoint interval.
         """
         from faro.core.utils import check_fov_batching
+
         return check_fov_batching(list(self), time_per_fov, n_parallel)
 
     def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:

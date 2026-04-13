@@ -136,9 +136,7 @@ class CircleMicroscope(AbstractMicroscope):
                 if self._cancel.is_set():
                     break
                 if getattr(event, "slm_image", None) is not None:
-                    self.slm_events.append(
-                        (event.index.get("t", 0), event.slm_image)
-                    )
+                    self.slm_events.append((event.index.get("t", 0), event.slm_image))
                 img = make_circle_image()
                 if self._callback is not None:
                     self._callback(img, event)

@@ -178,15 +178,11 @@ class Analyzer:
                     and metadata["img_type"] == ImgType.IMG_RAW
                 ):
                     if metadata.get("stim", False):
-                        self._put_stim_mask_if_no_labels(
-                            metadata=metadata, img=img
-                        )
+                        self._put_stim_mask_if_no_labels(metadata=metadata, img=img)
                     else:
                         # Non-stim frame: explicit skip so a "previous"-mode
                         # consumer asking for this frame's mask doesn't block.
-                        self.get_fov_state(
-                            metadata["fov"]
-                        ).stim_mask_queue.skip_frame(
+                        self.get_fov_state(metadata["fov"]).stim_mask_queue.skip_frame(
                             metadata.get("timestep", 0)
                         )
 
