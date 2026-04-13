@@ -767,7 +767,7 @@ class Controller:
                             not self._analyzer.stimulator_needs_data
                             or fov_index in _stim_pending
                         ):
-                            slm = self._build_stim_slm(rtm_event, frame_offset=-1)
+                            slm = self._build_stim_slm(rtm_event, stim_mode="previous")
                             for ev in stim_events:
                                 ev = ev.model_copy(update={"slm_image": slm})
                                 self._put_event(ev)
@@ -844,23 +844,29 @@ class Controller:
     # Stim helpers
     # ------------------------------------------------------------------
 
-    def _build_stim_slm(self, rtm_event, *, frame_offset: int = 0) -> SLMImage | None:
+    def _build_stim_slm(
+        self, rtm_event, *, stim_mode: str = "current"
+    ) -> SLMImage | None:
         """Build SLMImage for stimulation via Analyzer's stim-mask API.
 
         Args:
             rtm_event: The stim event being prepared.
-            frame_offset: Adjustment applied to ``rtm_event.index["t"]`` when
-                requesting the mask. ``0`` for ``"current"`` mode (mask
-                produced by frame ``t`` itself); ``-1`` for ``"previous"``
-                mode (mask produced by frame ``t-1``, the predecessor).
+            stim_mode: ``"current"`` asks for the mask produced by frame
+                ``t`` itself (stim fires after imaging). ``"previous"``
+                asks for frame ``t-1``'s mask (stim fires before imaging,
+                using the mask from the previous timepoint for the same
+                FOV).
         """
         fov_index = rtm_event.index.get("p", 0)
         stim_ch = rtm_event.stim_channels[0]
 
+        t = rtm_event.index.get("t", 0)
+        if stim_mode == "previous":
+            t -= 1
         meta = {
             **rtm_event.metadata,
             "fov": fov_index,
-            "timestep": rtm_event.index.get("t", 0) + frame_offset,
+            "timestep": t,
         }
 
         stim_mask = self._analyzer.get_stim_mask(fov_index, meta)

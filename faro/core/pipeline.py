@@ -475,11 +475,9 @@ class ImageProcessingPipeline:
                 fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
             else:
                 fov_obj.tracks_queue.skip_frame(frame_idx)
-            # Always resolve the stim dispenser for this frame so that a
-            # ``previous``-mode consumer asking for frame_idx (or t-1) sees
-            # either a put or a skip — never blocks on a frame that was
-            # never going to produce a mask. Only relevant for the
-            # StimWithPipeline path; other stim types use a separate path.
+            # Resolve stim_mask_queue for every StimWithPipeline frame so a
+            # "previous"-mode consumer never blocks on a frame that will
+            # never produce a mask.
             if uses_pipeline_stim and not stim_done:
                 fov_obj.stim_mask_queue.skip_frame(frame_idx)
 

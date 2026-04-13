@@ -91,7 +91,7 @@ def ctrl_and_state():
 
 
 def test_current_mode_uses_frame_t_mask(ctrl_and_state):
-    """Default frame_offset=0 → consumer asks for frame t's mask."""
+    """``stim_mode="current"`` (default) → consumer asks for frame t's mask."""
     ctrl, _ = ctrl_and_state
     rtm_event = _stim_event(t=3)
     slm = ctrl._build_stim_slm(rtm_event)
@@ -101,10 +101,10 @@ def test_current_mode_uses_frame_t_mask(ctrl_and_state):
 
 
 def test_previous_mode_uses_frame_t_minus_1_mask(ctrl_and_state):
-    """frame_offset=-1 → consumer asks for frame t-1's mask."""
+    """``stim_mode="previous"`` → consumer asks for frame t-1's mask."""
     ctrl, _ = ctrl_and_state
     rtm_event = _stim_event(t=3)
-    slm = ctrl._build_stim_slm(rtm_event, frame_offset=-1)
+    slm = ctrl._build_stim_slm(rtm_event, stim_mode="previous")
     # mask_2 is filled with 2
     assert slm.data[0, 0] == 2
 
@@ -113,5 +113,5 @@ def test_previous_mode_falls_back_to_no_stim_when_predecessor_skipped(ctrl_and_s
     """If frame t-1 was skipped (non-stim frame), ``False`` is sent to the SLM."""
     ctrl, _ = ctrl_and_state
     rtm_event = _stim_event(t=1)  # t-1 = 0 was skipped
-    slm = ctrl._build_stim_slm(rtm_event, frame_offset=-1)
+    slm = ctrl._build_stim_slm(rtm_event, stim_mode="previous")
     assert slm.data is False
