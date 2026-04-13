@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 import tifffile
 from useq import MDAEvent
+from useq._mda_event import SLMImage
 
 from faro.core.controller import Analyzer, Controller
 from faro.core.data_structures import (
@@ -35,6 +36,8 @@ from faro.segmentation.base import OtsuSegmentator
 from faro.stimulation.base import Stim, StimWithImage, StimWithPipeline, StimWholeFOV
 from faro.stimulation.center_circle import CenterCircle
 from faro.tracking.trackpy import TrackerTrackpy
+
+from .conftest import FakeDMD
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,7 +119,7 @@ class CircleMicroscope(AbstractMicroscope):
         self._callback = None
         self._cancel = threading.Event()
         self.dmd = dmd
-        self.slm_events: list[tuple[int, object]] = []
+        self.slm_events: list[tuple[int, SLMImage]] = []
 
     def connect_frame(self, callback):
         self._callback = callback
@@ -480,7 +483,7 @@ class _FrameTaggingStim(StimWithPipeline):
     to each stim event can be traced back to the frame that produced it.
     """
 
-    required_metadata = {"img_shape", "timestep"}
+    required_metadata: set[str] = {"img_shape", "timestep"}
 
     def get_stim_mask(
         self,
@@ -493,6 +496,18 @@ class _FrameTaggingStim(StimWithPipeline):
         h, w = metadata["img_shape"]
         t = metadata["timestep"]
         return np.full((h, w), t, dtype=np.uint8), None
+
+
+def _sole_mask_value(slm_image: SLMImage) -> int:
+    """Return the single tag value of a _FrameTaggingStim mask.
+
+    ``_FrameTaggingStim`` fills the whole mask with ``metadata["timestep"]``,
+    so every pixel is equal. Assert that invariant and return the value.
+    """
+    assert isinstance(slm_image.data, np.ndarray)
+    unique = np.unique(slm_image.data)
+    assert unique.size == 1, f"expected uniform mask, got values {unique}"
+    return int(unique.item())
 
 
 def _make_pipeline_with_stim(path, stimulator):
@@ -524,8 +539,6 @@ class TestStimModeMaskSelectionCurrent:
 
     @pytest.fixture(autouse=True)
     def setup(self, tmp_dir):
-        from .conftest import FakeDMD
-
         self.path = tmp_dir
         self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
         self.mic = CircleMicroscope(dmd=FakeDMD())
@@ -534,20 +547,15 @@ class TestStimModeMaskSelectionCurrent:
         run_and_wait(self.ctrl, events, stim_mode="current")
 
     def test_stim_events_received_correct_masks(self):
-        # One SLM image per stim event.
+        # One SLM image per stim event; each carries its own frame's mask.
         assert len(self.mic.slm_events) == len(self.STIM_FRAMES)
-        # In "current" mode, each stim event at frame t must carry
-        # frame t's mask (pixel value == t).
         for (event_t, slm_image), expected in zip(
             self.mic.slm_events, self.STIM_FRAMES
         ):
-            assert event_t == expected, (
-                f"SLM event at frame {event_t}, expected {expected}"
-            )
-            assert isinstance(slm_image.data, np.ndarray)
-            assert int(slm_image.data[0, 0]) == expected, (
-                f"Frame {event_t} received mask tagged {int(slm_image.data[0, 0])}, "
-                f"expected {expected}"
+            assert event_t == expected
+            assert _sole_mask_value(slm_image) == expected, (
+                f"Frame {event_t} received mask tagged "
+                f"{_sole_mask_value(slm_image)}, expected {expected}"
             )
 
 
@@ -564,8 +572,6 @@ class TestStimModeMaskSelectionPrevious:
 
     @pytest.fixture(autouse=True)
     def setup(self, tmp_dir):
-        from .conftest import FakeDMD
-
         self.path = tmp_dir
         self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
         self.mic = CircleMicroscope(dmd=FakeDMD())
@@ -579,17 +585,16 @@ class TestStimModeMaskSelectionPrevious:
         assert 2 not in event_frames
 
     def test_subsequent_stim_events_use_previous_frame_mask(self):
-        # Frames 3 and 4 get stim, with masks from frames 2 and 3 respectively.
-        expected = [(3, 2), (4, 3)]  # (event_frame, mask_source_frame)
+        # Event frame → mask source frame under "previous" semantics.
+        expected = [(3, 2), (4, 3)]
         assert len(self.mic.slm_events) == len(expected)
         for (event_t, slm_image), (exp_event, exp_mask) in zip(
             self.mic.slm_events, expected
         ):
             assert event_t == exp_event
-            assert isinstance(slm_image.data, np.ndarray)
-            assert int(slm_image.data[0, 0]) == exp_mask, (
+            assert _sole_mask_value(slm_image) == exp_mask, (
                 f"Stim event at frame {event_t} received mask from frame "
-                f"{int(slm_image.data[0, 0])}, expected {exp_mask} "
+                f"{_sole_mask_value(slm_image)}, expected {exp_mask} "
                 f"(previous-frame semantics)"
             )
 
