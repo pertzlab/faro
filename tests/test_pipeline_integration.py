@@ -676,37 +676,44 @@ class TestStimModePreviousMultiFov:
         assert events_by_fov_tag == [(3, 2), (4, 3), (4, 3)]
 
 
-class _StimStimulator(StimWithPipeline):
-    """StimWithPipeline that raises on a configured frame, to test that a
-    pipeline crash mid-run still resolves the stim dispenser (skip_frame)
-    and doesn't deadlock the next frame's "previous"-mode consumer.
+class TestStimModePreviousAtFrameZero:
+    """Edge case: ``previous`` mode at frame 0 has no t-1.
+
+    Base ``Stim`` bypasses the ``_stim_pending`` guard (``not needs_data``
+    short-circuits the conditional), so ``_build_stim_slm`` is actually
+    called at frame 0 and must short-circuit to ``data=False`` rather
+    than computing ``meta["timestep"] = -1`` and either querying the
+    dispenser at -1 (would time out 80 s) or letting a time-varying
+    base stim like StimLine evaluate ``-1 % N``.
     """
 
-    required_metadata: set[str] = {"img_shape", "timestep"}
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(self.path, MetadataOnlyStim())
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(2, stim_frames=(0,))
+        run_and_wait(self.ctrl, events, stim_mode="previous")
 
-    def __init__(self, crash_on_frame: int):
-        self.crash_on_frame = crash_on_frame
-
-    def get_stim_mask(self, *, label_images, metadata: dict, img=None, tracks=None):
-        if metadata["timestep"] == self.crash_on_frame:
-            raise RuntimeError("intentional crash for test")
-        h, w = metadata["img_shape"]
-        return np.full((h, w), metadata["timestep"], dtype=np.uint8), None
+    def test_no_stim_at_frame_0(self):
+        assert len(self.mic.slm_events) == 1
+        event_t, slm = self.mic.slm_events[0]
+        assert event_t == 0
+        assert slm.data is False
 
 
 class TestStimModePreviousPipelineCrashDoesNotDeadlock:
     """If frame t's pipeline crashes inside the stim branch, the try/finally
     must call ``skip_frame`` on stim_mask_queue so frame t+1's "previous"-mode
     consumer sees a skipped predecessor (None) rather than blocking until
-    the 80 s timeout.
+    the 80 s timeout. Reuses the existing ``CrashingStimulator``.
     """
 
     @pytest.fixture(autouse=True)
     def setup(self, tmp_dir):
         self.path = tmp_dir
-        self.pipeline = _make_pipeline_with_stim(
-            self.path, _StimStimulator(crash_on_frame=2)
-        )
+        self.pipeline = _make_pipeline_with_stim(self.path, CrashingStimulator())
         self.mic = CircleMicroscope(dmd=FakeDMD())
         self.ctrl = Controller(self.mic, self.pipeline)
         events = make_events(4, stim_frames=(2, 3))
