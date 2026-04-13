@@ -440,9 +440,8 @@ class ImageProcessingPipeline:
         # skips both dispensers so downstream workers don't deadlock.
         fov_obj.fov_timestep_counter = frame_idx
         tracked_ok = False
-        stim_expected = metadata["stim"] == True and isinstance(
-            self.stimulator, StimWithPipeline
-        )
+        stim_done = False  # stim_mask actually put on the dispenser
+        uses_pipeline_stim = isinstance(self.stimulator, StimWithPipeline)
         try:
             df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
@@ -458,8 +457,9 @@ class ImageProcessingPipeline:
                     img=img,
                     tracks=df_tracked,
                 )
-                if isinstance(self.stimulator, StimWithPipeline):
+                if uses_pipeline_stim:
                     fov_obj.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
+                    stim_done = True
 
             if metadata.get("img_type") == ImgType.IMG_REF:
                 if self.feature_extractor_ref is not None and self.tracker is not None:
@@ -475,8 +475,13 @@ class ImageProcessingPipeline:
                 fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
             else:
                 fov_obj.tracks_queue.skip_frame(frame_idx)
-                if stim_expected:
-                    fov_obj.stim_mask_queue.skip_frame(frame_idx)
+            # Always resolve the stim dispenser for this frame so that a
+            # ``previous``-mode consumer asking for frame_idx (or t-1) sees
+            # either a put or a skip — never blocks on a frame that was
+            # never going to produce a mask. Only relevant for the
+            # StimWithPipeline path; other stim types use a separate path.
+            if uses_pipeline_stim and not stim_done:
+                fov_obj.stim_mask_queue.skip_frame(frame_idx)
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
         df_to_save = convert_track_dtypes(df_tracked)

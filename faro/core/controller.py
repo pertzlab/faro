@@ -173,12 +173,22 @@ class Analyzer:
                         f"[Analyzer] Stored image type={metadata.get('img_type')} t={metadata.get('timestep')} fov={metadata.get('fov')} pending_storage={self._storage_queue.qsize()}"
                     )
 
-                if metadata.get("stim", False):
-                    if isinstance(self.pipeline.stimulator, StimWithImage):
-                        if metadata["img_type"] == ImgType.IMG_RAW:
-                            self._put_stim_mask_if_no_labels(
-                                metadata=metadata, img=img
-                            )
+                if (
+                    isinstance(self.pipeline.stimulator, StimWithImage)
+                    and metadata["img_type"] == ImgType.IMG_RAW
+                ):
+                    if metadata.get("stim", False):
+                        self._put_stim_mask_if_no_labels(
+                            metadata=metadata, img=img
+                        )
+                    else:
+                        # Non-stim frame: explicit skip so a "previous"-mode
+                        # consumer asking for this frame's mask doesn't block.
+                        self.get_fov_state(
+                            metadata["fov"]
+                        ).stim_mask_queue.skip_frame(
+                            metadata.get("timestep", 0)
+                        )
 
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
@@ -757,7 +767,7 @@ class Controller:
                             not self._analyzer.stimulator_needs_data
                             or fov_index in _stim_pending
                         ):
-                            slm = self._build_stim_slm(rtm_event)
+                            slm = self._build_stim_slm(rtm_event, frame_offset=-1)
                             for ev in stim_events:
                                 ev = ev.model_copy(update={"slm_image": slm})
                                 self._put_event(ev)
@@ -834,15 +844,23 @@ class Controller:
     # Stim helpers
     # ------------------------------------------------------------------
 
-    def _build_stim_slm(self, rtm_event) -> SLMImage | None:
-        """Build SLMImage for stimulation via Analyzer's stim-mask API."""
+    def _build_stim_slm(self, rtm_event, *, frame_offset: int = 0) -> SLMImage | None:
+        """Build SLMImage for stimulation via Analyzer's stim-mask API.
+
+        Args:
+            rtm_event: The stim event being prepared.
+            frame_offset: Adjustment applied to ``rtm_event.index["t"]`` when
+                requesting the mask. ``0`` for ``"current"`` mode (mask
+                produced by frame ``t`` itself); ``-1`` for ``"previous"``
+                mode (mask produced by frame ``t-1``, the predecessor).
+        """
         fov_index = rtm_event.index.get("p", 0)
         stim_ch = rtm_event.stim_channels[0]
 
         meta = {
             **rtm_event.metadata,
             "fov": fov_index,
-            "timestep": rtm_event.index.get("t", 0),
+            "timestep": rtm_event.index.get("t", 0) + frame_offset,
         }
 
         stim_mask = self._analyzer.get_stim_mask(fov_index, meta)
