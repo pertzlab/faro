@@ -9,7 +9,8 @@ out entries FIFO by thread-arrival-order. That was the root cause of the
 
 The dispenser supports two consumption modes:
   - ``get_predecessor(idx)`` — tracking needs frame N-1's df for frame N
-  - ``get_at_frame(idx)`` — stim masks need exactly this frame's mask
+  - ``wait_for_frame(idx)`` — stim masks need exactly this frame's mask
+    (non-consuming so multiple readers share the same entry)
 """
 
 from __future__ import annotations
@@ -74,25 +75,27 @@ class TestGetPredecessorSkip:
         assert d.get_predecessor(2) is None
 
 
-class TestGetAtFrame:
-    """Exact-frame lookup: used for stim masks where frame N needs its own mask."""
+class TestWaitForFrame:
+    """Non-consuming blocking read — used by stim masks so both the stim event
+    and the pipeline's storage step can read the same entry.
+    """
 
     def test_returns_put_value(self):
         d = FrameDispenser()
         d.put_for_frame(5, "mask-5")
-        assert d.get_at_frame(5) == "mask-5"
+        assert d.wait_for_frame(5) == "mask-5"
 
     def test_returns_none_for_skipped(self):
         d = FrameDispenser()
         d.skip_frame(5)
-        assert d.get_at_frame(5) is None
+        assert d.wait_for_frame(5) is None
 
     def test_blocks_until_put(self):
         d = FrameDispenser()
         result = {}
 
         def worker():
-            result["v"] = d.get_at_frame(7, timeout=2.0)
+            result["v"] = d.wait_for_frame(7, timeout=2.0)
 
         t = threading.Thread(target=worker)
         t.start()
@@ -104,13 +107,12 @@ class TestGetAtFrame:
         assert result["v"] == "mask-7"
 
     def test_other_puts_dont_unblock(self):
-        """Waiter for frame 5 must ignore put_for_frame(4) or put_for_frame(6)."""
         d = FrameDispenser()
         result = {}
 
         def worker():
             try:
-                result["v"] = d.get_at_frame(5, timeout=0.3)
+                result["v"] = d.wait_for_frame(5, timeout=0.3)
             except queue.Empty:
                 result["v"] = "TIMED_OUT"
 
@@ -124,28 +126,70 @@ class TestGetAtFrame:
     def test_timeout_raises_empty(self):
         d = FrameDispenser()
         with pytest.raises(queue.Empty):
-            d.get_at_frame(5, timeout=0.1)
+            d.wait_for_frame(5, timeout=0.1)
 
-    def test_consumed_entries_are_not_reused(self):
-        """get_at_frame removes the entry, so a second get on the same frame times out."""
+    def test_does_not_consume(self):
+        """Multiple readers see the same entry — wait_for_frame does not pop."""
         d = FrameDispenser()
         d.put_for_frame(5, "mask-5")
-        assert d.get_at_frame(5) == "mask-5"
-        with pytest.raises(queue.Empty):
-            d.get_at_frame(5, timeout=0.05)
+        assert d.wait_for_frame(5) == "mask-5"
+        assert d.wait_for_frame(5) == "mask-5"
+        assert d.peek_at_frame(5) == "mask-5"
 
-    def test_stale_entries_pruned_on_consumption(self):
-        """Entries and skip markers with idx < consumed must be cleared so an
-        experiment of many stim events doesn't leak unbounded memory when some
-        frames are skipped without a matching get.
-        """
+
+class TestPeekAtFrame:
+    """Non-blocking, non-consuming variant."""
+
+    def test_returns_none_before_put(self):
         d = FrameDispenser()
-        d.put_for_frame(0, "mask-0")  # abandoned — no consumer
-        d.skip_frame(2)  # abandoned — no consumer
+        assert d.peek_at_frame(5) is None
+
+    def test_returns_value_after_put(self):
+        d = FrameDispenser()
         d.put_for_frame(5, "mask-5")
-        d.get_at_frame(5)
-        assert d._entries == {}
-        assert d._skipped == set()
+        assert d.peek_at_frame(5) == "mask-5"
+
+    def test_returns_none_after_skip(self):
+        d = FrameDispenser()
+        d.skip_frame(5)
+        assert d.peek_at_frame(5) is None
+
+    def test_idempotent(self):
+        d = FrameDispenser()
+        d.put_for_frame(5, "mask-5")
+        for _ in range(3):
+            assert d.peek_at_frame(5) == "mask-5"
+
+
+class TestPruneBelow:
+    """Explicit cleanup — required when using wait_for_frame / peek_at_frame."""
+
+    def test_strict_below(self):
+        d = FrameDispenser()
+        for i in range(6):
+            d.put_for_frame(i, f"mask-{i}")
+        d.prune_below(3)
+        assert set(d._entries) == {3, 4, 5}
+
+    def test_clears_skip_markers(self):
+        d = FrameDispenser()
+        for i in range(6):
+            d.skip_frame(i)
+        d.prune_below(3)
+        assert d._skipped == {3, 4, 5}
+
+    def test_empty_dispenser_is_noop(self):
+        d = FrameDispenser()
+        d.prune_below(5)
+        assert d._entries == {} and d._skipped == set()
+
+    def test_prune_below_zero_or_negative(self):
+        d = FrameDispenser()
+        d.put_for_frame(0, "mask-0")
+        d.prune_below(-1)
+        assert d._entries == {0: "mask-0"}
+        d.prune_below(0)
+        assert d._entries == {0: "mask-0"}
 
 
 class TestPruning:

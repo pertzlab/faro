@@ -18,7 +18,7 @@ _T = TypeVar("_T")
 # (whole-FOV on) sentinel — ``StimWholeFOV.get_stim_mask`` returns the
 # latter to avoid allocating an IMG_SIZE-sized array just to say "fire
 # everything". ``None`` is reserved for the "frame skipped" signal
-# surfaced by :meth:`FrameDispenser.get_at_frame`.
+# surfaced by :meth:`FrameDispenser.wait_for_frame`.
 StimMask = Union[np.ndarray, bool]
 
 
@@ -33,19 +33,23 @@ class FrameDispenser(Generic[_T]):
     stim masks and any other per-frame handoff).
 
     Values are keyed by an integer frame index (``event.index["t"]``).
-    Two consumption modes are supported with **different `None` semantics
-    and different memory behaviour**:
+
+    Reads:
 
     - :meth:`get_predecessor` — wait for the most recent put *before* this
-      frame (walking past skipped frames). Used for tracking where frame N
-      needs frame N-1's accumulated df. Returns ``None`` only when the
-      whole predecessor chain is empty (legitimate first-frame state).
-      Prunes entries ``<=`` the consumed predecessor.
-    - :meth:`get_at_frame` — wait for *this* frame's put specifically.
-      Used for stim masks where frame N's stim event needs exactly frame
-      N's mask. Returns ``None`` when the frame was skipped (upstream
-      failure, degraded). Pops the entry on read and prunes everything
-      ``< idx`` (assumes monotonic consumption).
+      frame, walking past skipped frames. Used for tracking where frame N
+      needs frame N-1's accumulated df. Prunes entries ``<=`` the consumed
+      predecessor automatically.
+    - :meth:`wait_for_frame` — wait for *this* frame's put, blocking if
+      not yet resolved. **Non-consuming** — the entry stays put so
+      multiple readers can see it. Used for stim masks where both the
+      stim event and the pipeline's storage step read the same mask.
+      Callers must :meth:`prune_below` explicitly.
+    - :meth:`peek_at_frame` — non-blocking, non-consuming variant of
+      :meth:`wait_for_frame`.
+
+    All three return ``None`` when the frame was skipped (or absent, for
+    ``peek``).
 
     Thread-safe. All public methods acquire an internal condition variable.
     """
@@ -68,7 +72,7 @@ class FrameDispenser(Generic[_T]):
         """Mark a frame as skipped — no value will be produced for it.
 
         :meth:`get_predecessor` walks past skipped frames to find the
-        most recent actual put; :meth:`get_at_frame` returns ``None``.
+        most recent actual put; :meth:`wait_for_frame` returns ``None``.
         Use this when a frame is dropped (e.g. pipeline queue saturated,
         exception) so downstream waiters don't block indefinitely.
         """
@@ -115,16 +119,17 @@ class FrameDispenser(Generic[_T]):
                     )
                 self._cond.wait(remaining)
 
-    def get_at_frame(self, idx: int, timeout: Optional[float] = None) -> Optional[_T]:
-        """Return the value put *at* frame ``idx``.
+    def wait_for_frame(self, idx: int, timeout: Optional[float] = None) -> Optional[_T]:
+        """Return the value put at frame ``idx``, blocking if not yet resolved.
 
-        Blocks until ``idx`` is resolved (either put or marked skipped).
-        Returns the value if put, or ``None`` if skipped. The entry is
-        consumed on successful read — a retry with the same ``idx`` will
-        block/time out.
+        Non-consuming: the entry stays in the dispenser after the read.
+        Callers share the same entry (e.g. a stim event reader and the
+        pipeline's storage step both want the mask that fired at this
+        frame). Memory is bounded by explicit :meth:`prune_below` calls;
+        typically the pipeline prunes below the current frame after it
+        has finished reading.
 
-        Prunes all stale entries and skip markers ``< idx``; callers must
-        consume frames in monotonically non-decreasing order.
+        Returns the value if put, or ``None`` if skipped.
 
         Args:
             idx: The frame index to wait for.
@@ -139,13 +144,8 @@ class FrameDispenser(Generic[_T]):
         with self._cond:
             while True:
                 if idx in self._entries:
-                    value = self._entries.pop(idx)
-                    self._skipped.discard(idx)
-                    self._prune_through_locked(idx - 1)
-                    return value
+                    return self._entries[idx]
                 if idx in self._skipped:
-                    self._skipped.discard(idx)
-                    self._prune_through_locked(idx - 1)
                     return None
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
@@ -153,6 +153,32 @@ class FrameDispenser(Generic[_T]):
                         f"FrameDispenser: timeout waiting for frame {idx}"
                     )
                 self._cond.wait(remaining)
+
+    def peek_at_frame(self, idx: int) -> Optional[_T]:
+        """Return the value put at ``idx`` without blocking or consuming.
+
+        Returns ``None`` if the frame has not been put (or was skipped).
+        Callers that need to distinguish "not resolved" from "resolved-
+        to-skipped" must use :meth:`wait_for_frame` or check state
+        externally; peek treats both cases as ``None``.
+        """
+        with self._cond:
+            return self._entries.get(idx)
+
+    def prune_below(self, idx: int) -> None:
+        """Remove all entries and skip markers with key ``< idx``.
+
+        Public counterpart to the auto-pruning ``get_predecessor`` does
+        internally. Callers using :meth:`wait_for_frame` must prune
+        explicitly, otherwise the dispenser grows with every put.
+        """
+        with self._cond:
+            for k in list(self._entries):
+                if k < idx:
+                    del self._entries[k]
+            for k in list(self._skipped):
+                if k < idx:
+                    self._skipped.remove(k)
 
     def reset(self) -> None:
         """Clear all state. Call only when no workers are in-flight —

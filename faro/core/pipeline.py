@@ -442,6 +442,20 @@ class ImageProcessingPipeline:
         tracked_ok = False
         stim_done = False  # stim_mask actually put on the dispenser
         uses_pipeline_stim = isinstance(self.stimulator, StimWithPipeline)
+        uses_image_stim = isinstance(self.stimulator, StimWithImage)
+        analyzer_mode = self._analyzer.stim_mode if self._analyzer is not None else None
+        # Compute locally in the pipeline for:
+        #  * StimWithPipeline on stim frames (always), and on every frame in
+        #    "previous" mode so the next frame's t-1 peek finds the mask.
+        #  * Base Stim on stim frames — controller also computes synchronously
+        #    for firing, but the pipeline still needs a local copy to store.
+        # StimWithImage's mask is produced by the storage_worker; the pipeline
+        # only peeks the dispenser for the storage step.
+        stim_needs_compute = (self.stimulator is not None and not uses_image_stim) and (
+            metadata["stim"] == True
+            or (uses_pipeline_stim and analyzer_mode == "previous")
+        )
+        stim_mask = None  # local for storage
         try:
             df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
@@ -449,7 +463,7 @@ class ImageProcessingPipeline:
                 self.feature_extractor, segmentation_results, img, df_tracked, metadata
             )
 
-            if metadata["stim"] == True:
+            if stim_needs_compute:
                 stim_mask = dispatch_stim_mask(
                     self.stimulator,
                     segmentation_results,
@@ -475,10 +489,15 @@ class ImageProcessingPipeline:
                 fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
             else:
                 fov_obj.tracks_queue.skip_frame(frame_idx)
-            # Resolve stim_mask_queue for every StimWithPipeline frame so a
-            # "previous"-mode consumer never blocks on a frame that will
-            # never produce a mask.
-            if uses_pipeline_stim and not stim_done:
+            # Skip the stim dispenser only for the StimWithPipeline path —
+            # that's the only path the pipeline puts on. Other paths produce
+            # via storage_worker (StimWithImage) or synchronously in the
+            # controller (base Stim) and have their own failure semantics.
+            if (
+                uses_pipeline_stim
+                and (metadata["stim"] == True or analyzer_mode == "previous")
+                and not stim_done
+            ):
                 fov_obj.stim_mask_queue.skip_frame(frame_idx)
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
@@ -494,7 +513,22 @@ class ImageProcessingPipeline:
         w = self._writer
         if self.stimulator is not None:
             if metadata["stim"]:
-                store_img(stim_mask, metadata, self.storage_path, "stim_mask", writer=w)
+                # Store the mask that actually fired at this frame, not the
+                # one just computed for the next frame's "previous"-mode peek.
+                if analyzer_mode == "previous":
+                    fired = fov_obj.stim_mask_queue.peek_at_frame(frame_idx - 1)
+                else:
+                    # "current" (or legacy None): local mask_t for
+                    # StimWithPipeline; storage_worker's put for
+                    # StimWithImage; base Stim's synchronous path.
+                    fired = (
+                        stim_mask
+                        if stim_mask is not None
+                        else fov_obj.stim_mask_queue.peek_at_frame(frame_idx)
+                    )
+                if fired is None:
+                    fired = np.zeros(shape_img, np.uint8)
+                store_img(fired, metadata, self.storage_path, "stim_mask", writer=w)
             else:
                 store_img(
                     np.zeros(shape_img, np.uint8),
@@ -510,6 +544,10 @@ class ImageProcessingPipeline:
                     "stim",
                     writer=w,
                 )
+
+        # Prune the stim dispenser — keep only the predecessor (t-1) for a
+        # future "previous"-mode peek and this frame's put (t).
+        fov_obj.stim_mask_queue.prune_below(frame_idx - 1)
 
         if masks_for_fe is not None:
             for mask_fe in masks_for_fe:

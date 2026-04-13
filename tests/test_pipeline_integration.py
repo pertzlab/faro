@@ -577,14 +577,13 @@ class TestStimModeMaskSelectionPrevious:
         events = make_events(N_TIMEPOINTS, stim_frames=self.STIM_FRAMES)
         run_and_wait(self.ctrl, events, stim_mode="previous")
 
-    def test_first_stim_frame_does_not_fire(self):
-        event_frames = [t for t, _ in self.mic.slm_events]
-        # Frame 2 is the first stim frame; _stim_pending is empty so it's skipped.
-        assert 2 not in event_frames
-
-    def test_subsequent_stim_events_use_previous_frame_mask(self):
+    def test_all_stim_events_fire_with_predecessor_mask(self):
+        """Every stim event fires, including the first — the pipeline always
+        computes a mask in previous mode, even for non-stim frames, so the
+        first stim frame's t-1 peek finds the prior computed mask.
+        """
         # Event frame → mask source frame under "previous" semantics.
-        expected = [(3, 2), (4, 3)]
+        expected = [(2, 1), (3, 2), (4, 3)]
         assert len(self.mic.slm_events) == len(expected)
         for (event_t, slm_image), (exp_event, exp_mask) in zip(
             self.mic.slm_events, expected
@@ -643,9 +642,10 @@ def _make_multi_fov_events(
 
 
 class TestStimModePreviousMultiFov:
-    """Each FOV maintains independent dispenser state and its own
-    ``_stim_pending`` entry, so stim events in FOV 1 must never consume a
-    mask produced by FOV 0 (or vice versa).
+    """Each FOV maintains independent dispenser state, so stim events in FOV 1
+    must never consume a mask produced by FOV 0 (or vice versa). With
+    always-compute, every stim event fires — including the first one on each
+    FOV.
     """
 
     @pytest.fixture(autouse=True)
@@ -661,19 +661,13 @@ class TestStimModePreviousMultiFov:
         run_and_wait(self.ctrl, events, stim_mode="previous")
 
     def test_each_fov_uses_its_own_previous_mask(self):
-        # All tagged masks encode the producing frame; there's no FOV in the
-        # tag, but because each FOV has its own dispenser, the tag value also
-        # identifies which frame was the *predecessor in this FOV's stream*.
-        # FOV 0 first stim at t=2 is skipped by _stim_pending guard →
-        #   slm_events contains (3, mask_from_t=2) and (4, mask_from_t=3).
-        # FOV 1 first stim at t=3 is skipped →
-        #   slm_events contains (4, mask_from_t=3_in_fov1).
-        # _FrameTaggingStim tags by timestep only, so the mask value is
-        # the predecessor's t independent of FOV.
-        events_by_fov_tag = sorted(
+        # _FrameTaggingStim tags by timestep only, and each FOV has its own
+        # dispenser. FOV 0 fires on t=(2,3,4) with masks from (1,2,3); FOV 1
+        # fires on t=(3,4) with masks from (2,3).
+        events_by_tag = sorted(
             (t, _sole_mask_value(slm)) for t, slm in self.mic.slm_events
         )
-        assert events_by_fov_tag == [(3, 2), (4, 3), (4, 3)]
+        assert events_by_tag == [(2, 1), (3, 2), (3, 2), (4, 3), (4, 3)]
 
 
 class TestStimModePreviousAtFrameZero:
@@ -719,15 +713,148 @@ class TestStimModePreviousPipelineCrashDoesNotDeadlock:
         events = make_events(4, stim_frames=(2, 3))
         run_and_wait(self.ctrl, events, stim_mode="previous")
 
-    def test_next_frame_stim_gracefully_falls_back(self):
-        # Frame 2 (first stim) is skipped by _stim_pending guard — it would
-        # have crashed had it fired. Frame 3 fires in previous mode, asks
-        # for frame 2's mask, finds it skipped (crash finally → skip_frame),
-        # falls back to SLMImage(data=False).
-        assert len(self.mic.slm_events) == 1
-        event_t, slm = self.mic.slm_events[0]
-        assert event_t == 3
-        assert slm.data is False
+    def test_all_stim_events_gracefully_fall_back(self):
+        # CrashingStimulator crashes on every call — including the always-
+        # compute path on non-stim frames. So every frame's pipeline skips
+        # the dispenser, and every stim event's t-1 peek returns None →
+        # SLMImage(data=False). Neither frame's stim actually fires, but
+        # neither deadlocks either.
+        assert len(self.mic.slm_events) == 2
+        for event_t, slm in self.mic.slm_events:
+            assert event_t in (2, 3)
+            assert slm.data is False
+
+
+class _CountingStim(StimWithPipeline):
+    """StimWithPipeline that records every ``get_stim_mask`` call so tests
+    can assert pipelines don't compute on frames that won't consume the result.
+    """
+
+    required_metadata: set[str] = {"img_shape"}
+
+    def __init__(self):
+        self.call_timesteps: list[int] = []
+
+    def get_stim_mask(self, *, label_images, metadata: dict, img=None, tracks=None):
+        self.call_timesteps.append(metadata.get("timestep", -1))
+        h, w = metadata["img_shape"]
+        return np.zeros((h, w), dtype=np.uint8), None
+
+
+class TestCurrentModeSkipsComputeOnNonStim:
+    """In ``current`` mode, no one peeks a non-stim frame's mask, so the
+    pipeline must not invoke the stimulator on non-stim frames — that's
+    wasted work.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.stim = _CountingStim()
+        self.pipeline = _make_pipeline_with_stim(self.path, self.stim)
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(5, stim_frames=(2, 3))
+        run_and_wait(self.ctrl, events, stim_mode="current")
+
+    def test_stim_computed_only_on_stim_frames(self):
+        assert sorted(self.stim.call_timesteps) == [2, 3]
+
+
+class TestPreviousModeComputesOnEveryFrame:
+    """In ``previous`` mode, every frame must compute so the next frame's
+    t-1 peek has something to read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.stim = _CountingStim()
+        self.pipeline = _make_pipeline_with_stim(self.path, self.stim)
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(5, stim_frames=(2, 3))
+        run_and_wait(self.ctrl, events, stim_mode="previous")
+
+    def test_stim_computed_on_every_frame(self):
+        assert sorted(self.stim.call_timesteps) == [0, 1, 2, 3, 4]
+
+
+class TestContinueExperimentModeMismatchRaises:
+    """``continue_experiment`` must refuse to change ``stim_mode`` mid-run."""
+
+    def test_raises_on_mode_change(self, tmp_dir):
+        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+        ctrl = Controller(CircleMicroscope(), pipeline)
+        events = make_events(2)
+        try:
+            ctrl.run_experiment(events, stim_mode="current", validate=False)
+            wait_for_pipeline(ctrl._analyzer)
+            with pytest.raises(RuntimeError, match="stim_mode"):
+                ctrl.continue_experiment(
+                    make_events(2), stim_mode="previous", validate=False
+                )
+        finally:
+            ctrl.finish_experiment()
+
+
+class TestStimMaskFileReflectsFiredPrevious:
+    """The stim_mask .tiff under frame t in previous mode shows what actually
+    fired at t (the mask computed at frame t-1), not the mask computed at t.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(5, stim_frames=(2, 3))
+        run_and_wait(self.ctrl, events, stim_mode="previous")
+
+    def test_stored_mask_is_fired_mask(self):
+        stim_dir = os.path.join(self.path, "stim_mask")
+        # non-stim frames → zeros (not the computed mask)
+        for t in (0, 1, 4):
+            path = os.path.join(stim_dir, f"000_{t:05d}.tiff")
+            mask = tifffile.imread(path)
+            assert mask.max() == 0, f"frame {t} should store zeros, got {mask.max()}"
+        # stim frames → tagged with the PREDECESSOR's timestep
+        for stim_t, expected_tag in ((2, 1), (3, 2)):
+            path = os.path.join(stim_dir, f"000_{stim_t:05d}.tiff")
+            mask = tifffile.imread(path)
+            unique = np.unique(mask)
+            assert unique.size == 1 and int(unique.item()) == expected_tag, (
+                f"stim frame {stim_t} should store mask from frame {expected_tag}, "
+                f"got {unique.tolist()}"
+            )
+
+
+class TestStimMaskFileReflectsFiredCurrent:
+    """Same assertion in ``current`` mode: stored mask matches fired mask
+    (= computed-at-t, since current mode has no offset).
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_dir):
+        self.path = tmp_dir
+        self.pipeline = _make_pipeline_with_stim(self.path, _FrameTaggingStim())
+        self.mic = CircleMicroscope(dmd=FakeDMD())
+        self.ctrl = Controller(self.mic, self.pipeline)
+        events = make_events(5, stim_frames=(2, 3))
+        run_and_wait(self.ctrl, events, stim_mode="current")
+
+    def test_stored_mask_is_fired_mask(self):
+        stim_dir = os.path.join(self.path, "stim_mask")
+        for t in (0, 1, 4):
+            mask = tifffile.imread(os.path.join(stim_dir, f"000_{t:05d}.tiff"))
+            assert mask.max() == 0, f"frame {t} should store zeros"
+        for stim_t in (2, 3):
+            mask = tifffile.imread(os.path.join(stim_dir, f"000_{stim_t:05d}.tiff"))
+            unique = np.unique(mask)
+            assert (
+                unique.size == 1 and int(unique.item()) == stim_t
+            ), f"stim frame {stim_t} should store its own-frame mask"
 
 
 # ===================================================================

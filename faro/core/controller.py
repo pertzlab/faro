@@ -99,6 +99,12 @@ class Analyzer:
         self.skipped_pipeline = 0
         self.deferred_processed = 0
 
+        # Stim-mode coordination: set by Controller.run_experiment /
+        # continue_experiment. Pipeline and storage workers read this to decide
+        # whether non-stim frames need to compute+put a mask (previous mode
+        # only) so the next stim event's t-1 peek has something to read.
+        self.stim_mode: str | None = None
+
     def get_fov_state(self, fov_index: int) -> FovState:
         """Return the FovState for *fov_index*, creating it lazily if needed."""
         if fov_index not in self.fov_states:
@@ -132,7 +138,7 @@ class Analyzer:
             fov_state = self.get_fov_state(fov_index)
             frame_idx = metadata.get("timestep", 0)
             try:
-                mask = fov_state.stim_mask_queue.get_at_frame(
+                mask = fov_state.stim_mask_queue.wait_for_frame(
                     frame_idx, timeout=timeout
                 )
             except Exception as e:
@@ -177,14 +183,12 @@ class Analyzer:
                     isinstance(self.pipeline.stimulator, StimWithImage)
                     and metadata["img_type"] == ImgType.IMG_RAW
                 ):
-                    if metadata.get("stim", False):
+                    # Always put in "previous" mode so the next stim event's
+                    # t-1 peek finds a mask (even for non-stim predecessors).
+                    # In "current" mode, only compute on stim frames — no
+                    # consumer will ever peek non-stim frames.
+                    if metadata.get("stim", False) or self.stim_mode == "previous":
                         self._put_stim_mask_if_no_labels(metadata=metadata, img=img)
-                    else:
-                        # Non-stim frame: explicit skip so a "previous"-mode
-                        # consumer asking for this frame's mask doesn't block.
-                        self.get_fov_state(metadata["fov"]).stim_mask_queue.skip_frame(
-                            metadata.get("timestep", 0)
-                        )
 
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
@@ -552,6 +556,7 @@ class Controller:
             )
 
         self._analyzer = Analyzer(self._pipeline, writer=self._writer)
+        self._analyzer.stim_mode = stim_mode
         self._validate_fov_positions(events)
         self._run_mda_with_events(events, stim_mode=stim_mode)
 
@@ -579,6 +584,17 @@ class Controller:
             raise RuntimeError(
                 "No experiment to continue. Call run_experiment() first."
             )
+        if (
+            self._analyzer.stim_mode is not None
+            and self._analyzer.stim_mode != stim_mode
+        ):
+            raise RuntimeError(
+                f"Cannot continue experiment with stim_mode={stim_mode!r}; the "
+                f"running experiment is in {self._analyzer.stim_mode!r} mode. "
+                "Call finish_experiment() first to start a new experiment with a "
+                "different mode."
+            )
+        self._analyzer.stim_mode = stim_mode
 
         events = list(events)
         if validate:
@@ -716,9 +732,6 @@ class Controller:
         queue_sequence = iter(self._queue.get, self.STOP_EVENT)
         mda_thread = self._mic.run_mda(queue_sequence)
 
-        # For "previous" mode: track which FOVs have had a stim frame
-        _stim_pending: set[int] = set()
-
         try:
             while True:
                 rtm_event = self._event_queue.get()
@@ -755,25 +768,20 @@ class Controller:
 
                 if stim_mode == "previous":
                     # --- "previous" mode ---
-                    # Stim with mask from t-1, then acquire t.
-
-                    # 1. Stim (mask from previous frame)
+                    # Stim with mask from t-1, then acquire t. The mask from
+                    # t-1 is always available in the dispenser (non-stim frames
+                    # still compute+put one), so no guard is needed.
+                    # ``_build_stim_slm`` short-circuits to ``data=False`` at
+                    # frame 0 where t-1 doesn't exist.
                     if has_stim and stim_events and self._mic.dmd:
-                        if (
-                            not self._analyzer.stimulator_needs_data
-                            or fov_index in _stim_pending
-                        ):
-                            slm = self._build_stim_slm(rtm_event, stim_mode="previous")
-                            for ev in stim_events:
-                                ev = ev.model_copy(update={"slm_image": slm})
-                                self._put_event(ev)
+                        slm = self._build_stim_slm(rtm_event, stim_mode="previous")
+                        for ev in stim_events:
+                            ev = ev.model_copy(update={"slm_image": slm})
+                            self._put_event(ev)
 
                     # 2. Queue imaging + ref events
                     for ev in img_events:
                         self._put_event(ev)
-
-                    if has_stim:
-                        _stim_pending.add(fov_index)
 
                 else:
                     # --- "current" mode (default) ---
