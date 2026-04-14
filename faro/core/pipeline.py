@@ -372,9 +372,11 @@ class ImageProcessingPipeline:
         metadata["time_acquired"] = datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
         fov_obj: FovState = self._analyzer.get_fov_state(metadata["fov"])
 
+        frame_idx = event.index.get("t", 0)
+
         filename_for_parquet = f"{metadata['fov']}_latest.parquet"
         if "phase_id" in metadata or "phase_name" in metadata:
-            metadata["fov_timestep"] = fov_obj.fov_timestep_counter
+            metadata["fov_timestep"] = frame_idx
             filename_for_parquet = (
                 f"{metadata['fov']}_phase_{metadata['phase_id']}_latest.parquet"
             )
@@ -417,58 +419,89 @@ class ImageProcessingPipeline:
             timeout_time = self._queue_timeout
 
         try:
-            df_old = fov_obj.tracks_queue.get(block=True, timeout=timeout_time)
-
-        except Exception as e:
+            df_old = fov_obj.tracks_queue.get_predecessor(
+                frame_idx, timeout=timeout_time
+            )
+        except queue.Empty as e:
             print("Exception", e)
-            # If queue is empty → fallback to file-based recovery
+            # Predecessor never arrived → fallback to file-based recovery
             file_path = os.path.join(self.storage_path, "tracks", filename_for_parquet)
             try:
                 df_old = pd.read_parquet(file_path)
             except FileNotFoundError:
-                df_old = pd.DataFrame()
+                df_old = None
                 print("Attention df lost")
+        if df_old is None:
+            df_old = pd.DataFrame()
 
-        # 2. Track (needs df_old from previous frame)
-        df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
-
-        # 3. Feature extraction (now has access to df_tracked)
-        masks_for_fe = extract_and_merge_features(
-            self.feature_extractor, segmentation_results, img, df_tracked, metadata
+        # The dispenser guarantees only one worker is between get_predecessor
+        # and put_for_frame per FOV, so setting the legacy counter here is safe
+        # for the tracker to read. If anything below raises, the finally block
+        # skips both dispensers so downstream workers don't deadlock.
+        fov_obj.fov_timestep_counter = frame_idx
+        tracked_ok = False
+        stim_mask_put = False  # did we put a mask on the stim dispenser?
+        uses_pipeline_stim = isinstance(self.stimulator, StimWithPipeline)
+        uses_image_stim = isinstance(self.stimulator, StimWithImage)
+        analyzer_mode = self._analyzer.stim_mode if self._analyzer is not None else None
+        # Compute locally in the pipeline for:
+        #  * StimWithPipeline on stim frames (always), and on every frame in
+        #    "previous" mode so the next frame's t-1 peek finds the mask.
+        #  * Base Stim on stim frames — controller also computes synchronously
+        #    for firing, but the pipeline still needs a local copy to store.
+        # StimWithImage's mask is produced by the storage_worker; the pipeline
+        # only peeks the dispenser for the storage step.
+        pipeline_will_produce_mask = uses_pipeline_stim and (
+            metadata["stim"] or analyzer_mode == "previous"
         )
+        stim_needs_compute = pipeline_will_produce_mask or (
+            self.stimulator is not None and not uses_image_stim and metadata["stim"]
+        )
+        stim_mask = None  # local for storage
+        try:
+            df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
-        if metadata["stim"] == True:
-            stim_mask = dispatch_stim_mask(
-                self.stimulator,
-                segmentation_results,
-                metadata,
-                img=img,
-                tracks=df_tracked,
+            masks_for_fe = extract_and_merge_features(
+                self.feature_extractor, segmentation_results, img, df_tracked, metadata
             )
-            if isinstance(self.stimulator, StimWithPipeline):
-                fov_obj.stim_mask_queue.put_nowait(stim_mask)
 
-        if metadata.get("img_type") == ImgType.IMG_REF:
-            if self.feature_extractor_ref is not None and self.tracker is not None:
-                df_tracked = self.feature_extractor_ref.extract_features(
+            if stim_needs_compute:
+                stim_mask = dispatch_stim_mask(
+                    self.stimulator,
                     segmentation_results,
-                    img_ref if img_ref is not None else img,
-                    df_tracked,
                     metadata,
+                    img=img,
+                    tracks=df_tracked,
                 )
+                if uses_pipeline_stim:
+                    fov_obj.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
+                    stim_mask_put = True
 
-        # --- Unblock the next frame ---
-        # df_tracked is fully populated (features, stim, ref).
-        # Parquet + TIFF saves below use their own data and unique filenames,
-        # so they're safe to run concurrently with the next frame.
-        fov_obj.tracks_queue.put(df_tracked)
-        frame_counter = fov_obj.fov_timestep_counter
-        fov_obj.fov_timestep_counter += 1
+            if metadata.get("img_type") == ImgType.IMG_REF:
+                if self.feature_extractor_ref is not None and self.tracker is not None:
+                    df_tracked = self.feature_extractor_ref.extract_features(
+                        segmentation_results,
+                        img_ref if img_ref is not None else img,
+                        df_tracked,
+                        metadata,
+                    )
+            tracked_ok = True
+        finally:
+            if tracked_ok:
+                fov_obj.tracks_queue.put_for_frame(frame_idx, df_tracked)
+            else:
+                fov_obj.tracks_queue.skip_frame(frame_idx)
+            # Skip the stim dispenser only for the StimWithPipeline path —
+            # that's the only path the pipeline puts on. Other paths produce
+            # via storage_worker (StimWithImage) or synchronously in the
+            # controller (base Stim) and have their own failure semantics.
+            if pipeline_will_produce_mask and not stim_mask_put:
+                fov_obj.stim_mask_queue.skip_frame(frame_idx)
 
         # --- Parquet save (after unblocking — doesn't mutate df_tracked) ---
         df_to_save = convert_track_dtypes(df_tracked)
 
-        if frame_counter % self.only_save_every_n_frames == 0 or frame_counter == 0:
+        if frame_idx % self.only_save_every_n_frames == 0 or frame_idx == 0:
             with fov_obj.parquet_lock:
                 df_to_save.to_parquet(
                     os.path.join(self.storage_path, "tracks", filename_for_parquet),
@@ -478,7 +511,22 @@ class ImageProcessingPipeline:
         w = self._writer
         if self.stimulator is not None:
             if metadata["stim"]:
-                store_img(stim_mask, metadata, self.storage_path, "stim_mask", writer=w)
+                # Store the mask that actually fired at this frame, not the
+                # one just computed for the next frame's "previous"-mode peek.
+                if analyzer_mode == "previous":
+                    fired = fov_obj.stim_mask_queue.peek_at_frame(frame_idx - 1)
+                else:
+                    # "current" (or legacy None): local mask_t for
+                    # StimWithPipeline; storage_worker's put for
+                    # StimWithImage; base Stim's synchronous path.
+                    fired = (
+                        stim_mask
+                        if stim_mask is not None
+                        else fov_obj.stim_mask_queue.peek_at_frame(frame_idx)
+                    )
+                if fired is None:
+                    fired = np.zeros(shape_img, np.uint8)
+                store_img(fired, metadata, self.storage_path, "stim_mask", writer=w)
             else:
                 store_img(
                     np.zeros(shape_img, np.uint8),
@@ -494,6 +542,10 @@ class ImageProcessingPipeline:
                     "stim",
                     writer=w,
                 )
+
+        # Prune the stim dispenser — keep only the predecessor (t-1) for a
+        # future "previous"-mode peek and this frame's put (t).
+        fov_obj.stim_mask_queue.prune_below(frame_idx - 1)
 
         if masks_for_fe is not None:
             for mask_fe in masks_for_fe:

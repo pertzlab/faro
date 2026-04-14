@@ -173,7 +173,6 @@ class TestTrackingContract:
     def test_first_frame_returns_valid_df(self):
         tracker = TrackerTrackpy(search_range=50, memory=3)
         fov = FovState()
-        _ = fov.tracks_queue.get()  # drain the initial empty df
         df_new = _detections([(40, 40), (90, 90)])
         result = tracker.track_cells(pd.DataFrame(), df_new, fov)
         _assert_valid_tracking(result)
@@ -181,7 +180,6 @@ class TestTrackingContract:
     def test_two_frames_returns_valid_df(self):
         tracker = TrackerTrackpy(search_range=50, memory=3)
         fov = FovState()
-        _ = fov.tracks_queue.get()
 
         df1 = _detections([(40, 40), (90, 90)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
@@ -194,7 +192,6 @@ class TestTrackingContract:
     def test_consistent_particle_ids_across_frames(self):
         tracker = TrackerTrackpy(search_range=50, memory=3)
         fov = FovState()
-        _ = fov.tracks_queue.get()
 
         df1 = _detections([(40, 40), (90, 90)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
@@ -212,7 +209,6 @@ class TestTrackingContract:
         """No detections in a frame should not crash."""
         tracker = TrackerTrackpy(search_range=50, memory=3)
         fov = FovState()
-        _ = fov.tracks_queue.get()
 
         df1 = _detections([(40, 40)])
         df_tracked = tracker.track_cells(pd.DataFrame(), df1, fov)
@@ -226,7 +222,6 @@ class TestTrackingContract:
         """A particle missing for <= memory frames should be re-linked."""
         tracker = TrackerTrackpy(search_range=50, memory=3)
         fov = FovState()
-        _ = fov.tracks_queue.get()
 
         # Frame 0: particle at (40,40)
         df_tracked = tracker.track_cells(pd.DataFrame(), _detections([(40, 40)]), fov)
