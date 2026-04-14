@@ -9,7 +9,7 @@ class FeatureExtractorRef:
     the extract_features method.
     """
 
-    def __init__(self, used_mask, multi_timepoint=False):
+    def __init__(self, used_mask, multi_timepoint=True):
         self.used_mask = used_mask
         self.multi_timepoint = multi_timepoint
 

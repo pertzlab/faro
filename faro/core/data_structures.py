@@ -2,25 +2,238 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Iterable, Iterator
+from typing import Any, Generic, Iterable, Iterator, Literal, Optional, TypeVar, Union
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 from faro.segmentation.base import Segmentator
 from dataclasses import dataclass, InitVar
 
+_T = TypeVar("_T")
+
+# A stimulation mask is either a 2D binary array or a scalar ``True``
+# (whole-FOV on) sentinel — ``StimWholeFOV.get_stim_mask`` returns the
+# latter to avoid allocating an IMG_SIZE-sized array just to say "fire
+# everything". ``None`` is reserved for the "frame skipped" signal
+# surfaced by :meth:`FrameDispenser.wait_for_frame`.
+StimMask = Union[np.ndarray, bool]
+
+
+class FrameDispenser(Generic[_T]):
+    """Frame-ordered handoff for per-frame values between pipeline workers.
+
+    Replaces ``queue.SimpleQueue`` in places where values must be associated
+    with the frame that produced them. A SimpleQueue hands out entries FIFO
+    by thread-wait-arrival-order; concurrent pipeline workers could beat
+    earlier frames to the queue and mix up which value went with which
+    frame (see the TracksDispenser bug rationale — same pattern applies to
+    stim masks and any other per-frame handoff).
+
+    Values are keyed by an integer frame index (``event.index["t"]``).
+
+    Reads:
+
+    - :meth:`get_predecessor` — wait for the most recent put *before* this
+      frame, walking past skipped frames. Used for tracking where frame N
+      needs frame N-1's accumulated df. Prunes entries ``<=`` the consumed
+      predecessor automatically.
+    - :meth:`wait_for_frame` — wait for *this* frame's put, blocking if
+      not yet resolved. **Non-consuming** — the entry stays put so
+      multiple readers can see it. Used for stim masks where both the
+      stim event and the pipeline's storage step read the same mask.
+      Callers must :meth:`prune_below` explicitly.
+    - :meth:`peek_at_frame` — non-blocking, non-consuming variant of
+      :meth:`wait_for_frame`.
+
+    All three return ``None`` when the frame was skipped (or absent, for
+    ``peek``).
+
+    Thread-safe. All public methods acquire an internal condition variable.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[int, _T] = {}
+        self._skipped: set[int] = set()
+        self._cond = threading.Condition()
+
+    def put_for_frame(self, idx: int, value: _T) -> None:
+        """Record *value* as this frame's output.
+
+        Wakes any worker blocked in a ``get_*`` call.
+        """
+        with self._cond:
+            self._entries[idx] = value
+            self._cond.notify_all()
+
+    def skip_frame(self, idx: int) -> None:
+        """Mark a frame as skipped — no value will be produced for it.
+
+        :meth:`get_predecessor` walks past skipped frames to find the
+        most recent actual put; :meth:`wait_for_frame` returns ``None``.
+        Use this when a frame is dropped (e.g. pipeline queue saturated,
+        exception) so downstream waiters don't block indefinitely.
+        """
+        with self._cond:
+            self._skipped.add(idx)
+            self._cond.notify_all()
+
+    def get_predecessor(
+        self, idx: int, timeout: Optional[float] = None
+    ) -> Optional[_T]:
+        """Return the value from the most recent resolved predecessor.
+
+        Blocks until the immediate predecessor is resolved (either put or
+        marked skipped). Walks past skipped frames. Returns ``None`` if
+        the entire predecessor chain back to 0 is skipped or empty
+        (typically meaning this is the first frame of the experiment).
+
+        Args:
+            idx: The frame index whose predecessor is wanted.
+            timeout: Maximum seconds to block. ``None`` means wait
+                forever.
+
+        Raises:
+            queue.Empty: if *timeout* elapses without the predecessor
+                becoming available.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while True:
+                status, info = self._resolve_predecessor_locked(idx)
+                if status == "found":
+                    value = self._entries[info]
+                    self._prune_through_locked(info)
+                    return value
+                if status == "empty":
+                    # Prune now — the tail of _skipped has no future consumer.
+                    self._prune_through_locked(idx - 1)
+                    return None
+                # status == "waiting"; info = the unresolved index
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise queue.Empty(
+                        f"FrameDispenser: timeout waiting for frame {info}"
+                    )
+                self._cond.wait(remaining)
+
+    def wait_for_frame(self, idx: int, timeout: Optional[float] = None) -> Optional[_T]:
+        """Return the value put at frame ``idx``, blocking if not yet resolved.
+
+        Non-consuming: the entry stays in the dispenser after the read.
+        Callers share the same entry (e.g. a stim event reader and the
+        pipeline's storage step both want the mask that fired at this
+        frame). Memory is bounded by explicit :meth:`prune_below` calls;
+        typically the pipeline prunes below the current frame after it
+        has finished reading.
+
+        Returns the value if put, or ``None`` if skipped.
+
+        Args:
+            idx: The frame index to wait for.
+            timeout: Maximum seconds to block. ``None`` means wait
+                forever.
+
+        Raises:
+            queue.Empty: if *timeout* elapses without ``idx`` being
+                resolved.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._cond:
+            while True:
+                if idx in self._entries:
+                    return self._entries[idx]
+                if idx in self._skipped:
+                    return None
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise queue.Empty(
+                        f"FrameDispenser: timeout waiting for frame {idx}"
+                    )
+                self._cond.wait(remaining)
+
+    def peek_at_frame(self, idx: int) -> Optional[_T]:
+        """Return the value put at ``idx`` without blocking or consuming.
+
+        Returns ``None`` if the frame has not been put (or was skipped).
+        Callers that need to distinguish "not resolved" from "resolved-
+        to-skipped" must use :meth:`wait_for_frame` or check state
+        externally; peek treats both cases as ``None``.
+        """
+        with self._cond:
+            return self._entries.get(idx)
+
+    def prune_below(self, idx: int) -> None:
+        """Remove all entries and skip markers with key ``< idx``.
+
+        Public counterpart to the auto-pruning that ``get_predecessor``
+        does internally. Callers using :meth:`wait_for_frame` must prune
+        explicitly, otherwise the dispenser grows with every put.
+        """
+        with self._cond:
+            for k in list(self._entries):
+                if k < idx:
+                    del self._entries[k]
+            for k in list(self._skipped):
+                if k < idx:
+                    self._skipped.remove(k)
+
+    def reset(self) -> None:
+        """Clear all state. Call only when no workers are in-flight —
+        waiters with ``timeout=None`` would otherwise block on a chain
+        whose predecessors you just erased.
+        """
+        with self._cond:
+            self._entries.clear()
+            self._skipped.clear()
+            self._cond.notify_all()
+
+    def _resolve_predecessor_locked(
+        self, idx: int
+    ) -> tuple[Literal["found", "empty", "waiting"], Optional[int]]:
+        """Walk backward from ``idx - 1`` past skipped frames.
+
+        Returns ``("found", k)`` if entry k is the nearest resolved put,
+        ``("empty", None)`` if we walked past 0 without hitting an entry,
+        or ``("waiting", k)`` if index k is unresolved (caller must wait).
+
+        Caller must hold ``_cond``.
+        """
+        prev = idx - 1
+        while prev >= 0:
+            if prev in self._entries:
+                return "found", prev
+            if prev in self._skipped:
+                prev -= 1
+                continue
+            return "waiting", prev
+        return "empty", None
+
+    def _prune_through_locked(self, idx: int) -> None:
+        """Drop entries and skip markers with index ``<= idx``.
+
+        Called after a successful ``get_predecessor`` — once frame N has
+        consumed entry N-1, no future frame will ask for anything
+        ``<= N-1`` (each frame asks only for its immediate predecessor).
+        """
+        for k in list(self._entries):
+            if k <= idx:
+                del self._entries[k]
+        for k in list(self._skipped):
+            if k <= idx:
+                self._skipped.remove(k)
+
 
 class FovState:
     """Per-FOV mutable state for tracking and stimulation."""
 
     def __init__(self):
-        self.stim_mask_queue = queue.SimpleQueue()
-        self.tracks_queue = queue.SimpleQueue()
+        self.stim_mask_queue: FrameDispenser[StimMask] = FrameDispenser()
+        self.tracks_queue: FrameDispenser[pd.DataFrame] = FrameDispenser()
         self.parquet_lock = threading.Lock()
         self.linker = None
-        self.tracks_queue.put(pd.DataFrame())  # initial empty dataframe
         self.fov_timestep_counter = 0
         self.n_cells_latest = 0
 
@@ -36,6 +249,7 @@ class SegmentationMethod:
 @dataclass
 class Channel:
     """Acquisition channel (useq-compatible field names)."""
+
     config: str
     exposure: float = None
     group: str = None
@@ -48,6 +262,7 @@ class PowerChannel(Channel):
     Only ``power`` is needed — the microscope resolves which device/property
     to set based on its hardware configuration.
     """
+
     power: int = None
 
 
@@ -217,8 +432,9 @@ class RTMEvent(MDAEvent):
             return stim_events + img_events
         return img_events + stim_events
 
-    def to_mda_events(self, *, resolve_group=None, resolve_power=None,
-                      dmd=None, stim_slm_image=None) -> list[MDAEvent]:
+    def to_mda_events(
+        self, *, resolve_group=None, resolve_power=None, dmd=None, stim_slm_image=None
+    ) -> list[MDAEvent]:
         """Convert to standard useq MDAEvents.
 
         Args:
@@ -273,45 +489,51 @@ class RTMEvent(MDAEvent):
         # Imaging channels
         for i, ch in enumerate(self.channels):
             ch_dict, props = _resolve_ch(ch)
-            events.append(MDAEvent(
-                index={**dict(self.index), "c": i},
-                channel=ch_dict,
-                exposure=ch.exposure,
-                x_pos=self.x_pos if i == 0 else None,
-                y_pos=self.y_pos if i == 0 else None,
-                z_pos=self.z_pos,
-                min_start_time=self.min_start_time,
-                metadata={**base_meta, "img_type": img_type},
-                properties=props,
-            ))
+            events.append(
+                MDAEvent(
+                    index={**dict(self.index), "c": i},
+                    channel=ch_dict,
+                    exposure=ch.exposure,
+                    x_pos=self.x_pos if i == 0 else None,
+                    y_pos=self.y_pos if i == 0 else None,
+                    z_pos=self.z_pos,
+                    min_start_time=self.min_start_time,
+                    metadata={**base_meta, "img_type": img_type},
+                    properties=props,
+                )
+            )
 
         # Stim channels
         if has_stim:
             for ch in self.stim_channels:
                 ch_dict, props = _resolve_ch(ch)
-                events.append(MDAEvent(
-                    index=dict(self.index),  # no "c" for stim
-                    channel=ch_dict,
-                    exposure=ch.exposure,
-                    min_start_time=self.min_start_time,
-                    metadata={**base_meta, "img_type": ImgType.IMG_STIM},
-                    properties=props,
-                    slm_image=stim_slm_image,  # filled by Controller
-                ))
+                events.append(
+                    MDAEvent(
+                        index=dict(self.index),  # no "c" for stim
+                        channel=ch_dict,
+                        exposure=ch.exposure,
+                        min_start_time=self.min_start_time,
+                        metadata={**base_meta, "img_type": ImgType.IMG_STIM},
+                        properties=props,
+                        slm_image=stim_slm_image,  # filled by Controller
+                    )
+                )
 
         # Ref channels
         if self.ref_channels:
             n_img = len(self.channels)
             for j, ch in enumerate(self.ref_channels):
                 ch_dict, props = _resolve_ch(ch)
-                events.append(MDAEvent(
-                    index={**dict(self.index), "c": n_img + j},
-                    channel=ch_dict,
-                    exposure=ch.exposure,
-                    min_start_time=self.min_start_time,
-                    metadata={**base_meta, "img_type": ImgType.IMG_REF},
-                    properties=props,
-                ))
+                events.append(
+                    MDAEvent(
+                        index={**dict(self.index), "c": n_img + j},
+                        channel=ch_dict,
+                        exposure=ch.exposure,
+                        min_start_time=self.min_start_time,
+                        metadata={**base_meta, "img_type": ImgType.IMG_REF},
+                        properties=props,
+                    )
+                )
 
         return events
 
@@ -355,7 +577,9 @@ class RTMSequence(MDASequence):
 
     stim_channels: tuple[Channel, ...] = ()
     stim_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
-    stim_exposure: None | float | int | tuple[float | int, ...] | list[float | int] = None
+    stim_exposure: None | float | int | tuple[float | int, ...] | list[float | int] = (
+        None
+    )
     ref_channels: tuple[Channel, ...] = ()
     ref_frames: set[int] | frozenset[int] = Field(default_factory=frozenset)
     rtm_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -444,7 +668,9 @@ class RTMSequence(MDASequence):
 
         # Build per-frame stim exposure mapping
         stim_exposure_map: dict[int, float | int] | None = None
-        if self.stim_exposure is not None and not isinstance(self.stim_exposure, (int, float)):
+        if self.stim_exposure is not None and not isinstance(
+            self.stim_exposure, (int, float)
+        ):
             # Map each stim frame to its corresponding exposure
             sorted_stim_frames = sorted(stim_set)
             stim_exposure_map = dict(zip(sorted_stim_frames, self.stim_exposure))
@@ -455,7 +681,11 @@ class RTMSequence(MDASequence):
                     stim = stim_tuple
                 elif isinstance(self.stim_exposure, (int, float)):
                     stim = tuple(
-                        Channel(config=ch.config, exposure=self.stim_exposure, group=ch.group)
+                        Channel(
+                            config=ch.config,
+                            exposure=self.stim_exposure,
+                            group=ch.group,
+                        )
                         for ch in stim_tuple
                     )
                 else:
@@ -481,7 +711,9 @@ class RTMSequence(MDASequence):
             )
 
     def check_fov_batching(
-        self, time_per_fov: float, n_parallel: int | None = None,
+        self,
+        time_per_fov: float,
+        n_parallel: int | None = None,
     ) -> bool:
         """Check whether all FOVs in this sequence can be imaged in parallel.
 
@@ -491,6 +723,7 @@ class RTMSequence(MDASequence):
                 ``time_per_fov`` and the sequence's timepoint interval.
         """
         from faro.core.utils import check_fov_batching
+
         return check_fov_batching(list(self), time_per_fov, n_parallel)
 
 
@@ -500,7 +733,9 @@ class RTMSequence(MDASequence):
 
 
 def _infer_interval(
-    src: Any, events: list[RTMEvent], fallback: float = 1.0,
+    src: Any,
+    events: list[RTMEvent],
+    fallback: float = 1.0,
 ) -> float:
     """Best-effort spacing between consecutive timepoints.
 
@@ -517,6 +752,7 @@ def _infer_interval(
             except (TypeError, ValueError):
                 pass
     from faro.core.utils import _infer_interval as _from_events
+
     return _from_events(events) or fallback
 
 
@@ -596,7 +832,7 @@ def combine(
     if not sources:
         return []
     if offset_time is None:
-        offset_time = (axis == Axis.TIME)
+        offset_time = axis == Axis.TIME
 
     # Precondition check must run before _combine_pair flattens sources
     # to lists — once flattened, the original ``channels`` tuples are
@@ -604,7 +840,9 @@ def combine(
     if axis == Axis.POSITION:
         seq_sources = [s for s in sources if isinstance(s, RTMSequence)]
         if len(seq_sources) >= 2:
-            ref_channels = [getattr(ch, "config", None) for ch in seq_sources[0].channels]
+            ref_channels = [
+                getattr(ch, "config", None) for ch in seq_sources[0].channels
+            ]
             for s in seq_sources[1:]:
                 other = [getattr(ch, "config", None) for ch in s.channels]
                 if other != ref_channels:
@@ -617,6 +855,9 @@ def combine(
     result: list[RTMEvent] = list(sources[0])
     for src in sources[1:]:
         result = _combine_pair(
-            result, src, axis=axis, offset_time=offset_time,
+            result,
+            src,
+            axis=axis,
+            offset_time=offset_time,
         )
     return result
