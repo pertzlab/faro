@@ -41,16 +41,18 @@ from faro.core.data_structures import (
     Channel as RTMChannel,
     PowerChannel,
     RTMSequence,
-    SegmentationMethod,
 )
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
 from faro.feature_extraction.optocheck import OptoCheckFE
 from faro.feature_extraction.simple import SimpleFE
-from faro.segmentation.cellpose_v4 import CellposeV4
 from faro.stimulation.percentage_of_cell import StimPercentageOfCell
 from faro.tracking.trackpy import TrackerTrackpy
-from tests.hardware.conftest import assert_clean_run
+from tests.hardware.conftest import (
+    assert_clean_run,
+    assert_timestep_ordering,
+    load_tracks_df,
+)
 
 
 N_FRAMES = 4
@@ -60,7 +62,7 @@ STIM_CELL_PERCENTAGE = 0.3
 
 @pytest.mark.hardware
 def test_cell_migration_smoke(
-    microscope, scope_config, safe_positions, tmp_path
+    microscope, scope_config, safe_positions, tmp_path, cellpose_segmentator
 ) -> None:
     """End-to-end smoke test: segmentation + tracking + stim + ref."""
 
@@ -105,14 +107,7 @@ def test_cell_migration_smoke(
 
     pipeline = ImageProcessingPipeline(
         storage_path=str(tmp_path),
-        segmentators=[
-            SegmentationMethod(
-                name="labels",
-                segmentation_class=CellposeV4(min_size=50, gpu=True),
-                use_channel=0,
-                save_tracked=True,
-            ),
-        ],
+        segmentators=[cellpose_segmentator],
         feature_extractor=SimpleFE("labels"),
         feature_extractor_ref=OptoCheckFE(used_mask="labels"),
         stimulator=StimPercentageOfCell(),
@@ -131,3 +126,4 @@ def test_cell_migration_smoke(
         controller.finish_experiment()
 
     assert_clean_run(controller, tmp_path, expect_tracks=True)
+    assert_timestep_ordering(load_tracks_df(tmp_path))
