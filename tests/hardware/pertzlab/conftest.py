@@ -1,4 +1,10 @@
-"""Fixtures for the hardware-in-the-loop test suite.
+"""Fixtures for the Pertzlab hardware-in-the-loop test suite.
+
+Pertzlab-specific tests + fixtures live under ``tests/hardware/pertzlab/``
+to mirror ``faro/microscope/pertzlab/``. Other labs should add a sibling
+``tests/hardware/<labname>/`` with their own ``conftest.py`` and tests;
+this directory is a reference implementation rather than a generic
+framework.
 
 Each fixture is session-scoped so the microscope is initialized only
 once per pytest run, regardless of how many hardware tests fire. The

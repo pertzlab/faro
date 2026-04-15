@@ -26,7 +26,7 @@ from faro.core.controller import Controller
 from faro.core.data_structures import Channel as RTMChannel, RTMSequence
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
-from tests.hardware.conftest import assert_clean_run
+from tests.hardware.pertzlab.conftest import assert_clean_run
 
 
 N_FRAMES = 4

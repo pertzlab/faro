@@ -40,7 +40,7 @@ from faro.core.data_structures import (
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
 from faro.stimulation.base import Stim
-from tests.hardware.conftest import assert_clean_run, open_stim_channel_array
+from tests.hardware.pertzlab.conftest import assert_clean_run, open_stim_channel_array
 
 
 N_FRAMES = 4

@@ -31,7 +31,7 @@ from faro.core.data_structures import (
 )
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
-from tests.hardware.conftest import DelayedMaskStim
+from tests.hardware.pertzlab.conftest import DelayedMaskStim
 
 
 N_FRAMES = 4

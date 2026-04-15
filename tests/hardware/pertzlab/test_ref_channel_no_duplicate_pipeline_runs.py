@@ -28,7 +28,7 @@ from faro.core.writers import OmeZarrWriter
 from faro.feature_extraction.optocheck import OptoCheckFE
 from faro.feature_extraction.simple import SimpleFE
 from faro.tracking.trackpy import TrackerTrackpy
-from tests.hardware.conftest import (
+from tests.hardware.pertzlab.conftest import (
     assert_clean_run,
     assert_timestep_ordering,
     load_tracks_df,

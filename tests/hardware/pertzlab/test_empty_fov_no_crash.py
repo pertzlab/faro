@@ -33,7 +33,7 @@ from faro.core.writers import OmeZarrWriter
 from faro.feature_extraction.simple import SimpleFE
 from faro.stimulation.base import StimTopEdgeMeta
 from faro.tracking.trackpy import TrackerTrackpy
-from tests.hardware.conftest import assert_clean_run
+from tests.hardware.pertzlab.conftest import assert_clean_run
 
 
 N_FRAMES = 4

@@ -27,7 +27,7 @@ from faro.core.data_structures import (
 )
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
-from tests.hardware.conftest import (
+from tests.hardware.pertzlab.conftest import (
     DelayedMaskStim,
     assert_clean_run,
     open_stim_channel_array,
