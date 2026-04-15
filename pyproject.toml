@@ -77,12 +77,9 @@ api75 = [
 
 
 [[tool.uv.index]]
-# CUDA 12.8 wheels — the broadest currently-deployed driver compatibility
-# across the Pertzlab microscope PCs. cu130 wheels need driver >= 580.65,
-# which the Moench PC's 576.88 driver doesn't satisfy. cu128 still gives
-# full GPU acceleration for cellpose / torch and works on driver >= ~525.
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+# CUDA 13.0 wheels. Requires NVIDIA driver >= 580.65.
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv]
@@ -94,8 +91,8 @@ conflicts = [
 ]
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
 virtual-microscope = { git = "https://github.com/hinderling/virtual-microscope.git" }
 pymmcore-widgets = {git = "https://github.com/pymmcore-plus/pymmcore-widgets.git" }
 
