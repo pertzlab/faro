@@ -815,16 +815,20 @@ class Controller:
                 # get_stim_mask waited for a pipeline mask that could
                 # never arrive — a deadlock that looked like a timeout.
                 #
-                # In "previous" mode, ``_build_stim_slm`` short-circuits
-                # to ``SLMImage(data=False)`` at t=0 where no t-1 exists;
-                # for t>=1 the predecessor mask is always available
-                # because pipeline.run also computes on non-stim frames
-                # in previous mode (see FrameDispenser docs).
+                # In "previous" mode at t=0 there is no predecessor
+                # mask, so suppress the stim event entirely. Firing a
+                # blank mask would still activate the DMD (mirror
+                # bleed-through can leak ~1% of nominal intensity), and
+                # omitting the ``slm_image`` leaves the DMD in its
+                # previously-latched state. Skipping the event is the
+                # only way to guarantee zero stim at t=0.
+                suppress = stim_mode == "previous" and rtm_event.index.get("t", 0) == 0
                 planned = rtm_event.plan_events(
                     stim_mode=stim_mode,
                     build_slm=None,
                     resolve_group=self._mic.resolve_group,
                     resolve_power=self._mic.resolve_power,
+                    suppress_stim=suppress,
                 )
                 slm = None
                 for ev in planned:
@@ -935,16 +939,11 @@ class Controller:
         t = rtm_event.index.get("t", 0)
         if stim_mode == "previous":
             t -= 1
-            if t < 0:
-                # No previous-timepoint mask exists at frame 0. Avoid an
-                # 80 s wait on a frame that will never be produced, and
-                # a StimLine-style base Stim silently evaluating the
-                # stripe formula on a negative timestep.
-                return SLMImage(
-                    data=False,
-                    device=self._mic.dmd.name,
-                    exposure=stim_ch.exposure,
-                )
+            # Previous-mode t=0 has no predecessor mask. The controller
+            # passes ``suppress_stim=True`` to ``plan_events`` for that
+            # case, so no stim event should reach this method with
+            # ``t < 0``.
+            assert t >= 0, "previous-mode t=0 stim event reached _build_stim_slm"
         meta = {
             **rtm_event.metadata,
             "fov": fov_index,
