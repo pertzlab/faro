@@ -18,8 +18,6 @@ Gated by ``--scope`` / ``FARO_SCOPE`` like the other hardware tests.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 import zarr
 from useq import Position, TIntervalLoops
@@ -33,23 +31,17 @@ from faro.core.data_structures import (
 )
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
-from faro.stimulation.moving_line_20x import StimLine
+from tests.hardware.conftest import DelayedMaskStim
 
 
 N_FRAMES = 4
 TIME_BETWEEN_TIMESTEPS_S = 5.0
 # Pipeline sleeps much longer than the analyzer's timeout so the
-# controller is guaranteed to time out waiting for the mask.
+# controller is guaranteed to time out waiting for the mask. A
+# queue-based stimulator (StimWithImage / StimWithPipeline) is
+# required — base Stim is called synchronously and has no timeout.
 SLOW_PIPELINE_DELAY_S = 10.0
 SHORT_TIMEOUT_S = 1.0
-
-
-class _VerySlowStim(StimLine):
-    """StimLine variant that sleeps long enough to trigger the timeout."""
-
-    def get_stim_mask(self, img, rtm_event, fov_state, labels=None, features=None):
-        time.sleep(SLOW_PIPELINE_DELAY_S)
-        return super().get_stim_mask(img, rtm_event, fov_state, labels, features)
 
 
 @pytest.mark.hardware
@@ -85,9 +77,6 @@ def test_stim_mask_timeout_records_background_error(
         power=cfg["stim_power"],
     )
 
-    image_height = microscope.mmc.getImageHeight()
-    image_width = microscope.mmc.getImageWidth()
-
     sequence = RTMSequence(
         stage_positions=[
             Position(x=p["x"], y=p["y"], z=p["z"], name=p["name"])
@@ -104,14 +93,7 @@ def test_stim_mask_timeout_records_background_error(
 
     pipeline = ImageProcessingPipeline(
         storage_path=str(tmp_path),
-        stimulator=_VerySlowStim(
-            first_stim_frame=1,
-            frames_for_1_loop=N_FRAMES,
-            stripe_width=image_width // 4,
-            n_frames_total=N_FRAMES,
-            mask_height=image_height,
-            mask_width=image_width,
-        ),
+        stimulator=DelayedMaskStim(delay_s=SLOW_PIPELINE_DELAY_S),
     )
     writer = OmeZarrWriter(storage_path=str(tmp_path), store_stim_images=True)
 
@@ -127,11 +109,13 @@ def test_stim_mask_timeout_records_background_error(
         "expected at least one BackgroundError from stim_mask timeout, "
         "got none — timeout is being silently swallowed again"
     )
+    # Controller records the timeout under source="stim_mask"
+    # (see faro.core.controller._record_background_error call).
     timeout_errors = [
-        e for e in controller.background_errors if "timeout" in e.source.lower()
+        e for e in controller.background_errors if e.source == "stim_mask"
     ]
     assert timeout_errors, (
-        f"expected a timeout-flavored BackgroundError; got sources "
+        f"expected a stim_mask BackgroundError; got sources "
         f"{[e.source for e in controller.background_errors]}"
     )
 

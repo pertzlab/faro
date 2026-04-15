@@ -15,11 +15,8 @@ Gated by ``--scope`` / ``FARO_SCOPE`` like the other hardware tests.
 
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import pytest
-import zarr
 from useq import Position, TIntervalLoops
 
 from faro.core.controller import Controller
@@ -30,8 +27,11 @@ from faro.core.data_structures import (
 )
 from faro.core.pipeline import ImageProcessingPipeline
 from faro.core.writers import OmeZarrWriter
-from faro.stimulation.moving_line_20x import StimLine
-from tests.hardware.conftest import assert_clean_run
+from tests.hardware.conftest import (
+    DelayedMaskStim,
+    assert_clean_run,
+    open_stim_channel_array,
+)
 
 
 # Long enough to cover lag recovery; short enough to stay under ~2 min.
@@ -40,14 +40,6 @@ TIME_BETWEEN_TIMESTEPS_S = 5.0
 # Pipeline artificial latency — picked to sit between one and two frame
 # intervals so the pipeline consistently lags acquisition by ~2 frames.
 SLOW_PIPELINE_DELAY_S = 7.0
-
-
-class _SlowStim(StimLine):
-    """StimLine variant that sleeps in get_stim_mask to simulate lag."""
-
-    def get_stim_mask(self, img, rtm_event, fov_state, labels=None, features=None):
-        time.sleep(SLOW_PIPELINE_DELAY_S)
-        return super().get_stim_mask(img, rtm_event, fov_state, labels, features)
 
 
 @pytest.mark.hardware
@@ -69,9 +61,6 @@ def test_pipeline_lag_no_deadlock(
         power=cfg["stim_power"],
     )
 
-    image_height = microscope.mmc.getImageHeight()
-    image_width = microscope.mmc.getImageWidth()
-
     sequence = RTMSequence(
         stage_positions=[
             Position(x=p["x"], y=p["y"], z=p["z"], name=p["name"])
@@ -88,14 +77,7 @@ def test_pipeline_lag_no_deadlock(
 
     pipeline = ImageProcessingPipeline(
         storage_path=str(tmp_path),
-        stimulator=_SlowStim(
-            first_stim_frame=1,
-            frames_for_1_loop=N_FRAMES,
-            stripe_width=image_width // 4,
-            n_frames_total=N_FRAMES,
-            mask_height=image_height,
-            mask_width=image_width,
-        ),
+        stimulator=DelayedMaskStim(delay_s=SLOW_PIPELINE_DELAY_S),
     )
     writer = OmeZarrWriter(storage_path=str(tmp_path), store_stim_images=True)
 
@@ -107,18 +89,7 @@ def test_pipeline_lag_no_deadlock(
 
     assert_clean_run(controller, tmp_path, expect_tracks=False)
 
-    # Every stim frame must have a non-empty mask across all FOVs.
-    zarr_path = tmp_path / "acquisition.ome.zarr"
-    root = zarr.open_group(str(zarr_path), mode="r")
-    multiscales = root.attrs["ome"]["multiscales"][0]
-    channels = multiscales["metadata"]["omero"]["channels"]
-    stim_idx = next(
-        i
-        for i, c in enumerate(channels)
-        if c["label"].startswith("stim_mask")
-    )
-    arr = root[multiscales["datasets"][0]["path"]]
-
+    arr, stim_idx = open_stim_channel_array(tmp_path / "acquisition.ome.zarr")
     for t in range(1, N_FRAMES):
         for p in range(len(safe_positions)):
             stored = np.asarray(arr[t, p, stim_idx])
