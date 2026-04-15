@@ -691,12 +691,11 @@ class TestStimModePreviousMultiFov:
 class TestStimModePreviousAtFrameZero:
     """Edge case: ``previous`` mode at frame 0 has no t-1.
 
-    Base ``Stim`` bypasses the ``_stim_pending`` guard (``not needs_data``
-    short-circuits the conditional), so ``_build_stim_slm`` is actually
-    called at frame 0 and must short-circuit to ``data=False`` rather
-    than computing ``meta["timestep"] = -1`` and either querying the
-    dispenser at -1 (would time out 80 s) or letting a time-varying
-    base stim like StimLine evaluate ``-1 % N``.
+    The controller passes ``suppress_stim=True`` to ``plan_events`` when
+    ``stim_mode == "previous"`` and ``t == 0``, so the stim event is
+    never queued. Firing a blank mask would still activate the DMD
+    (mirror bleed-through leaks ~1% of nominal intensity), so outright
+    suppression is the only way to guarantee zero stim at t=0.
     """
 
     @pytest.fixture(autouse=True)
@@ -709,10 +708,7 @@ class TestStimModePreviousAtFrameZero:
         run_and_wait(self.ctrl, events, stim_mode="previous")
 
     def test_no_stim_at_frame_0(self):
-        assert len(self.mic.slm_events) == 1
-        event_t, slm = self.mic.slm_events[0]
-        assert event_t == 0
-        assert slm.data is False
+        assert self.mic.slm_events == []
 
 
 class TestStimModePreviousPipelineCrashDoesNotDeadlock:

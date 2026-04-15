@@ -239,13 +239,9 @@ def microscope(scope_name: str, synthetic_affine: np.ndarray):
     else:
         raise ValueError(f"unknown scope: {scope_name!r}")
 
-    # Force a known camera binning BEFORE applying the ROI — most MM
-    # configs reset the ROI on a binning change, so the order matters.
-    # 2x2 keeps the test frame small and fast.
-    try:
-        mic.mmc.setConfig("Binning", "2x2")
-    except Exception as e:
-        print(f"[hardware fixture] could not set Binning=2x2 on {scope_name}: {e}")
+    # Camera binning is encoded directly in the MM cfg file so it's
+    # applied at cfg load, before set_roi() runs — avoids the "binning
+    # change resets the ROI" reorder trap.
 
     # Apply per-scope ROI when production code does so.
     if getattr(mic, "SET_ROI_REQUIRED", False) and hasattr(mic, "set_roi"):
