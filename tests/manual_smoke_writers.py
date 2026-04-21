@@ -118,20 +118,26 @@ def _synthetic_raw(t: int, p: int) -> np.ndarray:
 
 
 def _synthetic_stim(t: int, p: int) -> np.ndarray:
-    """Stim readout, (Y, X) uint16, with t/p text stamp."""
+    """Stim readout, (Y, X) uint16, with t/p text stamp.
+
+    Stim square sits in the lower half (rows 140–156) so it never
+    collides with the text overlay in the top-left.
+    """
     frame = np.zeros((IMAGE_H, IMAGE_W), dtype=np.uint16)
-    frame[t * 16 : (t + 1) * 16, p * 16 : (p + 1) * 16] = 50_000
+    frame[140:156, p * 32 + 8 : p * 32 + 24] = 50_000
+    frame[180:196, t * 32 + 8 : t * 32 + 24] = 50_000
     _draw_text(frame, [f"t={t} p={p}", "STIM"], value=60_000)
     return frame
 
 
 def _synthetic_label(t: int, p: int) -> np.ndarray:
-    """Segmentation labels, (Y, X) int32. Different label per (t,p) so
-    each slice picks up a distinct napari labels-layer color."""
+    """Segmentation labels, (Y, X) int32. Binary mask: 1 = foreground
+    (text + two marker squares), 0 = background. Squares live in the
+    lower half so they never collide with the top-left text."""
     arr = np.zeros((IMAGE_H, IMAGE_W), dtype=np.int32)
-    label_id = 1 + t * 10 + p
-    arr[40:120, 40:120] = label_id
-    arr[150:200, 150:200] = label_id + 100
+    _draw_text(arr, [f"t={t} p={p}", "LABELS"], value=1)
+    arr[140:200, 30:90] = 1
+    arr[140:200, 170:230] = 1
     return arr
 
 
