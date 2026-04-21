@@ -87,18 +87,27 @@ def _draw_text(arr: np.ndarray, lines: list[str], *, value: int) -> None:
 
     Uses Pillow's bundled DejaVuSans (``load_default(size=...)``, available
     since Pillow 10.1.0) so the same font ships on macOS, Windows, and
-    Linux without touching system font paths.
+    Linux without touching system font paths. ``stroke_width`` thickens
+    the glyph outlines so the text reads on a napari labels layer (which
+    flat-shades each label index — thin AA strokes vanish at default zoom).
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    font = ImageFont.load_default(size=24)
-    line_h = font.getbbox("Ag")[3] + 4
+    font = ImageFont.load_default(size=40)
+    line_h = font.getbbox("Ag")[3] + 6
 
     h, w = arr.shape
     mask_img = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask_img)
     for i, line in enumerate(lines):
-        draw.text((10, 10 + i * line_h), line, fill=255, font=font)
+        draw.text(
+            (10, 10 + i * line_h),
+            line,
+            fill=255,
+            font=font,
+            stroke_width=2,
+            stroke_fill=255,
+        )
     arr[np.asarray(mask_img) > 0] = value
 
 
