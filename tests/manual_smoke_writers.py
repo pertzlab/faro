@@ -26,6 +26,7 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -87,27 +88,18 @@ def _draw_text(arr: np.ndarray, lines: list[str], *, value: int) -> None:
 
     Uses Pillow's bundled DejaVuSans (``load_default(size=...)``, available
     since Pillow 10.1.0) so the same font ships on macOS, Windows, and
-    Linux without touching system font paths. ``stroke_width`` thickens
-    the glyph outlines so the text reads on a napari labels layer (which
-    flat-shades each label index — thin AA strokes vanish at default zoom).
+    Linux without touching system font paths.
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    font = ImageFont.load_default(size=40)
-    line_h = font.getbbox("Ag")[3] + 6
+    font = ImageFont.load_default(size=24)
+    line_h = font.getbbox("Ag")[3] + 4
 
     h, w = arr.shape
     mask_img = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask_img)
     for i, line in enumerate(lines):
-        draw.text(
-            (10, 10 + i * line_h),
-            line,
-            fill=255,
-            font=font,
-            stroke_width=2,
-            stroke_fill=255,
-        )
+        draw.text((10, 10 + i * line_h), line, fill=255, font=font)
     arr[np.asarray(mask_img) > 0] = value
 
 
@@ -397,15 +389,21 @@ def main() -> int:
     args = parser.parse_args()
 
     base = args.output_dir or Path(tempfile.mkdtemp(prefix="faro-writer-smoke-"))
-    print(f"output root: {base}")
+    # Per-run suffix: napari/dask cache zarr arrays by path, so reusing
+    # ``--output-dir`` between runs would feed napari stale data on
+    # drag-drop. A fresh subpath each invocation sidesteps that.
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    print(f"output root: {base}  (run id: {run_id})")
 
     names = list(SCENARIOS.keys()) if args.scenario == "all" else [args.scenario]
 
+    drag_paths: list[Path] = []
     try:
         for name in names:
             scenario = SCENARIOS[name]
-            scenario_dir = base / name
+            scenario_dir = base / f"{name}-{run_id}"
             zarr_path = run_scenario(scenario, scenario_dir)
+            drag_paths.append(zarr_path)
             validate(zarr_path, scenario)
             if args.napari:
                 open_in_napari(zarr_path, scenario, keep_open=args.interactive)
@@ -415,6 +413,10 @@ def main() -> int:
             print(f"cleaned up {base}")
         else:
             print(f"keeping {base}")
+            if drag_paths:
+                print("\nDRAG INTO NAPARI:")
+                for p in drag_paths:
+                    print(f"  {p}")
 
     return 0
 
