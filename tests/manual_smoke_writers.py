@@ -34,12 +34,13 @@ import zarr
 from faro.core.writers import OmeZarrWriter, OmeZarrWriterPlate
 
 
-IMAGE_H = 128
-IMAGE_W = 128
+IMAGE_H = 256
+IMAGE_W = 256
 N_T = 4
 N_IMG_CH = 2
 N_STIM_CH = 1
 IMG_CHANNEL_NAMES = ["DAPI", "FITC"]
+STIM_CHANNEL_NAMES = ["stim_0"]
 
 
 @dataclass
@@ -80,27 +81,57 @@ SCENARIOS: dict[str, Scenario] = {
 }
 
 
+def _draw_text(arr: np.ndarray, lines: list[str], *, value: int) -> None:
+    """Stamp text onto a 2D array in-place — readable proof of (t,p,c) when
+    you drag the store into napari and scrub the sliders.
+
+    Uses Pillow's bundled DejaVuSans (``load_default(size=...)``, available
+    since Pillow 10.1.0) so the same font ships on macOS, Windows, and
+    Linux without touching system font paths.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = ImageFont.load_default(size=24)
+    line_h = font.getbbox("Ag")[3] + 4
+
+    h, w = arr.shape
+    mask_img = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask_img)
+    for i, line in enumerate(lines):
+        draw.text((10, 10 + i * line_h), line, fill=255, font=font)
+    arr[np.asarray(mask_img) > 0] = value
+
+
 def _synthetic_raw(t: int, p: int) -> np.ndarray:
-    """All imaging channels for one (t, p) — shape (C, Y, X) uint16."""
+    """All imaging channels for one (t, p) — shape (C, Y, X) uint16.
+
+    Each channel slice carries a "t=… p=… <CHANNEL>" stamp so napari
+    sliders can be visually validated.
+    """
     rng = np.random.default_rng(seed=1000 * p + t)
     img = rng.integers(0, 65535, size=(N_IMG_CH, IMAGE_H, IMAGE_W), dtype=np.uint16)
     img[:, :16, :16] = (t + 1) * 5000
     img[:, :16, -16:] = (p + 1) * 5000
+    for c, ch_name in enumerate(IMG_CHANNEL_NAMES):
+        _draw_text(img[c], [f"t={t} p={p}", ch_name], value=60_000)
     return img
 
 
 def _synthetic_stim(t: int, p: int) -> np.ndarray:
-    """Stim readout, (Y, X) uint16."""
+    """Stim readout, (Y, X) uint16, with t/p text stamp."""
     frame = np.zeros((IMAGE_H, IMAGE_W), dtype=np.uint16)
     frame[t * 16 : (t + 1) * 16, p * 16 : (p + 1) * 16] = 50_000
+    _draw_text(frame, [f"t={t} p={p}", "STIM"], value=60_000)
     return frame
 
 
 def _synthetic_label(t: int, p: int) -> np.ndarray:
-    """Segmentation labels, (Y, X) int32."""
+    """Segmentation labels, (Y, X) int32. Different label per (t,p) so
+    each slice picks up a distinct napari labels-layer color."""
     arr = np.zeros((IMAGE_H, IMAGE_W), dtype=np.int32)
-    arr[20:40, 20:40] = t + 1
-    arr[60:80, 60:80] = (p + 1) * 10
+    label_id = 1 + t * 10 + p
+    arr[40:120, 40:120] = label_id
+    arr[150:200, 150:200] = label_id + 100
     return arr
 
 
