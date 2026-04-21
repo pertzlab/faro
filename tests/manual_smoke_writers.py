@@ -105,13 +105,14 @@ def _draw_text(arr: np.ndarray, lines: list[str], *, value: int) -> None:
 def _synthetic_raw(t: int, p: int) -> np.ndarray:
     """All imaging channels for one (t, p) — shape (C, Y, X) uint16.
 
-    Each channel slice carries a "t=… p=… <CHANNEL>" stamp so napari
-    sliders can be visually validated.
+    Each channel slice carries only a "t=… p=… <CHANNEL>" text stamp;
+    the noise is there as a background so the text stays readable under
+    napari's auto-contrast. No positional markers — they used to bleed
+    through into the labels overlay when multiple layers were shown
+    simultaneously.
     """
     rng = np.random.default_rng(seed=1000 * p + t)
     img = rng.integers(0, 65535, size=(N_IMG_CH, IMAGE_H, IMAGE_W), dtype=np.uint16)
-    img[:, :16, :16] = (t + 1) * 5000
-    img[:, :16, -16:] = (p + 1) * 5000
     for c, ch_name in enumerate(IMG_CHANNEL_NAMES):
         _draw_text(img[c], [f"t={t} p={p}", ch_name], value=60_000)
     return img
@@ -240,6 +241,21 @@ def _layer_shape(layer) -> tuple[int, ...]:
     return tuple(data.shape)
 
 
+def _napari_axis_labels(scenario: Scenario) -> tuple[str, ...]:
+    """NGFF axis names the napari sliders should show.
+
+    napari-ome-zarr does not propagate the NGFF ``axes.name`` field into
+    napari's ``dims.axis_labels``, so we set them explicitly after
+    loading. For drag-drop usage (no script involvement) set them in
+    napari's console with e.g. ``viewer.dims.axis_labels = ('t','p','y','x')``.
+    """
+    if scenario.writer_cls is OmeZarrWriterPlate:
+        return ("t", "y", "x")
+    if scenario.n_pos > 1:
+        return ("t", "p", "y", "x")
+    return ("t", "y", "x")
+
+
 def _expected_layer_shapes(scenario: Scenario) -> dict[str, tuple[int, ...]]:
     """Per-layer shape after napari's channel_axis split.
 
@@ -292,6 +308,10 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
             viewer.add_labels(data, **{k: v for k, v in meta.items() if k in _LABELS_META_KEYS})
         else:
             viewer.add_image(data, **{k: v for k, v in meta.items() if k in _IMAGE_META_KEYS})
+
+    axis_labels = _napari_axis_labels(scenario)
+    viewer.dims.axis_labels = axis_labels
+    print(f"  [napari] axis_labels: {axis_labels}")
 
     layer_names = [layer.name for layer in viewer.layers]
     print(f"  [napari] viewer has {len(viewer.layers)} layer(s): {layer_names}")
