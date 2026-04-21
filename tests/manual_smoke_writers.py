@@ -60,6 +60,14 @@ _PLATE_LABELS_SKIP = (
     "see ome/ome-zarr-py#65, ome/napari-ome-zarr#54"
 )
 
+# Napari plugin spec: LayerData = (data, meta, layer_type). The reader
+# may omit the third element for the default ("image") type.
+_IMAGE_META_KEYS = ("name", "channel_axis", "colormap", "scale")
+_LABELS_META_KEYS = ("name", "scale")
+
+# Hard-coded by OmeZarrWriter.__init__ (writers.py:262).
+_ZARR_DIRNAME = "acquisition.ome.zarr"
+
 SCENARIOS: dict[str, Scenario] = {
     "direct": Scenario("multi-pos direct", n_pos=3, writer_cls=OmeZarrWriter),
     "stream": Scenario("single-pos stream", n_pos=1, writer_cls=OmeZarrWriter),
@@ -129,7 +137,7 @@ def run_scenario(scenario: Scenario, out_dir: Path) -> Path:
 
     writer.close()
     print(f"  wrote {out_dir}")
-    return Path(writer._zarr_path)
+    return out_dir / _ZARR_DIRNAME
 
 
 def validate_direct_store(zarr_path: Path, n_pos: int) -> None:
@@ -231,9 +239,10 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
     layer_tuples = reader(str(zarr_path))
 
     print(f"  [napari] reader returned {len(layer_tuples)} layer(s):")
+    viewer = napari.Viewer(show=True)
     for i, lt in enumerate(layer_tuples):
         data, meta, ltype = (lt + (None,))[:3] if len(lt) < 3 else lt
-        name = meta.get("name", f"layer_{i}") if isinstance(meta, dict) else f"layer_{i}"
+        name = meta.get("name", f"layer_{i}")
         if isinstance(data, list):
             shapes = [getattr(d, "shape", None) for d in data]
             dtypes = [str(getattr(d, "dtype", "?")) for d in data]
@@ -242,14 +251,10 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
             print(f"    [{i}] {name!r} type={ltype} shape={getattr(data, 'shape', None)} "
                   f"dtype={getattr(data, 'dtype', '?')}")
 
-    viewer = napari.Viewer(show=True)
-    for lt in layer_tuples:
-        data, meta, ltype = (lt + (None,))[:3] if len(lt) < 3 else lt
-        meta = meta or {}
         if ltype == "labels":
-            viewer.add_labels(data, **{k: v for k, v in meta.items() if k in ("name", "scale")})
+            viewer.add_labels(data, **{k: v for k, v in meta.items() if k in _LABELS_META_KEYS})
         else:
-            viewer.add_image(data, **{k: v for k, v in meta.items() if k in ("name", "channel_axis", "colormap", "scale")})
+            viewer.add_image(data, **{k: v for k, v in meta.items() if k in _IMAGE_META_KEYS})
 
     layer_names = [layer.name for layer in viewer.layers]
     print(f"  [napari] viewer has {len(viewer.layers)} layer(s): {layer_names}")
