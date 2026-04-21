@@ -143,6 +143,39 @@ def _extract_n_stim_channels_from_events(events) -> int:
     return 0
 
 
+from useq import Axis
+
+_TRAILING_AXES: tuple[str, ...] = ("c", "y", "x")
+
+_NGFF_AXIS_TYPE: dict[str, str] = {
+    Axis.TIME: "time",
+    Axis.POSITION: "other",
+    Axis.CHANNEL: "channel",
+    Axis.Z: "space",
+    "y": "space",
+    "x": "space",
+}
+
+# Metadata key used by RTMEvent.to_mda_events() for each leading axis.
+_META_KEY: dict[str, str] = {Axis.TIME: "timestep", Axis.POSITION: "fov"}
+
+
+def _derive_direct_axes(n_pos: int) -> list[str]:
+    """Return leading axis keys for the multi-position direct-mode store."""
+    if n_pos > 1:
+        return [Axis.TIME, Axis.POSITION]
+    return [Axis.TIME]
+
+
+def _growable_dim_indices(axis_keys: list[str]) -> tuple[int, ...]:
+    """Indices (within ``axis_keys``) of axes that can grow on write.
+
+    Only ``t`` is unbounded in practice; other FARO dimensions are fixed
+    by the event list at open time.
+    """
+    return tuple(i for i, k in enumerate(axis_keys) if k == Axis.TIME)
+
+
 class OmeZarrWriter:
     """Streams acquisition data into a single OME-Zarr v0.5 store.
 
@@ -227,6 +260,10 @@ class OmeZarrWriter:
         self._n_imaging_channels: int = 0
         self._position_names: list[str] = []
         self._zarr_path = os.path.join(storage_path, "acquisition.ome.zarr")
+
+        # Direct-mode axis layout. Populated by _init_stream_direct.
+        self._axis_keys: list[str] = []
+        self._growable_dims: tuple[int, ...] = ()
 
         # Stim channel ordering buffers
         self._stim_pending: bool = False
@@ -374,10 +411,8 @@ class OmeZarrWriter:
     ) -> None:
         """Multi-position stream built directly with zarr-python.
 
-        Creates a single 5D array ``(t, p, c, y, x)`` with NGFF v0.5
-        multiscales metadata written manually.  This bypasses yaozarrs'
-        axis order validator which incorrectly rejects custom types
-        between time and space.
+        Bypasses yaozarrs' axis order validator which incorrectly rejects
+        custom types between time and space.
         """
         import shutil
         import zarr
@@ -386,35 +421,44 @@ class OmeZarrWriter:
             shutil.rmtree(self._zarr_path)
 
         n_pos = len(position_names)
-        n_t = self._n_timepoints or 1  # start with 1 if unbounded
+        leading_axes = _derive_direct_axes(n_pos)
+        self._axis_keys = leading_axes
+        self._growable_dims = _growable_dim_indices(leading_axes)
 
-        # Array shape: (t, p, c, y, x)
-        shape = (n_t, n_pos, total_channels, self._image_height, self._image_width)
-        # One chunk per channel; shard groups all channels + raw_shard_t timepoints
-        chunks = (
-            self._raw_chunk_t,
-            1,
-            1,  # one chunk per channel
-            self._image_height,
-            self._image_width,
+        def _leading_size(key: str) -> int:
+            if key == Axis.TIME:
+                return self._n_timepoints or 1
+            if key == Axis.POSITION:
+                return n_pos
+            return 1
+
+        def _chunk_for(key: str) -> int:
+            return self._raw_chunk_t if key == Axis.TIME else 1
+
+        def _shard_for(key: str) -> int:
+            if key == Axis.TIME:
+                return self._raw_shard_t or self._raw_chunk_t
+            return 1
+
+        trailing_sizes = {
+            "c": total_channels,
+            "y": self._image_height,
+            "x": self._image_width,
+        }
+        trailing_chunks = (1, self._image_height, self._image_width)
+        trailing_shards = (total_channels, self._image_height, self._image_width)
+
+        shape = tuple(_leading_size(k) for k in leading_axes) + tuple(
+            trailing_sizes[k] for k in _TRAILING_AXES
         )
-        shards = (
-            self._raw_shard_t or self._raw_chunk_t,
-            1,
-            total_channels,  # all channels in one shard
-            self._image_height,
-            self._image_width,
-        )
+        chunks = tuple(_chunk_for(k) for k in leading_axes) + trailing_chunks
+        shards = tuple(_shard_for(k) for k in leading_axes) + trailing_shards
 
         root = zarr.open_group(self._zarr_path, mode="w")
 
-        # NGFF v0.5 multiscales metadata — axes in napari-friendly order
         axes = [
-            {"name": "t", "type": "time"},
-            {"name": "p", "type": "other"},
-            {"name": "c", "type": "channel"},
-            {"name": "y", "type": "space"},
-            {"name": "x", "type": "space"},
+            {"name": k, "type": _NGFF_AXIS_TYPE.get(k, "other")}
+            for k in leading_axes + list(_TRAILING_AXES)
         ]
         root.attrs["ome"] = {
             "version": "0.5",
@@ -425,7 +469,7 @@ class OmeZarrWriter:
                         {
                             "path": "0",
                             "coordinateTransformations": [
-                                {"type": "scale", "scale": [1.0] * 5}
+                                {"type": "scale", "scale": [1.0] * len(axes)}
                             ],
                         }
                     ],
@@ -463,6 +507,35 @@ class OmeZarrWriter:
 
         # No ome-writers stream — we write directly
         self._stream = None
+
+    # ------------------------------------------------------------------
+    # Direct-mode axis helpers
+    # ------------------------------------------------------------------
+
+    def _leading_index(self, metadata: dict) -> tuple[int, ...]:
+        """Build the leading index tuple for a direct-mode write."""
+        return tuple(
+            metadata.get(_META_KEY.get(k, k), 0) for k in self._axis_keys
+        )
+
+    def _maybe_resize_leading(self, arr, leading_idx: tuple[int, ...]) -> None:
+        """Grow any growable leading axis that the incoming write exceeds."""
+        growable = self._growable_dims
+        if not growable:
+            return
+        shape = arr.shape
+        if not any(leading_idx[d] >= shape[d] for d in growable):
+            return
+        with self._label_lock:  # reused lock — thread-safe resize
+            cur = list(arr.shape)
+            changed = False
+            for d in growable:
+                idx = leading_idx[d]
+                if idx >= cur[d]:
+                    cur[d] = idx + 1
+                    changed = True
+            if changed:
+                arr.resize(tuple(cur))
 
     # ------------------------------------------------------------------
     # Public API
@@ -531,24 +604,15 @@ class OmeZarrWriter:
             self._stim_pending = True
 
     def _write_raw_direct(self, img: np.ndarray, metadata: dict) -> None:
-        """Multi-position: write directly to zarr array at (t, p, c, y, x)."""
-        t = metadata.get("timestep", 0)
-        p = metadata.get("fov", 0)
+        """Multi-position: write directly to zarr array."""
         arr = self._raw_array
+        leading_idx = self._leading_index(metadata)
+        self._maybe_resize_leading(arr, leading_idx)
 
-        # Resize time dimension (axis 0) if needed
-        if t >= arr.shape[0]:
-            with self._label_lock:  # reuse lock for thread safety
-                if t >= arr.shape[0]:
-                    new_shape = list(arr.shape)
-                    new_shape[0] = t + 1
-                    arr.resize(tuple(new_shape))
-
-        # Write frame(s) — img is (C, H, W) or (H, W)
         if img.ndim == 3:
-            arr[t, p, : img.shape[0], :, :] = img
+            arr[leading_idx + (slice(None, img.shape[0]), slice(None), slice(None))] = img
         elif img.ndim == 2:
-            arr[t, p, 0, :, :] = img
+            arr[leading_idx + (0, slice(None), slice(None))] = img
 
     def _write_stim(self, img: np.ndarray, metadata: dict) -> None:
         """Handle a stim readout frame."""
@@ -560,14 +624,15 @@ class OmeZarrWriter:
 
         # Direct mode: write stim channel directly to zarr (random access)
         if self._raw_array is not None:
-            t = metadata.get("timestep", 0)
-            p = metadata.get("fov", 0)
+            leading_idx = self._leading_index(metadata)
+            self._maybe_resize_leading(self._raw_array, leading_idx)
             stim_start = self._n_imaging_channels
             if frame.ndim == 2:
-                self._raw_array[t, p, stim_start, :, :] = frame
+                self._raw_array[leading_idx + (stim_start, slice(None), slice(None))] = frame
             else:
                 self._raw_array[
-                    t, p, stim_start : stim_start + frame.shape[0], :, :
+                    leading_idx
+                    + (slice(stim_start, stim_start + frame.shape[0]), slice(None), slice(None))
                 ] = frame
             return
 
@@ -600,14 +665,7 @@ class OmeZarrWriter:
     # ------------------------------------------------------------------
 
     def _write_label(self, img: np.ndarray, metadata: dict, name: str) -> None:
-        """Write a label frame to the NGFF label array.
-
-        Uses metadata ``timestep`` and ``fov`` to index into the array
-        at the correct (t, p) position.  The time dimension is resized
-        on demand.
-        """
-        t = metadata.get("timestep", 0)
-        p = metadata.get("fov", 0)
+        """Write a label frame to the NGFF label array."""
         frame = img.squeeze() if img.ndim > 2 and img.shape[0] == 1 else img
 
         # Lazy init on first encounter for this label name
@@ -617,55 +675,50 @@ class OmeZarrWriter:
                     self._create_label_array(name, frame)
 
         arr = self._label_arrays[name]
-        n_pos = len(self._position_names)
-
-        # Resize time dimension (axis 0) if needed
-        if t >= arr.shape[0]:
-            with self._label_lock:
-                if t >= arr.shape[0]:
-                    new_shape = list(arr.shape)
-                    new_shape[0] = t + 1
-                    arr.resize(tuple(new_shape))
-
-        if n_pos > 1:
-            arr[t, p] = frame
-        else:
-            arr[t] = frame
+        leading_idx = self._leading_index(metadata)
+        self._maybe_resize_leading(arr, leading_idx)
+        arr[leading_idx] = frame
 
     def _create_label_array(self, name: str, sample_frame: np.ndarray) -> None:
         """Create an NGFF-compliant label array under the root image group.
 
-        For multi-position: shape (t, p, y, x) — matches the raw data layout.
-        For single position: shape (t, y, x).
+        Layout mirrors the raw data array's leading axes plus ``(y, x)``;
+        labels do not have a channel axis.
         """
         import zarr
 
-        n_pos = len(self._position_names)
-        has_pos = n_pos > 1
+        # Fallback when init_stream wasn't called (labels-only writer path).
+        if not self._axis_keys:
+            self._axis_keys = _derive_direct_axes(len(self._position_names))
+            self._growable_dims = _growable_dim_indices(self._axis_keys)
 
-        # Build shape, chunks, shards, axes based on position count
-        if has_pos:
-            # Match raw data axis order: (t, p, y, x)
-            array_shape = (0, n_pos, self._image_height, self._image_width)
-            chunks = (self._label_chunk_t, 1, self._image_height, self._image_width)
-            shards = (self._label_shard_t, 1, self._image_height, self._image_width)
-            axes = [
-                {"name": "t", "type": "time"},
-                {"name": "p", "type": "other"},
-                {"name": "y", "type": "space"},
-                {"name": "x", "type": "space"},
-            ]
-            scale = [1.0, 1.0, 1.0, 1.0]
-        else:
-            array_shape = (0, self._image_height, self._image_width)
-            chunks = (self._label_chunk_t, self._image_height, self._image_width)
-            shards = (self._label_shard_t, self._image_height, self._image_width)
-            axes = [
-                {"name": "t", "type": "time"},
-                {"name": "y", "type": "space"},
-                {"name": "x", "type": "space"},
-            ]
-            scale = [1.0, 1.0, 1.0]
+        leading_axes = self._axis_keys
+
+        def _label_size(key: str) -> int:
+            if key == Axis.TIME:
+                return 0  # grows on write
+            if key == Axis.POSITION:
+                return len(self._position_names)
+            return 1
+
+        def _label_chunk(key: str) -> int:
+            return self._label_chunk_t if key == Axis.TIME else 1
+
+        def _label_shard(key: str) -> int:
+            return self._label_shard_t if key == Axis.TIME else 1
+
+        leading_shape = tuple(_label_size(k) for k in leading_axes)
+        leading_chunks = tuple(_label_chunk(k) for k in leading_axes)
+        leading_shards = tuple(_label_shard(k) for k in leading_axes)
+
+        array_shape = leading_shape + (self._image_height, self._image_width)
+        chunks = leading_chunks + (self._image_height, self._image_width)
+        shards = leading_shards + (self._image_height, self._image_width)
+        axes = [
+            {"name": k, "type": _NGFF_AXIS_TYPE.get(k, "other")}
+            for k in leading_axes + ["y", "x"]
+        ]
+        scale = [1.0] * len(axes)
 
         # Root IS the image group
         img_grp = zarr.open_group(self._zarr_path, mode="a")
@@ -909,9 +962,8 @@ class OmeZarrWriterPlate(OmeZarrWriter):
         chunks = (self._label_chunk_t, self._image_height, self._image_width)
         shards = (self._label_shard_t, self._image_height, self._image_width)
         axes = [
-            {"name": "t", "type": "time"},
-            {"name": "y", "type": "space"},
-            {"name": "x", "type": "space"},
+            {"name": k, "type": _NGFF_AXIS_TYPE.get(k, "other")}
+            for k in (Axis.TIME, "y", "x")
         ]
         scale = [1.0, 1.0, 1.0]
 

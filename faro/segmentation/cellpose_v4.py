@@ -16,6 +16,7 @@ class CellposeV4(Segmentator):
         flow_threshold: float = 0.4,
         cellprob_threshold: float = 0.0,
         min_size: int = 50,
+        gpu: bool = True,
     ):
 
         self.flow_threshold = flow_threshold
@@ -23,10 +24,10 @@ class CellposeV4(Segmentator):
         self.min_size = min_size
 
         if custom_model_path is None:
-            self.model = models.CellposeModel(gpu=True)
+            self.model = models.CellposeModel(gpu=gpu)
         else:
             self.model = models.CellposeModel(
-                pretrained_model=custom_model_path, gpu=True
+                pretrained_model=custom_model_path, gpu=gpu
             )
 
     def segment(self, image: np.ndarray) -> np.ndarray:

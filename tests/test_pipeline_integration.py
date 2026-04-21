@@ -110,12 +110,16 @@ class CircleMicroscope(AbstractMicroscope):
             set, the controller's stim-event branch
             (``if self._mic.dmd:``) is taken and ``_build_stim_slm`` runs,
             allowing end-to-end stim-mask-selection tests. SLM images
-            delivered to stim events are recorded in
-            :attr:`slm_events` as ``(frame_idx, SLMImage)`` tuples.
+            delivered to stim events are recorded in :attr:`slm_events`
+            as ``(frame_idx, SLMImage)`` tuples.
+        blank_frames: Timepoints for which the microscope returns an
+            all-zero frame instead of circles (for testing no-cell edge
+            cases).
     """
 
-    def __init__(self, dmd=None):
+    def __init__(self, dmd=None, blank_frames: set[int] = frozenset()):
         super().__init__()
+        self._blank_frames = blank_frames
         self._callback = None
         self._cancel = threading.Event()
         self.dmd = dmd
@@ -135,15 +139,20 @@ class CircleMicroscope(AbstractMicroscope):
             for event in event_iter:
                 if self._cancel.is_set():
                     break
+                t = event.index.get("t", 0)
                 if getattr(event, "slm_image", None) is not None:
-                    self.slm_events.append((event.index.get("t", 0), event.slm_image))
-                img = make_circle_image()
+                    self.slm_events.append((t, event.slm_image))
+                img = (
+                    np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.uint16)
+                    if t in self._blank_frames
+                    else make_circle_image()
+                )
                 if self._callback is not None:
                     self._callback(img, event)
 
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        return t
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        return thread
 
     def cancel_mda(self):
         self._cancel.set()
@@ -152,6 +161,15 @@ class CircleMicroscope(AbstractMicroscope):
 # ---------------------------------------------------------------------------
 # run_and_wait helper
 # ---------------------------------------------------------------------------
+
+
+def assert_no_background_errors(ctrl: Controller) -> None:
+    """Fail with a readable message if any background errors were recorded."""
+    if ctrl.background_errors:
+        summary = "\n".join(
+            f"  [{e.source}] {e.exc_type}: {e.message}" for e in ctrl.background_errors
+        )
+        raise AssertionError(f"Background errors during acquisition:\n{summary}")
 
 
 def run_and_wait(ctrl: Controller, events: list[RTMEvent], stim_mode: str = "current"):
@@ -673,12 +691,11 @@ class TestStimModePreviousMultiFov:
 class TestStimModePreviousAtFrameZero:
     """Edge case: ``previous`` mode at frame 0 has no t-1.
 
-    Base ``Stim`` bypasses the ``_stim_pending`` guard (``not needs_data``
-    short-circuits the conditional), so ``_build_stim_slm`` is actually
-    called at frame 0 and must short-circuit to ``data=False`` rather
-    than computing ``meta["timestep"] = -1`` and either querying the
-    dispenser at -1 (would time out 80 s) or letting a time-varying
-    base stim like StimLine evaluate ``-1 % N``.
+    The controller passes ``suppress_stim=True`` to ``plan_events`` when
+    ``stim_mode == "previous"`` and ``t == 0``, so the stim event is
+    never queued. Firing a blank mask would still activate the DMD
+    (mirror bleed-through leaks ~1% of nominal intensity), so outright
+    suppression is the only way to guarantee zero stim at t=0.
     """
 
     @pytest.fixture(autouse=True)
@@ -691,10 +708,7 @@ class TestStimModePreviousAtFrameZero:
         run_and_wait(self.ctrl, events, stim_mode="previous")
 
     def test_no_stim_at_frame_0(self):
-        assert len(self.mic.slm_events) == 1
-        event_t, slm = self.mic.slm_events[0]
-        assert event_t == 0
-        assert slm.data is False
+        assert self.mic.slm_events == []
 
 
 class TestStimModePreviousPipelineCrashDoesNotDeadlock:
@@ -1686,3 +1700,131 @@ class TestBurstNoSignalLoss:
             assert (
                 len(rows) == N_BURST_FRAMES
             ), f"Particle {pid}: expected {N_BURST_FRAMES} rows, got {len(rows)}"
+
+
+# ===================================================================
+# Test Class: Analyzer.get_stim_mask timeout recording
+# ===================================================================
+
+
+class TestStimMaskTimeout:
+    """Analyzer.get_stim_mask records a background error when the queue times out.
+
+    Regression guard for the silent-stim-frame bug: on the first stim
+    frame, the pipeline hadn't produced a mask yet, get_stim_mask timed
+    out, and the fallback silently sent False to the SLM with nothing
+    recorded. Hardware tests (which assert background_errors == [])
+    should fail loudly in that case.
+    """
+
+    @pytest.fixture
+    def analyzer(self, tmp_dir) -> Iterator[Analyzer]:
+        pipeline = _make_pipeline_with_stim(tmp_dir, ImageBasedStim())
+        instance = Analyzer(pipeline=pipeline)
+        yield instance
+        instance.shutdown(wait=True)
+
+    def test_timeout_records_background_error(self, analyzer):
+        result = analyzer.get_stim_mask(fov_index=7, metadata={}, timeout=0.05)
+        assert result is None
+        assert len(analyzer.background_errors) == 1
+        err = analyzer.background_errors[0]
+        assert err.source == "stim_mask"
+        assert err.exc_type == "TimeoutError"
+        assert "FOV 7" in err.message
+        assert "0.05" in err.message
+        # Traceback should reflect the TimeoutError raise site, not the
+        # bare QueueEmpty — regression guard for the format_exc() bug.
+        assert "TimeoutError" in err.traceback
+
+    def test_ready_mask_returns_value_without_recording(self, analyzer):
+        """Happy path: a mask already in the queue is returned, no error recorded."""
+        mask = np.ones((32, 32), dtype=np.uint8)
+        analyzer.get_fov_state(0).stim_mask_queue.put_for_frame(0, mask)
+        result = analyzer.get_stim_mask(
+            fov_index=0, metadata={"timestep": 0}, timeout=5.0
+        )
+        assert result is mask
+        assert analyzer.background_errors == []
+
+
+# ===================================================================
+# Test Class: empty-frame edge cases (no cells detected)
+# ===================================================================
+
+
+class TestEmptyFrameEdgeCases:
+    """Pipeline must not crash when segmentation finds zero cells.
+
+    Covers the guards in extract_and_merge_features, labels_to_particles,
+    and the ref-channel FE path.
+    """
+
+    def test_all_frames_blank_no_errors(self, tmp_dir):
+        """Every frame is blank — pipeline runs, no background errors."""
+        mic = CircleMicroscope(blank_frames={0, 1, 2, 3, 4})
+        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+        ctrl = Controller(mic, pipeline)
+        events = make_events(5)
+        run_and_wait(ctrl, events)
+        assert_no_background_errors(ctrl)
+
+    def test_all_frames_blank_with_stim_no_errors(self, tmp_dir):
+        """Blank frames + stim active — stim mask dispatch must not crash."""
+        mic = CircleMicroscope(blank_frames={0, 1, 2, 3, 4})
+        pipeline = _make_pipeline(tmp_dir, with_stim=True)
+        ctrl = Controller(mic, pipeline)
+        events = make_events(5, stim_frames=(1, 2, 3, 4))
+        run_and_wait(ctrl, events, stim_mode="current")
+        assert_no_background_errors(ctrl)
+
+    def test_cells_appear_after_blank_start(self, tmp_dir):
+        """Frames 0-1 blank, frames 2-4 have cells — tracking picks up."""
+        mic = CircleMicroscope(blank_frames={0, 1})
+        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+        ctrl = Controller(mic, pipeline)
+        events = make_events(5)
+        run_and_wait(ctrl, events)
+        assert_no_background_errors(ctrl)
+        tracks_dir = os.path.join(tmp_dir, "tracks")
+        parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        assert parquet_files, "No parquet files written"
+        df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
+        particles = df["particle"].unique()
+        assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
+        # Cells appear at frames 2-4 → 3 observations per particle
+        for pid in particles:
+            count = len(df[df["particle"] == pid])
+            assert count == 3, f"Particle {pid} tracked {count} times, expected 3"
+
+    def test_cells_disappear_then_reappear(self, tmp_dir):
+        """Frames 0,1 have cells, frame 2 blank, frames 3,4 have cells.
+
+        The tracker should link across the gap (memory=3 allows up to 3
+        missing frames) and produce the same 2 particle IDs throughout.
+        """
+        mic = CircleMicroscope(blank_frames={2})
+        pipeline = _make_pipeline(tmp_dir, with_stim=False)
+        ctrl = Controller(mic, pipeline)
+        events = make_events(5)
+        run_and_wait(ctrl, events)
+        assert_no_background_errors(ctrl)
+        tracks_dir = os.path.join(tmp_dir, "tracks")
+        parquet_files = [f for f in os.listdir(tracks_dir) if f.endswith(".parquet")]
+        df = pd.read_parquet(os.path.join(tracks_dir, parquet_files[0]))
+        particles = df["particle"].unique()
+        assert len(particles) == 2, f"Expected 2 particles, got {len(particles)}"
+        # 4 observations per particle (frames 0,1,3,4)
+        for pid in particles:
+            count = len(df[df["particle"] == pid])
+            assert count == 4, f"Particle {pid} tracked {count} times, expected 4"
+
+    def test_cells_disappear_reappear_with_stim(self, tmp_dir):
+        """Same gap pattern but with stim active — verifies stim_mask_queue
+        doesn't deadlock or crash when pipeline has no labels to stim."""
+        mic = CircleMicroscope(blank_frames={2})
+        pipeline = _make_pipeline(tmp_dir, with_stim=True)
+        ctrl = Controller(mic, pipeline)
+        events = make_events(5, stim_frames=(1, 2, 3, 4))
+        run_and_wait(ctrl, events, stim_mode="current")
+        assert_no_background_errors(ctrl)

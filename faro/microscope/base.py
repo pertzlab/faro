@@ -94,3 +94,17 @@ class AbstractMicroscope:
     def post_experiment(self):
         """Post-process the experiment. Optional override."""
         pass
+
+    def shutdown(self):
+        """Release all hardware resources held by this microscope.
+
+        Unlike :meth:`post_experiment` (which runs *between* experiments
+        and may keep devices warm for the next run), ``shutdown`` signals
+        that this microscope instance is being discarded. Subclasses
+        should stop any background threads (DMD wakeup loops, etc.) and
+        unload devices so that COM ports / SLM handles are released and
+        the Python process can exit cleanly.
+
+        Base implementation is a no-op; subclasses override as needed.
+        """
+        pass

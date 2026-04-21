@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 import enum
-from typing import Any, Generic, Iterator, Literal, Optional, TypeVar, Union
+from typing import Any, Generic, Iterable, Iterator, Literal, Optional, TypeVar, Union
 import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
@@ -347,12 +347,18 @@ class ImgType(enum.Enum):
     IMG_REF = enum.auto()
 
 
+class StimMode(str, enum.Enum):
+    """When stim events fire relative to imaging within a (t, p) group."""
+
+    CURRENT = "current"  # image → stim (mask from the fresh frame)
+    PREVIOUS = "previous"  # stim → image (mask from the previous timepoint)
+
+
 # ---------------------------------------------------------------------------
 # RTMEvent — extended MDAEvent with multi-channel + stimulation support
 # ---------------------------------------------------------------------------
-from useq import MDAEvent, MDASequence
-from useq._mda_event import SLMImage
-from useq._mda_sequence import iter_sequence
+from useq import Axis, MDAEvent, MDASequence
+from faro.core._useq_compat import SLMImage
 
 
 class RTMEvent(MDAEvent):
@@ -372,6 +378,59 @@ class RTMEvent(MDAEvent):
 
     class Config:
         arbitrary_types_allowed = True
+
+    @property
+    def has_stim(self) -> bool:
+        """Whether this event carries any stim channels."""
+        return bool(self.stim_channels)
+
+    def plan_events(
+        self,
+        *,
+        stim_mode: StimMode | str = "current",
+        build_slm=None,
+        resolve_group=None,
+        resolve_power=None,
+        suppress_stim: bool = False,
+    ) -> list[MDAEvent]:
+        """Return MDAEvents in dispatch order for this (t, p) group.
+
+        - ``stim_mode="current"``: image → stim (mask derived from the
+          fresh imaging frame).
+        - ``stim_mode="previous"``: stim → image (mask reused from the
+          previous timepoint).
+
+        Stim events are inserted within a single (t, p) group; over the
+        full run they still appear interleaved at their correct (t, p).
+        Set ``suppress_stim=True`` to drop stim events entirely (used by
+        the controller in "previous" mode at t=0 when the analyzer has
+        no prior state to build a mask from).
+        """
+        img_events: list[MDAEvent] = []
+        stim_events: list[MDAEvent] = []
+        for e in self.to_mda_events(
+            resolve_group=resolve_group,
+            resolve_power=resolve_power,
+            stim_slm_image=None,
+        ):
+            if e.metadata.get("img_type") == ImgType.IMG_STIM:
+                stim_events.append(e)
+            else:
+                img_events.append(e)
+
+        if suppress_stim:
+            return img_events
+
+        if stim_events and build_slm is not None:
+            slm = build_slm(self)
+            if slm is not None:
+                stim_events = [
+                    e.model_copy(update={"slm_image": slm}) for e in stim_events
+                ]
+
+        if stim_mode == "previous":
+            return stim_events + img_events
+        return img_events + stim_events
 
     def to_mda_events(
         self, *, resolve_group=None, resolve_power=None, dmd=None, stim_slm_image=None
@@ -508,8 +567,8 @@ def _resolve_frame_set(frames, n_timepoints: int) -> set[int]:
 class RTMSequence(MDASequence):
     """MDASequence with stimulation, reference acquisition, and pipeline metadata.
 
-    Iterating yields RTMEvent objects (not plain MDAEvents).
-    Concatenate multiple sequences with ``+`` for multi-phase experiments.
+    Iterating yields RTMEvent objects (not plain MDAEvents). Use
+    :func:`combine` to chain multi-phase experiments.
 
     ``stim_frames`` and ``ref_frames`` accept sets, frozensets, or ``range``
     objects.  Negative indices are resolved relative to the total number of
@@ -569,14 +628,16 @@ class RTMSequence(MDASequence):
 
         The (t, p) iteration order respects ``axis_order`` (inherited from
         MDASequence).  Dict insertion order preserves the first-encounter
-        order produced by ``iter_sequence``, so the resulting RTMEvents
+        order produced by the parent iterator, so the resulting RTMEvents
         follow the same nesting that ``axis_order`` dictates.
 
         Negative indices in ``stim_frames`` and ``ref_frames`` are resolved
         relative to the total number of timepoints.
         """
         groups: dict[tuple, dict] = {}
-        for mda_ev in iter_sequence(self):
+        # Call the parent method directly to avoid recursing back into
+        # this override (MDASequence.__iter__ dispatches via self).
+        for mda_ev in MDASequence.iter_events(self):
             t = mda_ev.index.get("t", 0)
             p = mda_ev.index.get("p", 0)
             key = (t, p)
@@ -649,50 +710,6 @@ class RTMSequence(MDASequence):
                 metadata=merged_meta,
             )
 
-    @staticmethod
-    def _offset_events(
-        events_a: list[RTMEvent],
-        events_b: list[RTMEvent],
-    ) -> list[RTMEvent]:
-        """Append *events_b* to *events_a* with offset timepoints and times."""
-        if not events_a:
-            return list(events_b)
-        if not events_b:
-            return list(events_a)
-
-        max_t = max(e.index.get("t", 0) for e in events_a) + 1
-        max_time = max(e.min_start_time or 0 for e in events_a)
-        if len(events_b) >= 2:
-            dt = (events_b[1].min_start_time or 0) - (events_b[0].min_start_time or 0)
-        else:
-            dt = 1.0
-        time_offset = max_time + dt
-
-        result = list(events_a)
-        for ev in events_b:
-            new_t = ev.index.get("t", 0) + max_t
-            new_time = (ev.min_start_time or 0) + time_offset
-            result.append(
-                ev.model_copy(
-                    update={
-                        "index": {**dict(ev.index), "t": new_t},
-                        "min_start_time": new_time,
-                    }
-                )
-            )
-        result.sort(key=lambda e: (e.min_start_time or 0, e.index.get("p", 0)))
-        return result
-
-    def __add__(self, other: RTMSequence | list[RTMEvent]) -> list[RTMEvent]:
-        """Concatenate two RTMSequences (or an RTMSequence and an event list).
-
-        Timepoints in ``other`` are offset so they continue after ``self``.
-        ``min_start_time`` is also offset by the last event's time + interval.
-        """
-        events_a = list(self)
-        events_b = list(other)
-        return self._offset_events(events_a, events_b)
-
     def check_fov_batching(
         self,
         time_per_fov: float,
@@ -709,8 +726,138 @@ class RTMSequence(MDASequence):
 
         return check_fov_batching(list(self), time_per_fov, n_parallel)
 
-    def __radd__(self, other: list[RTMEvent]) -> list[RTMEvent]:
-        """Support ``list[RTMEvent] + RTMSequence``."""
-        if isinstance(other, list):
-            return self._offset_events(other, list(self))
-        return NotImplemented
+
+# ---------------------------------------------------------------------------
+# combine — axis-keyed composition of experiments
+# ---------------------------------------------------------------------------
+
+
+def _infer_interval(
+    src: Any,
+    events: list[RTMEvent],
+    fallback: float = 1.0,
+) -> float:
+    """Best-effort spacing between consecutive timepoints.
+
+    Prefers the source's ``time_plan.interval`` when ``src`` is an
+    ``RTMSequence`` — authoritative and O(1). Otherwise delegates to
+    :func:`faro.core.utils._infer_interval` on the already-iterated
+    events, with ``fallback`` when that yields 0.
+    """
+    if isinstance(src, RTMSequence) and src.time_plan is not None:
+        interval = getattr(src.time_plan, "interval", None)
+        if interval is not None:
+            try:
+                return float(interval)
+            except (TypeError, ValueError):
+                pass
+    from faro.core.utils import _infer_interval as _from_events
+
+    return _from_events(events) or fallback
+
+
+def _combine_pair(
+    a: RTMSequence | Iterable[RTMEvent],
+    b: RTMSequence | Iterable[RTMEvent],
+    *,
+    axis: str,
+    offset_time: bool,
+) -> list[RTMEvent]:
+    """Pairwise merge used by :func:`combine`. The channel-match
+    precondition for ``axis="p"`` is enforced by :func:`combine` on the
+    raw sources, because ``a`` is usually a flattened list here.
+    """
+    events_a = list(a)
+    events_b = list(b)
+
+    if not events_a:
+        return events_b
+    if not events_b:
+        return events_a
+
+    max_key = max(e.index.get(axis, 0) for e in events_a) + 1
+
+    time_offset = 0.0
+    if offset_time:
+        max_time_a = max(e.min_start_time or 0 for e in events_a)
+        time_offset = max_time_a + _infer_interval(b, events_b)
+
+    offset_b: list[RTMEvent] = []
+    for ev in events_b:
+        updates: dict = {
+            "index": {**dict(ev.index), axis: ev.index.get(axis, 0) + max_key},
+        }
+        if offset_time:
+            updates["min_start_time"] = (ev.min_start_time or 0) + time_offset
+        offset_b.append(ev.model_copy(update=updates))
+
+    if axis == Axis.TIME:
+        # Plain append preserves each source's own axis_order across the
+        # boundary. Re-sorting by (time, p) would scramble ptcz phases.
+        return events_a + offset_b
+
+    merged = events_a + offset_b
+    merged.sort(key=lambda e: (e.min_start_time or 0, e.index.get(Axis.POSITION, 0)))
+    return merged
+
+
+def combine(
+    *sources: RTMSequence | Iterable[RTMEvent],
+    axis: str = Axis.TIME,
+    offset_time: bool | None = None,
+) -> list[RTMEvent]:
+    """Combine N experiments by offsetting one axis of each past the previous.
+
+    - ``axis=Axis.TIME`` (default): sources run sequentially in time,
+      each one's ``t`` indices and ``min_start_time`` shifted past the
+      accumulated end::
+
+          events = combine(baseline, treatment, washout, axis=Axis.TIME)
+
+    - ``axis=Axis.POSITION``: sources run in parallel at additional
+      position indices, sharing the wall clock. Useful when different
+      FOV groups need different stim schedules or treatments::
+
+          events = combine(setup_a, setup_b, setup_c, axis=Axis.POSITION)
+
+    ``axis="t"`` / ``axis="p"`` also work since ``Axis`` is a str enum.
+
+    Raises
+    ------
+    ValueError
+        When ``axis=Axis.POSITION`` and two sources declare different
+        imaging channels. The v1 writer uses a uniform channel set across
+        positions; heterogeneous channels per FOV needs useq-schema v2.
+    """
+    if not sources:
+        return []
+    if offset_time is None:
+        offset_time = axis == Axis.TIME
+
+    # Precondition check must run before _combine_pair flattens sources
+    # to lists — once flattened, the original ``channels`` tuples are
+    # no longer recoverable.
+    if axis == Axis.POSITION:
+        seq_sources = [s for s in sources if isinstance(s, RTMSequence)]
+        if len(seq_sources) >= 2:
+            ref_channels = [
+                getattr(ch, "config", None) for ch in seq_sources[0].channels
+            ]
+            for s in seq_sources[1:]:
+                other = [getattr(ch, "config", None) for ch in s.channels]
+                if other != ref_channels:
+                    raise ValueError(
+                        f"combine(axis=Axis.POSITION) requires matching imaging "
+                        f"channels; got {ref_channels} vs {other}. Heterogeneous "
+                        f"channels per position is a v2 feature."
+                    )
+
+    result: list[RTMEvent] = list(sources[0])
+    for src in sources[1:]:
+        result = _combine_pair(
+            result,
+            src,
+            axis=axis,
+            offset_time=offset_time,
+        )
+    return result

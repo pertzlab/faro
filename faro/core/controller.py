@@ -1,5 +1,5 @@
 from faro.core.pipeline import store_img, ImageProcessingPipeline
-from faro.core.data_structures import FovState, ImgType
+from faro.core.data_structures import FovState, ImgType, StimMode
 from faro.core.writers import (
     Writer,
     TiffWriter,
@@ -14,7 +14,9 @@ from faro.stimulation.base import Stim, StimWithImage, StimWithPipeline
 
 import threading
 import traceback
-from useq._mda_event import SLMImage
+from dataclasses import dataclass
+from typing import Literal
+from faro.core._useq_compat import SLMImage
 from useq import MDAEvent
 from queue import Queue, Empty as QueueEmpty
 import numpy as np
@@ -22,6 +24,19 @@ import time
 import tifffile
 import os
 from concurrent.futures import ThreadPoolExecutor
+
+
+BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
+
+
+@dataclass(frozen=True)
+class BackgroundError:
+    """A background-thread exception recorded for later inspection."""
+
+    source: BackgroundErrorSource
+    exc_type: str
+    message: str
+    traceback: str
 
 
 class Analyzer:
@@ -47,6 +62,7 @@ class Analyzer:
         writer: Writer | None = None,
         debug: bool = False,
         debug_every: int = 10,
+        stim_mask_timeout: float = 80,
     ):
         """
         Args:
@@ -54,6 +70,9 @@ class Analyzer:
             max_workers: Number of worker threads for pipeline (default: 4)
             max_queue_size: Maximum images in executor queue before deferring (default: 60)
             writer: Storage backend. Defaults to TiffWriter if pipeline has storage_path.
+            stim_mask_timeout: Seconds to wait for a stim mask from the pipeline
+                before recording a background error and falling through with None.
+                Increase for slow first-frame segmenters (cellpose SAM, remote).
         """
         self.pipeline = pipeline
         if writer is not None:
@@ -99,6 +118,13 @@ class Analyzer:
         self.skipped_pipeline = 0
         self.deferred_processed = 0
 
+        # Experiments intentionally log-and-continue on background-thread
+        # errors (one bad filter wheel shouldn't crash a 24h run). Tests
+        # assert this list is empty at end of run to catch silent failures.
+        self.background_errors: list[BackgroundError] = []
+        self._error_lock = threading.Lock()
+        self._stim_mask_timeout = stim_mask_timeout
+
         # Stim-mode coordination: set by Controller.run_experiment /
         # continue_experiment. Pipeline and storage workers read this to decide
         # whether non-stim frames need to compute+put a mask (previous mode
@@ -111,6 +137,25 @@ class Analyzer:
             self.fov_states[fov_index] = FovState()
         return self.fov_states[fov_index]
 
+    def _record_background_error(
+        self, source: BackgroundErrorSource, exc: BaseException
+    ) -> None:
+        """Log a background-thread exception and record it for later inspection.
+
+        Must be called from inside an active ``except`` block — the
+        ``traceback.format_exc()`` call below reads the current
+        exception context and returns ``'NoneType: None\\n'`` if
+        there is none.
+        """
+        tb = traceback.format_exc()
+        msg = str(exc)
+        print(f"[Analyzer] {source} error: {type(exc).__name__}: {msg}")
+        print(tb)
+        with self._error_lock:
+            self.background_errors.append(
+                BackgroundError(source, type(exc).__name__, msg, tb)
+            )
+
     @property
     def stimulator_needs_data(self) -> bool:
         """True if stim masks come from the mask queue (StimWithImage/StimWithPipeline).
@@ -122,7 +167,7 @@ class Analyzer:
         return isinstance(self.pipeline.stimulator, (StimWithImage, StimWithPipeline))
 
     def get_stim_mask(
-        self, fov_index: int, metadata: dict, *, timeout: float = 80
+        self, fov_index: int, metadata: dict, *, timeout: float | None = None
     ) -> np.ndarray | None:
         """Return a stim mask array, or None if unavailable.
 
@@ -136,14 +181,27 @@ class Analyzer:
         stimulator = self.pipeline.stimulator
         if isinstance(stimulator, (StimWithImage, StimWithPipeline)):
             fov_state = self.get_fov_state(fov_index)
+            if timeout is None:
+                timeout = self._stim_mask_timeout
             frame_idx = metadata.get("timestep", 0)
             try:
                 mask = fov_state.stim_mask_queue.wait_for_frame(
                     frame_idx, timeout=timeout
                 )
-            except Exception as e:
-                # Pipeline never produced or signalled for this frame.
-                print(f"Warning: Stimulation mask timed out for frame {frame_idx}: {e}")
+            except QueueEmpty as e:
+                # _build_stim_slm still log-and-continues with False, but
+                # hardware tests check background_errors so the dropped stim
+                # frame is no longer silent. Raise-then-catch so
+                # _record_background_error's format_exc() sees the
+                # TimeoutError with its QueueEmpty cause chain.
+                try:
+                    raise TimeoutError(
+                        f"Stim mask not ready for FOV {fov_index} frame "
+                        f"{frame_idx} after {timeout}s — pipeline didn't "
+                        "produce one in time"
+                    ) from e
+                except TimeoutError as terr:
+                    self._record_background_error("stim_mask", terr)
                 return None
             if mask is None:
                 # Pipeline explicitly skipped this frame (tracking/stim crashed).
@@ -193,12 +251,8 @@ class Analyzer:
                 # PRIORITY 2: Pipeline only if resources available
                 self._try_submit_pipeline(img, event, metadata, folder)
 
-            except OSError as e:
-                print(f"Error storing image: {type(e).__name__}: {str(e)}")
             except Exception as e:
-                print(
-                    f"Unexpected error processing image: {type(e).__name__}: {str(e)}"
-                )
+                self._record_background_error("storage", e)
             finally:
                 self._storage_queue.task_done()
 
@@ -256,6 +310,12 @@ class Analyzer:
 
         if metadata["img_type"] == ImgType.IMG_STIM:
             # Don't pipeline stim images
+            return
+
+        # Pure-stim pipelines have nothing for pipeline.run() to do —
+        # tracking/FE/mask generation all require labels. The stim path
+        # is driven directly by Analyzer.get_stim_mask().
+        if self.pipeline.segmentators is None:
             return
 
         with self.task_lock:
@@ -361,7 +421,7 @@ class Analyzer:
                         self._deferred_queue.put_nowait((event, metadata, folder))
 
             except Exception as e:
-                print(f"Error processing deferred image: {type(e).__name__}: {str(e)}")
+                self._record_background_error("deferred", e)
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
         """Called from MDA callback - must return INSTANTLY.
@@ -402,11 +462,7 @@ class Analyzer:
             try:
                 future.result()  # This will re-raise any exception that occurred
             except Exception as e:
-                print(f"[Analyzer] Pipeline task FAILED with exception:")
-                print(f"Exception type: {type(e).__name__}")
-                print(f"Exception message: {str(e)}")
-                print("Full traceback:")
-                traceback.print_exc()
+                self._record_background_error("pipeline", e)
 
         if self.debug:
             print(
@@ -483,6 +539,14 @@ class Controller:
         self._fov_positions: dict[int, tuple[float, float, float]] = {}
         self._pre_loop_hook: callable | None = None  # testing hook
         self._all_events: list = []  # accumulated events for JSON persistence
+
+        # Background-thread errors harvested from the Analyzer on shutdown.
+        # Survives finish_experiment() so tests/notebooks can inspect it.
+        self.background_errors: list[BackgroundError] = []
+
+        # Fatal condition raised from the signal-callback thread, re-raised
+        # after the MDA drains (see _on_frame_ready + _run_mda_with_events).
+        self._fatal_error: BaseException | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -648,6 +712,8 @@ class Controller:
         are done.
         """
         if self._analyzer is not None:
+            # Snapshot before we drop the Analyzer.
+            self.background_errors.extend(self._analyzer.background_errors)
             self._analyzer.shutdown(wait=True)
             self._analyzer = None
         self._t_offset = 0
@@ -742,58 +808,36 @@ class Controller:
                     time.sleep(0.1)
                 self._n_channels = len(rtm_event.channels)
 
-                has_stim = len(rtm_event.stim_channels) > 0
-                fov_index = rtm_event.index.get("p", 0)
-
-                # Convert to MDAEvents (stim_slm_image=None; we fill it below)
-                mda_events = rtm_event.to_mda_events(
+                # Defer stim-mask computation so imaging events reach
+                # the MDA queue first. plan_events returns a list, and
+                # build_slm blocks on get_stim_mask (up to 80 s). With
+                # the old code the imaging event sat un-queued while
+                # get_stim_mask waited for a pipeline mask that could
+                # never arrive — a deadlock that looked like a timeout.
+                #
+                # In "previous" mode at t=0 there is no predecessor
+                # mask, so suppress the stim event entirely. Firing a
+                # blank mask would still activate the DMD (mirror
+                # bleed-through can leak ~1% of nominal intensity), and
+                # omitting the ``slm_image`` leaves the DMD in its
+                # previously-latched state. Skipping the event is the
+                # only way to guarantee zero stim at t=0.
+                suppress = stim_mode == "previous" and rtm_event.index.get("t", 0) == 0
+                planned = rtm_event.plan_events(
+                    stim_mode=stim_mode,
+                    build_slm=None,
                     resolve_group=self._mic.resolve_group,
                     resolve_power=self._mic.resolve_power,
-                    stim_slm_image=None,
+                    suppress_stim=suppress,
                 )
-                img_events = [
-                    e
-                    for e in mda_events
-                    if e.metadata.get("img_type") != ImgType.IMG_STIM
-                ]
-                stim_events = [
-                    e
-                    for e in mda_events
-                    if e.metadata.get("img_type") == ImgType.IMG_STIM
-                ]
-
-                if stim_mode == "previous":
-                    # --- "previous" mode ---
-                    # Stim with mask from t-1, then acquire t. The mask from
-                    # t-1 is always available in the dispenser (non-stim frames
-                    # still compute+put one), so no guard is needed.
-                    # ``_build_stim_slm`` short-circuits to ``data=False`` at
-                    # frame 0 where t-1 doesn't exist.
-                    if has_stim and stim_events and self._mic.dmd:
-                        slm = self._build_stim_slm(rtm_event, stim_mode="previous")
-                        for ev in stim_events:
+                slm = None
+                for ev in planned:
+                    if ev.metadata.get("img_type") == ImgType.IMG_STIM:
+                        if slm is None and self._mic.dmd:
+                            slm = self._build_stim_slm(rtm_event, stim_mode=stim_mode)
+                        if slm is not None:
                             ev = ev.model_copy(update={"slm_image": slm})
-                            self._put_event(ev)
-
-                    # 2. Queue imaging + ref events
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                else:
-                    # --- "current" mode (default) ---
-                    # 1. Queue imaging + ref events first
-                    for ev in img_events:
-                        self._put_event(ev)
-
-                    # 2. Wait for mask, then queue stim events
-                    if has_stim and stim_events:
-                        stim_slm_image = None
-                        if self._mic.dmd:
-                            stim_slm_image = self._build_stim_slm(rtm_event)
-                        for ev in stim_events:
-                            if stim_slm_image is not None:
-                                ev = ev.model_copy(update={"slm_image": stim_slm_image})
-                            self._put_event(ev)
+                    self._put_event(ev)
         finally:
             self._event_queue = None
             self._queue.put(self.STOP_EVENT)
@@ -801,11 +845,20 @@ class Controller:
                 mda_thread.join()
             self._mic.disconnect_frame(self._on_frame_ready)
 
+        if self._fatal_error is not None:
+            fatal = self._fatal_error
+            self._fatal_error = None
+            raise fatal
+
     # ------------------------------------------------------------------
     # Frame handling
     # ------------------------------------------------------------------
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
+        # Drop subsequent frames after a fatal error — the MDA is winding down.
+        if self._fatal_error is not None:
+            return
+
         meta = event.metadata or {}
         img_type = meta.get("img_type", ImgType.IMG_RAW)
 
@@ -830,6 +883,15 @@ class Controller:
         # is correct even when ref_channels vary across timepoints.
         tp = (event.index.get("t", 0), event.index.get("p", 0))
         buf = self._frame_buffers.setdefault(tp, [])
+        if buf and buf[0].shape[-2:] != img.shape[-2:]:
+            # Channels at the same (t, p) came back at different sizes —
+            # almost always a sticky camera binning or ROI property.
+            self._abort_mda_from_callback(
+                f"Frame shape mismatch: channel {tuple(img.shape[-2:])} vs "
+                f"previous {tuple(buf[0].shape[-2:])} at index={dict(event.index)}. "
+                "Sticky camera Binning/ROI?"
+            )
+            return
         buf.append(img)
 
         n_expected = len(event.metadata.get("channels", ()))
@@ -839,6 +901,20 @@ class Controller:
             frame = np.stack(buf, axis=0)
             del self._frame_buffers[tp]
             self._analyzer.run(frame, event)
+
+    def _abort_mda_from_callback(self, message: str) -> None:
+        """Stash a fatal error and cancel the MDA from a psygnal callback.
+
+        Raising directly from frameReady would be swallowed by psygnal's
+        callback error handler, so we store the exception and cancel —
+        ``_run_mda_with_events`` re-raises after the MDA thread joins.
+        """
+        self._fatal_error = RuntimeError(message)
+        print(f"[Controller] FATAL: {message}")
+        try:
+            self._mic.cancel_mda()
+        except Exception:
+            traceback.print_exc()
 
     # ------------------------------------------------------------------
     # Stim helpers
@@ -863,16 +939,11 @@ class Controller:
         t = rtm_event.index.get("t", 0)
         if stim_mode == "previous":
             t -= 1
-            if t < 0:
-                # No previous-timepoint mask exists at frame 0. Avoid an
-                # 80 s wait on a frame that will never be produced, and
-                # a StimLine-style base Stim silently evaluating the
-                # stripe formula on a negative timestep.
-                return SLMImage(
-                    data=False,
-                    device=self._mic.dmd.name,
-                    exposure=stim_ch.exposure,
-                )
+            # Previous-mode t=0 has no predecessor mask. The controller
+            # passes ``suppress_stim=True`` to ``plan_events`` for that
+            # case, so no stim event should reach this method with
+            # ``t < 0``.
+            assert t >= 0, "previous-mode t=0 stim event reached _build_stim_slm"
         meta = {
             **rtm_event.metadata,
             "fov": fov_index,

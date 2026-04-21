@@ -69,18 +69,22 @@ def extract_and_merge_features(
     feature_extractor, segmentation_results, img, df_tracked, metadata
 ):
     """Run feature extraction and merge features into current-frame rows of df_tracked."""
-    if feature_extractor is not None:
-        features_df, masks_for_fe = feature_extractor.extract_features(
-            segmentation_results, img, df_tracked, metadata
+    if (
+        feature_extractor is None
+        or df_tracked.empty
+        or "fname" not in df_tracked.columns
+    ):
+        return None
+    features_df, masks_for_fe = feature_extractor.extract_features(
+        segmentation_results, img, df_tracked, metadata
+    )
+    feature_map = features_df.set_index("label")
+    current_mask = df_tracked["fname"] == metadata["fname"]
+    for col in feature_map.columns:
+        df_tracked.loc[current_mask, col] = df_tracked.loc[current_mask, "label"].map(
+            feature_map[col]
         )
-        feature_map = features_df.set_index("label")
-        current_mask = df_tracked["fname"] == metadata["fname"]
-        for col in feature_map.columns:
-            df_tracked.loc[current_mask, col] = df_tracked.loc[
-                current_mask, "label"
-            ].map(feature_map[col])
-        return masks_for_fe
-    return None
+    return masks_for_fe
 
 
 def dispatch_stim_mask(
@@ -461,10 +465,10 @@ class ImageProcessingPipeline:
         try:
             df_tracked = run_tracking(self.tracker, df_old, df_new, fov_obj)
 
-            masks_for_fe = extract_and_merge_features(
-                self.feature_extractor, segmentation_results, img, df_tracked, metadata
-            )
-
+            # Stim-mask compute happens before feature extraction so a FE
+            # crash can't hold up the controller waiting on a stim_mask
+            # that would otherwise never be put. (The finally still
+            # skip_frames on failure as a second line of defence.)
             if stim_needs_compute:
                 stim_mask = dispatch_stim_mask(
                     self.stimulator,
@@ -477,8 +481,17 @@ class ImageProcessingPipeline:
                     fov_obj.stim_mask_queue.put_for_frame(frame_idx, stim_mask)
                     stim_mask_put = True
 
+            masks_for_fe = extract_and_merge_features(
+                self.feature_extractor, segmentation_results, img, df_tracked, metadata
+            )
+
             if metadata.get("img_type") == ImgType.IMG_REF:
-                if self.feature_extractor_ref is not None and self.tracker is not None:
+                if (
+                    self.feature_extractor_ref is not None
+                    and self.tracker is not None
+                    and not df_tracked.empty
+                    and "particle" in df_tracked.columns
+                ):
                     df_tracked = self.feature_extractor_ref.extract_features(
                         segmentation_results,
                         img_ref if img_ref is not None else img,

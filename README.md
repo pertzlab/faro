@@ -79,25 +79,58 @@ The Controller converts RTMEvents to MDAEvents, queues them through the microsco
 
 ### Experiment Definition
 
-Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Multiple phases can be concatenated with `+`:
+Experiments are defined as `RTMSequence` objects — an extension of useq's `MDASequence`. Compose multi-step experiments with `combine()`, which supports two modes of composition via the `axis` argument:
 
 ```python
-from faro.core.data_structures import Channel, PowerChannel, RTMSequence
+from faro.core.data_structures import Channel, PowerChannel, RTMSequence, combine
+```
 
-phase_1 = RTMSequence(
+**Sequential phases (`axis="t"`).** Each phase runs after the previous one, same positions, with `t` indices and wall-clock times offset automatically:
+
+```python
+baseline = RTMSequence(
     time_plan={"interval": 60.0, "loops": 100},
     stage_positions=fov_positions,
     channels=[{"config": "miRFP", "exposure": 300}],
 )
-
-phase_2 = RTMSequence(
+treatment = RTMSequence(
     time_plan={"interval": 60.0, "loops": 150},
     stage_positions=fov_positions,
     channels=[{"config": "miRFP", "exposure": 300}],
 )
+washout = RTMSequence(...)
 
-events = phase_1 + phase_2
+events = combine(baseline, treatment, washout, axis="t")
 ```
+
+**Parallel sub-experiments (`axis="p"`).** Two (or more) setups running concurrently on different subsets of FOVs — useful when FOVs need different stim patterns, different stim schedules, or different treatment metadata, but should share the clock. Each sub-experiment keeps its own `stim_frames` and `rtm_metadata`:
+
+```python
+setup_a = RTMSequence(
+    time_plan={"interval": 10.0, "loops": 100},
+    stage_positions=fovs_1_to_5,
+    channels=[{"config": "miRFP", "exposure": 300}],
+    stim_channels=(stim_pattern_a,),
+    stim_frames={10, 20, 30},
+    rtm_metadata={"treatment": "DMSO"},
+)
+setup_b = RTMSequence(
+    time_plan={"interval": 10.0, "loops": 100},
+    stage_positions=fovs_6_to_10,
+    channels=[{"config": "miRFP", "exposure": 300}],  # must match setup_a
+    stim_channels=(stim_pattern_b,),
+    stim_frames={15, 25, 35},
+    rtm_metadata={"treatment": "drug"},
+)
+
+events = combine(setup_a, setup_b, axis="p")
+# At each timepoint: FOVs 0-4 image with setup_a's stim schedule,
+# FOVs 5-9 image with setup_b's — all in parallel on the same clock.
+```
+
+**Precondition for `axis="p"`:** all sub-experiments must declare the same imaging channels. The writer allocates a single channel set across all positions, so heterogeneous channels per FOV are not supported today (tracked for the eventual useq-schema v2 migration). A `ValueError` is raised at call time if channel configs differ.
+
+`combine()` is variadic (`combine(a, b, c, d, ..., axis=...)`), handles the N=0 and N=1 degenerate cases, and is the only composition primitive — there is deliberately no shorthand operator, so every multi-step experiment reads the composition axis explicitly.
 
 ### Stimulation
 
@@ -131,7 +164,7 @@ seq = RTMSequence(
 )
 ```
 
-Alternatively, define the reference as a separate phase:
+Alternatively, define the reference as a separate phase and chain it with `combine`:
 
 ```python
 experiment = RTMSequence(time_plan=..., channels=..., ...)
@@ -141,7 +174,7 @@ ref_phase  = RTMSequence(
     channels=[{"config": "mCitrine", "exposure": 600}],
     rtm_metadata={"img_type": ImgType.IMG_REF},
 )
-events = experiment + ref_phase
+events = combine(experiment, ref_phase, axis="t")
 ```
 
 ### Frame Specification
