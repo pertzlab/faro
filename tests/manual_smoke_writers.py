@@ -47,12 +47,28 @@ class Scenario:
     name: str
     n_pos: int
     writer_cls: type
+    skip_napari_labels: str | None = None
 
+
+# Plate-label napari skip rationale — unskip when both upstream PRs land:
+#   ome/ome-zarr-py reader.py has ``# self.add(zarr, plate_labels=True)``
+#   commented out (line ~58). PR ome/ome-zarr-py#207 closed unmerged;
+#   companion PR ome/napari-ome-zarr#54 still open. Tracking issue
+#   ome/ome-zarr-py#65.
+_PLATE_LABELS_SKIP = (
+    "napari-ome-zarr does not surface per-well label groups; "
+    "see ome/ome-zarr-py#65, ome/napari-ome-zarr#54"
+)
 
 SCENARIOS: dict[str, Scenario] = {
     "direct": Scenario("multi-pos direct", n_pos=3, writer_cls=OmeZarrWriter),
     "stream": Scenario("single-pos stream", n_pos=1, writer_cls=OmeZarrWriter),
-    "plate": Scenario("plate", n_pos=3, writer_cls=OmeZarrWriterPlate),
+    "plate": Scenario(
+        "plate",
+        n_pos=3,
+        writer_cls=OmeZarrWriterPlate,
+        skip_napari_labels=_PLATE_LABELS_SKIP,
+    ),
 }
 
 
@@ -171,6 +187,34 @@ def validate(zarr_path: Path, scenario: Scenario) -> None:
         validate_direct_store(zarr_path, scenario.n_pos)
 
 
+def _layer_shape(layer) -> tuple[int, ...]:
+    """Highest-resolution shape of a napari layer (handles multiscale)."""
+    data = layer.data
+    if isinstance(data, list):
+        return tuple(data[0].shape)
+    return tuple(data.shape)
+
+
+def _expected_layer_shapes(scenario: Scenario) -> dict[str, tuple[int, ...]]:
+    """Per-layer shape after napari's channel_axis split.
+
+    Image layers drop the channel axis (split into one layer each).
+    Plate tiles wells along x: width becomes ``IMAGE_W * n_pos``.
+    """
+    if scenario.writer_cls is OmeZarrWriterPlate:
+        img_shape = (N_T, IMAGE_H, IMAGE_W * scenario.n_pos)
+        return {name: img_shape for name in IMG_CHANNEL_NAMES + ["stim_0"]}
+
+    if scenario.n_pos > 1:
+        img_shape = (N_T, scenario.n_pos, IMAGE_H, IMAGE_W)
+    else:
+        img_shape = (N_T, IMAGE_H, IMAGE_W)
+    return {
+        **{name: img_shape for name in IMG_CHANNEL_NAMES + ["stim_0"]},
+        "labels": img_shape,
+    }
+
+
 def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None:
     try:
         import napari
@@ -207,12 +251,42 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
         else:
             viewer.add_image(data, **{k: v for k, v in meta.items() if k in ("name", "channel_axis", "colormap", "scale")})
 
-    print(f"  [napari] viewer has {len(viewer.layers)} layer(s): "
-          f"{[l.name for l in viewer.layers]}")
+    layer_names = [layer.name for layer in viewer.layers]
+    print(f"  [napari] viewer has {len(viewer.layers)} layer(s): {layer_names}")
 
     screenshot_path = zarr_path.parent / f"{scenario.writer_cls.__name__}_{scenario.n_pos}pos.png"
     viewer.screenshot(str(screenshot_path), canvas_only=False)
     print(f"  [napari] screenshot -> {screenshot_path}")
+
+    expected_shapes = _expected_layer_shapes(scenario)
+    for layer in viewer.layers:
+        if layer.name not in expected_shapes:
+            continue
+        actual = _layer_shape(layer)
+        expected = expected_shapes[layer.name]
+        if actual != expected:
+            viewer.close()
+            raise AssertionError(
+                f"{scenario.name}: layer {layer.name!r} shape {actual} "
+                f"!= expected {expected}"
+            )
+        print(f"  [napari] shape OK  {layer.name!r}: {actual}")
+
+    labels_loaded = "labels" in layer_names
+    if scenario.skip_napari_labels is None:
+        if not labels_loaded:
+            viewer.close()
+            raise AssertionError(
+                f"{scenario.name}: expected a 'labels' layer in napari, "
+                f"got {layer_names}"
+            )
+    elif labels_loaded:
+        print(
+            f"  [napari] !! UNSKIP: {scenario.name} now surfaces labels in "
+            f"napari — remove skip_napari_labels (was: {scenario.skip_napari_labels})"
+        )
+    else:
+        print(f"  [napari] xfail (skipped): {scenario.skip_napari_labels}")
 
     if keep_open:
         print("  [napari] close the viewer window to continue...")
