@@ -2,11 +2,7 @@ from .base import StimWithPipeline
 import numpy as np
 import skimage
 import math
-from skimage.morphology import disk
-
-# import skimage binary_dilation under a local name and provide a scipy fallback
-from skimage.morphology import binary_dilation as skimage_binary_dilation
-from scipy.ndimage import binary_dilation as scipy_binary_dilation
+from skimage.morphology import dilation, disk
 
 
 class StimPercentageOfCell(StimWithPipeline):
@@ -65,11 +61,11 @@ class StimPercentageOfCell(StimWithPipeline):
                 orientation = prop.orientation
 
                 # point on major axis where cutoff starts
-                x2 = x0 - math.sin(orientation) * extent * prop.major_axis_length
-                y2 = y0 - math.cos(orientation) * extent * prop.major_axis_length
+                x2 = x0 - math.sin(orientation) * extent * prop.axis_major_length
+                y2 = y0 - math.cos(orientation) * extent * prop.axis_major_length
 
-                # second point to define line segment (use minor_axis_length/2)
-                length = 0.5 * prop.minor_axis_length
+                # second point to define line segment (use axis_minor_length/2)
+                length = 0.5 * prop.axis_minor_length
                 x3 = x2 + (length * math.cos(-orientation))
                 y3 = y2 + (length * math.sin(-orientation))
 
@@ -87,23 +83,9 @@ class StimPercentageOfCell(StimWithPipeline):
                 cross_product = v1_x * v2_y - v1_y * v2_x
                 cutoff_mask_sub = cross_product > 0
 
-                # expand the labeled region locally in a version-compatible way
-                try:
-                    # newest skimage uses 'footprint'
-                    expanded_sub = skimage_binary_dilation(
-                        single_label_sub, footprint=selem
-                    )
-                except TypeError:
-                    try:
-                        # older skimage used 'selem'
-                        expanded_sub = skimage_binary_dilation(
-                            single_label_sub, selem=selem
-                        )
-                    except TypeError:
-                        # fallback to scipy implementation (uses 'structure')
-                        expanded_sub = scipy_binary_dilation(
-                            single_label_sub, structure=selem
-                        )
+                # expand the labeled region locally (disk footprint: symmetric,
+                # so no mirroring caveat)
+                expanded_sub = dilation(single_label_sub, footprint=selem)
 
                 stim_mask_sub = np.logical_and(cutoff_mask_sub, expanded_sub)
 

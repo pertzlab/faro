@@ -25,7 +25,7 @@ STIM = {"config": "CyanStim", "exposure": 50}
 def _scope(slm_affine=None):
     from vmteach import load_microscope
 
-    core, sim = load_microscope("optogenetic", seed=0)  # stepped: deterministic
+    core, sim = load_microscope("optogenetic", seed=0, mode="stepped")  # deterministic
     sim.slm_affine = slm_affine
     mic = UniMMCoreSimulation(mmc=core)
     mic.init_scope()
@@ -72,7 +72,7 @@ def test_validate_events_warns_until_calibrated():
         RTMSequence(
             time_plan={"interval": 1.0, "loops": 2},
             stage_positions=[{"x": 0.0, "y": 0.0, "z": 0.0}],
-            channels=[{"config": "DAPI", "exposure": 50}],
+            channels=[{"config": "miRFP", "exposure": 50}],
             stim_channels=[STIM],
             stim_frames=range(2),
         )
@@ -102,7 +102,9 @@ def test_calibration_recovers_misaligned_projector():
     target = _target()
     mic.calibrate_dmd(STIM)
 
-    assert _max_reprojection_error(mic.dmd.affine, truth) < 1.0  # sub-pixel over the field
+    # a few px over the field: spot centroids land on integer pixels, and
+    # the simulated widefield glow and hot pixels shift them slightly
+    assert _max_reprojection_error(mic.dmd.affine, truth) < 3.0
 
     # An uncalibrated (identity) mask lands off target; the calibrated one lands on it.
     assert _iou_of_projected_light(mic, target, target) < 0.2

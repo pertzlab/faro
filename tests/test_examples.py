@@ -243,7 +243,7 @@ def _make_source_run(path: Path) -> Path:
         RTMSequence(
             time_plan={"interval": 0.3, "loops": 3},
             stage_positions=[{"x": 0.0, "y": 0.0, "z": 0.0}],
-            channels=[{"config": "DAPI", "exposure": 50}],
+            channels=[{"config": "miRFP", "exposure": 50}],
         )
     )
     ctrl = Controller(mic, pipeline, writer=OmeZarrWriter(storage_path=str(path)))
