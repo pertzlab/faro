@@ -94,7 +94,7 @@ class DMD:
         """
         props = self._calibration_properties(channel, power)
         if props:
-            (device, prop, value), = props  # always exactly one: the LED power
+            ((device, prop, value),) = props  # always exactly one: the LED power
             self.mmc.setProperty(device, prop, value)
 
     def affine_transform(self, img):
@@ -347,8 +347,13 @@ class DMD:
             ):
                 ax.imshow(img, cmap="gray")
                 ax.scatter(
-                    mx, my, marker="o", s=120,
-                    facecolors="none", edgecolors="red", linewidths=1.2,
+                    mx,
+                    my,
+                    marker="o",
+                    s=120,
+                    facecolors="none",
+                    edgecolors="red",
+                    linewidths=1.2,
                 )
                 ax.set_title(f"DMD ({sx},{sy}) -> cam ({mx},{my})", fontsize=8)
                 ax.axis("off")
@@ -435,13 +440,23 @@ class DMD:
             for i in range(3):
                 axs[i].imshow(test_image[i], cmap="gray")
                 axs[i].scatter(
-                    test_dst[i][0], test_dst[i][1], marker="o", s=120,
-                    facecolors="none", edgecolors="red", linewidths=1.2,
+                    test_dst[i][0],
+                    test_dst[i][1],
+                    marker="o",
+                    s=120,
+                    facecolors="none",
+                    edgecolors="red",
+                    linewidths=1.2,
                     label="detected" if i == 0 else None,
                 )
                 axs[i].scatter(
-                    test_src[i][0], test_src[i][1], marker="o", s=120,
-                    facecolors="none", edgecolors="lime", linewidths=1.2,
+                    test_src[i][0],
+                    test_src[i][1],
+                    marker="o",
+                    s=120,
+                    facecolors="none",
+                    edgecolors="lime",
+                    linewidths=1.2,
                     label="requested" if i == 0 else None,
                 )
                 if i == 0:
@@ -449,12 +464,22 @@ class DMD:
 
             for i in range(3):
                 axs[3].scatter(
-                    test_dst[i][0], test_dst[i][1], marker="o", s=120,
-                    facecolors="none", edgecolors="red", linewidths=1.2,
+                    test_dst[i][0],
+                    test_dst[i][1],
+                    marker="o",
+                    s=120,
+                    facecolors="none",
+                    edgecolors="red",
+                    linewidths=1.2,
                 )
                 axs[3].scatter(
-                    test_src[i][0], test_src[i][1], marker="o", s=120,
-                    facecolors="none", edgecolors="lime", linewidths=1.2,
+                    test_src[i][0],
+                    test_src[i][1],
+                    marker="o",
+                    s=120,
+                    facecolors="none",
+                    edgecolors="lime",
+                    linewidths=1.2,
                 )
             axs[3].set_xlim(0, camera_width)
             axs[3].set_ylim(camera_height, 0)

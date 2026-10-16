@@ -34,6 +34,7 @@ def _make_events(*, channels=None, stim_channels=None, n=3):
 # Config existence checks
 # ===================================================================
 
+
 class TestChannelConfigExistence:
 
     def test_valid_config_passes(self):
@@ -75,10 +76,12 @@ class TestChannelConfigExistence:
 
     def test_multiple_groups_searched(self):
         """Config can be in any group — not just 'Channel'."""
-        mmc = _core(config_groups={
-            "Channel": ["phase-contrast"],
-            "Laser": ["488nm", "561nm"],
-        })
+        mmc = _core(
+            config_groups={
+                "Channel": ["phase-contrast"],
+                "Laser": ["488nm", "561nm"],
+            }
+        )
         events = _make_events(channels=[Channel("561nm", 50)])
         assert validate_hardware(events, mmc) is True
 
@@ -106,6 +109,7 @@ class TestChannelConfigExistence:
 # ===================================================================
 # Exposure range checks
 # ===================================================================
+
 
 class TestExposureLimits:
 
@@ -173,6 +177,7 @@ class TestExposureLimits:
 # ===================================================================
 # Device property (power) limit checks
 # ===================================================================
+
 
 class TestDevicePropertyLimits:
 
@@ -247,13 +252,16 @@ class TestDevicePropertyLimits:
 # Combined checks
 # ===================================================================
 
+
 class TestCombinedHardwareValidation:
 
     def test_all_good_passes(self):
-        mmc = _core(property_limits={
-            ("Camera", "Exposure"): (0.0, 100.0),
-            ("LED", "Intensity"): (0.0, 100.0),
-        })
+        mmc = _core(
+            property_limits={
+                ("Camera", "Exposure"): (0.0, 100.0),
+                ("LED", "Intensity"): (0.0, 100.0),
+            }
+        )
         power_props = {"phase-contrast": ("LED", "Intensity")}
         events = _make_events(
             channels=[PowerChannel("phase-contrast", 50, power=50)],
@@ -262,10 +270,12 @@ class TestCombinedHardwareValidation:
 
     def test_multiple_problems_all_reported(self):
         """Bad config + bad exposure + bad power → three warnings."""
-        mmc = _core(property_limits={
-            ("Camera", "Exposure"): (0.0, 100.0),
-            ("LED", "Intensity"): (0.0, 50.0),
-        })
+        mmc = _core(
+            property_limits={
+                ("Camera", "Exposure"): (0.0, 100.0),
+                ("LED", "Intensity"): (0.0, 50.0),
+            }
+        )
         power_props = {"MISSING-CHANNEL": ("LED", "Intensity")}
         events = _make_events(
             channels=[PowerChannel("MISSING-CHANNEL", 200, power=999)],
@@ -277,7 +287,7 @@ class TestCombinedHardwareValidation:
 
         assert result is False
         messages = " ".join(str(x.message) for x in w)
-        assert "not found" in messages        # config check
+        assert "not found" in messages  # config check
         assert "exceeds camera maximum" in messages  # exposure check
         assert "exceeds device maximum" in messages  # power check
 
@@ -290,11 +300,13 @@ class TestCombinedHardwareValidation:
 # Microscope-level validation (mic.validate_events flow)
 # ===================================================================
 
+
 class TestAbstractMicroscopeValidateHardware:
     """AbstractMicroscope.validate_hardware is a no-op (returns True)."""
 
     def test_base_validate_hardware_returns_true(self):
         from faro.microscope.base import AbstractMicroscope
+
         mic = AbstractMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
@@ -302,6 +314,7 @@ class TestAbstractMicroscopeValidateHardware:
     def test_base_validate_hardware_without_pipeline(self):
         """validate_hardware works standalone (no pipeline involved)."""
         from faro.microscope.base import AbstractMicroscope
+
         mic = AbstractMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
@@ -312,12 +325,14 @@ class TestPyMMCoreMicroscopeValidateHardware:
 
     def test_no_mmc_returns_true(self):
         from faro.microscope.pymmcore import PyMMCoreMicroscope
+
         mic = PyMMCoreMicroscope()
         events = _make_events(channels=[Channel("anything", 50)])
         assert mic.validate_hardware(events) is True
 
     def test_delegates_to_utils(self):
         from faro.microscope.pymmcore import PyMMCoreMicroscope
+
         mic = PyMMCoreMicroscope()
         mic.mmc = _core()
         events = _make_events(channels=[Channel("phase-contrast", 50)])
@@ -325,6 +340,7 @@ class TestPyMMCoreMicroscopeValidateHardware:
 
     def test_delegates_detects_bad_channel(self):
         from faro.microscope.pymmcore import PyMMCoreMicroscope
+
         mic = PyMMCoreMicroscope()
         mic.mmc = _core()
         events = _make_events(channels=[Channel("MISSING", 50)])

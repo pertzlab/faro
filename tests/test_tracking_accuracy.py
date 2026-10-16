@@ -262,12 +262,12 @@ def _score(mic: FakeMicroscope, df: pd.DataFrame) -> dict:
     return {
         "coverage": coverage,
         "n_gt_trails_tracked": len(switches_per_trail),
-        "median_switches": float(np.median(switches_per_trail))
-        if switches_per_trail
-        else 0.0,
-        "mean_dominant_fraction": float(np.mean(dominant_fraction))
-        if dominant_fraction
-        else 0.0,
+        "median_switches": (
+            float(np.median(switches_per_trail)) if switches_per_trail else 0.0
+        ),
+        "mean_dominant_fraction": (
+            float(np.mean(dominant_fraction)) if dominant_fraction else 0.0
+        ),
     }
 
 
@@ -298,8 +298,8 @@ def test_tracker_recovers_gt_trajectories(tmp_dir, tracker_factory, name):
 
     # Tracking quality: of the GT trails that produced ≥2 matched frames,
     # the tracker should link ≥90% of them under a single particle ID.
-    assert (
-        score["n_gt_trails_tracked"] >= int(0.9 * N_CELLS)
+    assert score["n_gt_trails_tracked"] >= int(
+        0.9 * N_CELLS
     ), f"{name}: only {score['n_gt_trails_tracked']}/{N_CELLS} GT trails had ≥2 matches"
     assert (
         score["mean_dominant_fraction"] >= 0.90
@@ -346,9 +346,9 @@ def test_stim_masks_centered_on_cells(tmp_dir, stim_mode):
 
     slm_events = mic.scene.slm_events
     # One SLM event per stim frame.
-    assert len(slm_events) == len(stim_frames), (
-        f"Expected {len(stim_frames)} SLM events, got {len(slm_events)}"
-    )
+    assert len(slm_events) == len(
+        stim_frames
+    ), f"Expected {len(stim_frames)} SLM events, got {len(slm_events)}"
 
     gt_offset = -1 if stim_mode == "previous" else 0
     distances = []

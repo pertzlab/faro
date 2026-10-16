@@ -199,9 +199,7 @@ class TrackerMotile(Tracker):
             for j in range(n_det)
         )
         G.add_edges_from(
-            (i, det_offset + j)
-            for i, js in enumerate(neighbors)
-            for j in js
+            (i, det_offset + j) for i, js in enumerate(neighbors) for j in js
         )
 
         tg = motile.TrackGraph(G, frame_attribute="t")

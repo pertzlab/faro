@@ -88,7 +88,8 @@ class DummySegmentator(Segmentator):
 
     def segment(self, image: np.ndarray) -> np.ndarray:
         return np.ones_like(image)
-    
+
+
 class OtsuSegmentator(Segmentator):
     """
     Otsu segmentator.
@@ -107,5 +108,3 @@ class OtsuSegmentator(Segmentator):
         binary_image = image_gaussian > thresh
         label_image = label(binary_image)
         return label_image
-    
-

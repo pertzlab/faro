@@ -71,7 +71,5 @@ class CellposeV4(Segmentator):
 
         if self.min_size > 0:
             # remove cells below threshold
-            masks = remove_small_objects(
-                masks, min_size=self.min_size, connectivity=1
-            )
+            masks = remove_small_objects(masks, min_size=self.min_size, connectivity=1)
         return masks

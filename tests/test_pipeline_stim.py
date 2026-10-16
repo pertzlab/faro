@@ -126,6 +126,7 @@ class TestEndToEndStimPrevious:
             rows = df[df["particle"] == pid]
             assert len(rows) == N_TIMEPOINTS
 
+
 class MetadataOnlyStim(Stim):
     """Base Stim — returns all-ones mask using only metadata["img_shape"]."""
 
@@ -281,6 +282,8 @@ class TestStimModeCurrentAtFrameZero:
         event_t, slm_image = self.mic.scene.slm_events[0]
         assert event_t == 0
         assert _sole_mask_value(slm_image) == 0
+
+
 def _make_multi_fov_events(
     n_timepoints: int, *, stim_frames_per_fov: dict[int, tuple[int, ...]]
 ) -> list[RTMEvent]:
@@ -402,9 +405,7 @@ class TestStimModePreviousPipelineCrashDoesNotDeadlock:
     def test_warnings_land_in_experiment_log(self):
         # The run mirrors faro log records into log.txt in the experiment
         # folder, so the fallback warnings survive the console.
-        content = open(
-            os.path.join(self.path, "log.txt"), encoding="utf-8"
-        ).read()
+        content = open(os.path.join(self.path, "log.txt"), encoding="utf-8").read()
         assert content.count("ALL-OFF") == 2
 
     def test_log_handler_detached_after_run(self):
@@ -482,6 +483,7 @@ class TestPreviousModeComputesOnEveryFrame:
 
     def test_stim_computed_on_every_frame(self):
         assert sorted(self.stim.call_timesteps) == [0, 1, 2, 3, 4]
+
 
 @pytest.mark.parametrize(
     "stim_mode, tag_offset",
@@ -706,6 +708,7 @@ class TestStimWithImagePrevious:
 # Stress test helpers
 # ===================================================================
 
+
 class TestStimMaskTimeout:
     """Analyzer.get_stim_mask records a background error when the queue times out.
 
@@ -718,9 +721,7 @@ class TestStimMaskTimeout:
 
     @pytest.fixture
     def analyzer(self, tmp_dir, tracker) -> Iterator[Analyzer]:
-        pipeline = _make_pipeline(
-            tmp_dir, tracker=tracker, stimulator=ImageBasedStim()
-        )
+        pipeline = _make_pipeline(tmp_dir, tracker=tracker, stimulator=ImageBasedStim())
         instance = Analyzer(pipeline=pipeline)
         yield instance
         instance.shutdown(wait=True)
@@ -752,4 +753,3 @@ class TestStimMaskTimeout:
 # ===================================================================
 # Test Class: empty-frame edge cases (no cells detected)
 # ===================================================================
-

@@ -144,7 +144,9 @@ def _synthetic_label(t: int, p: int) -> np.ndarray:
 
 
 def run_scenario(scenario: Scenario, out_dir: Path) -> Path:
-    print(f"\n=== {scenario.name} ({scenario.writer_cls.__name__}, n_pos={scenario.n_pos}) ===")
+    print(
+        f"\n=== {scenario.name} ({scenario.writer_cls.__name__}, n_pos={scenario.n_pos}) ==="
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     position_names = [f"Pos{i}" for i in range(scenario.n_pos)]
@@ -195,9 +197,7 @@ def validate_direct_store(zarr_path: Path, n_pos: int) -> None:
 
     ome = root.attrs["ome"]
     axes = [a["name"] for a in ome["multiscales"][0]["axes"]]
-    expected_axes = (
-        ["t", "p", "c", "y", "x"] if n_pos > 1 else ["t", "c", "y", "x"]
-    )
+    expected_axes = ["t", "p", "c", "y", "x"] if n_pos > 1 else ["t", "c", "y", "x"]
     assert axes == expected_axes, f"axes {axes} != {expected_axes}"
 
     channel_labels = [c["label"] for c in ome["omero"]["channels"]]
@@ -300,15 +300,23 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
         if isinstance(data, list):
             shapes = [getattr(d, "shape", None) for d in data]
             dtypes = [str(getattr(d, "dtype", "?")) for d in data]
-            print(f"    [{i}] {name!r} type={ltype} multiscale={shapes} dtypes={dtypes}")
+            print(
+                f"    [{i}] {name!r} type={ltype} multiscale={shapes} dtypes={dtypes}"
+            )
         else:
-            print(f"    [{i}] {name!r} type={ltype} shape={getattr(data, 'shape', None)} "
-                  f"dtype={getattr(data, 'dtype', '?')}")
+            print(
+                f"    [{i}] {name!r} type={ltype} shape={getattr(data, 'shape', None)} "
+                f"dtype={getattr(data, 'dtype', '?')}"
+            )
 
         if ltype == "labels":
-            viewer.add_labels(data, **{k: v for k, v in meta.items() if k in _LABELS_META_KEYS})
+            viewer.add_labels(
+                data, **{k: v for k, v in meta.items() if k in _LABELS_META_KEYS}
+            )
         else:
-            viewer.add_image(data, **{k: v for k, v in meta.items() if k in _IMAGE_META_KEYS})
+            viewer.add_image(
+                data, **{k: v for k, v in meta.items() if k in _IMAGE_META_KEYS}
+            )
 
     axis_labels = _napari_axis_labels(scenario)
     viewer.dims.axis_labels = axis_labels
@@ -317,7 +325,9 @@ def open_in_napari(zarr_path: Path, scenario: Scenario, keep_open: bool) -> None
     layer_names = [layer.name for layer in viewer.layers]
     print(f"  [napari] viewer has {len(viewer.layers)} layer(s): {layer_names}")
 
-    screenshot_path = zarr_path.parent / f"{scenario.writer_cls.__name__}_{scenario.n_pos}pos.png"
+    screenshot_path = (
+        zarr_path.parent / f"{scenario.writer_cls.__name__}_{scenario.n_pos}pos.png"
+    )
     viewer.screenshot(str(screenshot_path), canvas_only=False)
     print(f"  [napari] screenshot -> {screenshot_path}")
 

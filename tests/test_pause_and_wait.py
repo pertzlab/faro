@@ -43,8 +43,7 @@ from tests.fixtures import CircleScene, make_events, make_pipeline
 def _spaced(events: list[RTMEvent], dt: float) -> list[RTMEvent]:
     """Stamp ``min_start_time = i*dt`` so the MDA engine paces itself."""
     return [
-        e.model_copy(update={"min_start_time": i * dt})
-        for i, e in enumerate(events)
+        e.model_copy(update={"min_start_time": i * dt}) for i, e in enumerate(events)
     ]
 
 
@@ -78,13 +77,13 @@ def _run_capture_zarr(path: str, events, *, pause: bool) -> np.ndarray:
 
     handle = ctrl.run_experiment(events, validate=False)
     if pause:
-        assert _wait_until(lambda: handle.status().n_events_consumed >= 2), (
-            "run finished before it could be paused — widen spacing"
-        )
+        assert _wait_until(
+            lambda: handle.status().n_events_consumed >= 2
+        ), "run finished before it could be paused — widen spacing"
         handle.pause()
-        assert _wait_until(lambda: handle.status().state == "paused"), (
-            "feed loop never reported the paused state"
-        )
+        assert _wait_until(
+            lambda: handle.status().state == "paused"
+        ), "feed loop never reported the paused state"
         handle.resume()
     handle.wait()
     ctrl._analyzer.wait_idle()
@@ -123,9 +122,7 @@ class TestWaitEventSemantics:
     def test_wait_shifts_subsequent_min_start_time(self):
         duration = 10.0
         no_wait = combine(make_events(3), make_events(3), axis="t")
-        with_wait = combine(
-            make_events(3), wait(duration), make_events(3), axis="t"
-        )
+        with_wait = combine(make_events(3), wait(duration), make_events(3), axis="t")
 
         # The second phase begins at the first event with t == 3.
         def first_second_phase_time(events):
@@ -147,9 +144,7 @@ class TestWaitEventSemantics:
 class TestWaitEventRun:
     def test_wait_adds_no_frames(self, tmp_dir):
         """A wait between two 2-frame phases yields exactly 4 raw frames."""
-        events = combine(
-            make_events(2), wait(0.05), make_events(2), axis="t"
-        )
+        events = combine(make_events(2), wait(0.05), make_events(2), axis="t")
         pipeline = make_pipeline(tmp_dir, tracker=_trackpy(), with_stim=False)
         ctrl = Controller(FakeMicroscope(CircleScene()), pipeline)
         handle = ctrl.run_experiment(events, validate=False)
@@ -166,7 +161,11 @@ class TestWaitEventRun:
         seen_waiting = []
         handle = ctrl.run_experiment(events, validate=False)
         handle.statusChanged.connect(
-            lambda s: seen_waiting.append(s.state == "waiting") if s.state == "waiting" else None
+            lambda s: (
+                seen_waiting.append(s.state == "waiting")
+                if s.state == "waiting"
+                else None
+            )
         )
         handle.wait()
         ctrl.finish_experiment()

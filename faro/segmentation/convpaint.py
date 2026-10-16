@@ -43,7 +43,5 @@ class SegmentatorConvpaint(Segmentator):
             )
         labels = skimage.morphology.label(labels)
         if self.min_cell_size > 0:
-            labels = remove_small_objects(
-                labels, min_size=self.min_cell_size
-            )
+            labels = remove_small_objects(labels, min_size=self.min_cell_size)
         return labels

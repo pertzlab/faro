@@ -73,6 +73,19 @@ class Writer(Protocol):
         """
         ...
 
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        """Read back the reference channels of a reference frame.
+
+        A reference frame is stored in two parts: its imaging channels as
+        ``"raw"`` and its reference channels as ``"ref"``. The deferred
+        pipeline path needs both: ``read_raw`` for the imaging channels and
+        this method for the reference channels.
+
+        Args:
+            metadata: Event metadata (must contain 'fname', 'fov', 'timestep').
+        """
+        ...
+
     def save_events(self, events) -> None:
         """Save acquisition events as ``events.json`` in the storage path."""
         ...
@@ -116,9 +129,11 @@ class TiffWriter:
 
     def read_raw(self, metadata: dict) -> np.ndarray:
         fname = metadata["fname"]
-        return tifffile.imread(
-            os.path.join(self.storage_path, "raw", fname + ".tiff")
-        )
+        return tifffile.imread(os.path.join(self.storage_path, "raw", fname + ".tiff"))
+
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        fname = metadata["fname"]
+        return tifffile.imread(os.path.join(self.storage_path, "ref", fname + ".tiff"))
 
     def save_events(self, events) -> None:
         from faro.core.conversion import save_events_json
@@ -591,9 +606,7 @@ class OmeZarrWriter:
 
     def _leading_index(self, metadata: dict) -> tuple[int, ...]:
         """Build the leading index tuple for a direct-mode write."""
-        return tuple(
-            metadata.get(_META_KEY.get(k, k), 0) for k in self._axis_keys
-        )
+        return tuple(metadata.get(_META_KEY.get(k, k), 0) for k in self._axis_keys)
 
     def _maybe_resize_leading(self, arr, leading_idx: tuple[int, ...]) -> None:
         """Grow any growable leading axis that the incoming write exceeds."""
@@ -639,7 +652,7 @@ class OmeZarrWriter:
                     # almost always clears it.
                     last_err = e
                     if attempt + 1 < _WRITE_RETRY_ATTEMPTS:
-                        time.sleep(_WRITE_RETRY_BASE_DELAY * (2 ** attempt))
+                        time.sleep(_WRITE_RETRY_BASE_DELAY * (2**attempt))
             assert last_err is not None
             raise last_err
 
@@ -671,6 +684,14 @@ class OmeZarrWriter:
             else:
                 frame = np.asarray(self._read_raw_from_disk(metadata))
         return self._strip_stim_channels(frame)
+
+    def read_ref(self, metadata: dict) -> np.ndarray:
+        """Read back the reference channels of a reference frame.
+
+        This writer stores reference frames as TIFF files (see ``write``), so
+        the TIFF writer reads them back.
+        """
+        return self._tiff.read_ref(metadata)
 
     def _read_raw_from_disk(self, metadata: dict) -> np.ndarray:
         """Read a raw frame from the on-disk store. ``(c, y, x)``, stim kept.
@@ -801,7 +822,9 @@ class OmeZarrWriter:
         self._maybe_resize_leading(arr, leading_idx)
 
         if img.ndim == 3:
-            arr[leading_idx + (slice(None, img.shape[0]), slice(None), slice(None))] = img
+            arr[leading_idx + (slice(None, img.shape[0]), slice(None), slice(None))] = (
+                img
+            )
         elif img.ndim == 2:
             arr[leading_idx + (0, slice(None), slice(None))] = img
         self._raw_max_t = max(self._raw_max_t, metadata.get("timestep", 0))
@@ -820,11 +843,17 @@ class OmeZarrWriter:
             self._maybe_resize_leading(self._raw_array, leading_idx)
             stim_start = self._n_imaging_channels
             if frame.ndim == 2:
-                self._raw_array[leading_idx + (stim_start, slice(None), slice(None))] = frame
+                self._raw_array[
+                    leading_idx + (stim_start, slice(None), slice(None))
+                ] = frame
             else:
                 self._raw_array[
                     leading_idx
-                    + (slice(stim_start, stim_start + frame.shape[0]), slice(None), slice(None))
+                    + (
+                        slice(stim_start, stim_start + frame.shape[0]),
+                        slice(None),
+                        slice(None),
+                    )
                 ] = frame
             return
 

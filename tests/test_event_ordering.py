@@ -27,13 +27,13 @@ from faro.core.data_structures import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _tp(ev: RTMEvent) -> tuple[int, int]:
     """Extract (t, p) tuple from an RTMEvent."""
     return (ev.index["t"], ev.index["p"])
 
 
-def _make_seq(*, n_time=3, n_pos=2, n_ch=1, axis_order="tpcz",
-              stim_frames=frozenset()):
+def _make_seq(*, n_time=3, n_pos=2, n_ch=1, axis_order="tpcz", stim_frames=frozenset()):
     """Build an RTMSequence with sensible defaults."""
     channels = [{"config": f"ch{i}", "exposure": 50} for i in range(n_ch)]
     positions = [(i * 100.0, i * 100.0, 0.0) for i in range(n_pos)]
@@ -54,6 +54,7 @@ def _make_seq(*, n_time=3, n_pos=2, n_ch=1, axis_order="tpcz",
 # axis_order: iteration ordering
 # ===================================================================
 
+
 class TestAxisOrder:
     """iter_events() respects axis_order for (t, p) nesting."""
 
@@ -62,9 +63,12 @@ class TestAxisOrder:
         events = list(_make_seq(n_time=3, n_pos=2, axis_order="tpcz"))
         tp_order = [_tp(e) for e in events]
         assert tp_order == [
-            (0, 0), (0, 1),
-            (1, 0), (1, 1),
-            (2, 0), (2, 1),
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 0),
+            (2, 1),
         ]
 
     def test_ptcz_position_outermost(self):
@@ -72,25 +76,36 @@ class TestAxisOrder:
         events = list(_make_seq(n_time=3, n_pos=2, axis_order="ptcz"))
         tp_order = [_tp(e) for e in events]
         assert tp_order == [
-            (0, 0), (1, 0), (2, 0),
-            (0, 1), (1, 1), (2, 1),
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
         ]
 
     def test_tpcz_three_positions(self):
         events = list(_make_seq(n_time=2, n_pos=3, axis_order="tpcz"))
         tp_order = [_tp(e) for e in events]
         assert tp_order == [
-            (0, 0), (0, 1), (0, 2),
-            (1, 0), (1, 1), (1, 2),
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 0),
+            (1, 1),
+            (1, 2),
         ]
 
     def test_ptcz_three_positions(self):
         events = list(_make_seq(n_time=2, n_pos=3, axis_order="ptcz"))
         tp_order = [_tp(e) for e in events]
         assert tp_order == [
-            (0, 0), (1, 0),
-            (0, 1), (1, 1),
-            (0, 2), (1, 2),
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (1, 1),
+            (0, 2),
+            (1, 2),
         ]
 
     def test_single_position_order_identical(self):
@@ -121,16 +136,21 @@ class TestAxisOrder:
 # Stim assignment
 # ===================================================================
 
+
 class TestStimAssignment:
     """Stim flags follow the correct frames in any axis_order."""
 
     @pytest.mark.parametrize("axis_order", ["tpcz", "ptcz"])
     def test_stim_only_on_specified_frames(self, axis_order):
         stim_frames = {1, 3}
-        events = list(_make_seq(
-            n_time=5, n_pos=2, axis_order=axis_order,
-            stim_frames=stim_frames,
-        ))
+        events = list(
+            _make_seq(
+                n_time=5,
+                n_pos=2,
+                axis_order=axis_order,
+                stim_frames=stim_frames,
+            )
+        )
         for ev in events:
             t = ev.index["t"]
             if t in stim_frames:
@@ -142,10 +162,14 @@ class TestStimAssignment:
     def test_all_positions_get_stim_at_stim_frame(self, axis_order):
         """Every position at a stim frame gets stim channels."""
         n_pos = 3
-        events = list(_make_seq(
-            n_time=4, n_pos=n_pos, axis_order=axis_order,
-            stim_frames={2},
-        ))
+        events = list(
+            _make_seq(
+                n_time=4,
+                n_pos=n_pos,
+                axis_order=axis_order,
+                stim_frames={2},
+            )
+        )
         stim_events = [ev for ev in events if len(ev.stim_channels) > 0]
         stim_positions = {ev.index["p"] for ev in stim_events}
         assert stim_positions == set(range(n_pos))
@@ -155,6 +179,7 @@ class TestStimAssignment:
 # ===================================================================
 # Channel ordering within events
 # ===================================================================
+
 
 class TestChannelOrdering:
     """Channels within each RTMEvent are ordered correctly."""
@@ -179,6 +204,7 @@ class TestChannelOrdering:
 # Position coordinates
 # ===================================================================
 
+
 class TestPositionCoordinates:
     """XY coordinates are correctly assigned regardless of axis_order."""
 
@@ -197,14 +223,22 @@ class TestPositionCoordinates:
 # to_mda_events: emission order
 # ===================================================================
 
+
 class TestToMdaEventsOrder:
     """to_mda_events() emits imaging channels then stim channels."""
 
     def test_imaging_only(self):
         ev = RTMEvent(
             index={"t": 0, "p": 0},
-            channels=(Channel(config="ch0", exposure=50), Channel(config="ch1", exposure=200)),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+            channels=(
+                Channel(config="ch0", exposure=50),
+                Channel(config="ch1", exposure=200),
+            ),
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={},
         )
         mda = ev.to_mda_events()
         types = [m.metadata["img_type"] for m in mda]
@@ -215,7 +249,10 @@ class TestToMdaEventsOrder:
             index={"t": 1, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=1,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=1,
             metadata={"stim": True},
         )
         mda = ev.to_mda_events()
@@ -228,7 +265,10 @@ class TestToMdaEventsOrder:
             index={"t": 1, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=1,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=1,
             metadata={"stim": True},
         )
         mda = ev.to_mda_events()
@@ -240,9 +280,15 @@ class TestToMdaEventsOrder:
         """2 imaging + 1 stim → correct order and c-indices."""
         ev = RTMEvent(
             index={"t": 0, "p": 0},
-            channels=(Channel(config="ch0", exposure=50), Channel(config="ch1", exposure=200)),
+            channels=(
+                Channel(config="ch0", exposure=50),
+                Channel(config="ch1", exposure=200),
+            ),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
             metadata={"stim": True},
         )
         mda = ev.to_mda_events()
@@ -263,10 +309,16 @@ class TestToMdaEventsOrder:
         """
         ev = RTMEvent(
             index={"t": 0, "p": 0},
-            channels=(Channel(config="ch0", exposure=50), Channel(config="ch1", exposure=50)),
+            channels=(
+                Channel(config="ch0", exposure=50),
+                Channel(config="ch1", exposure=50),
+            ),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=42.0, y_pos=99.0, z_pos=0,
-            min_start_time=0, metadata={"stim": True},
+            x_pos=42.0,
+            y_pos=99.0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={"stim": True},
         )
         mda = ev.to_mda_events()  # current-mode emission order: ch0, ch1, stim
         # first imaging channel carries xy
@@ -282,7 +334,10 @@ class TestToMdaEventsOrder:
         ev = RTMEvent(
             index={"t": 0, "p": 0},
             channels=(Channel(config="mCitrine", exposure=600),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
             metadata={"img_type": ImgType.IMG_REF},
         )
         mda = ev.to_mda_events()
@@ -293,6 +348,7 @@ class TestToMdaEventsOrder:
 # plan_events: per-RTMEvent dispatch ordering (current vs previous mode)
 # ===================================================================
 
+
 class TestPlanEvents:
     """RTMEvent.plan_events orders imaging/stim within a single (t, p)."""
 
@@ -301,7 +357,10 @@ class TestPlanEvents:
             index={"t": 1, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=1,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=1,
             metadata={"stim": True},
         )
 
@@ -325,7 +384,10 @@ class TestPlanEvents:
             index={"t": 1, "p": 2},
             channels=(Channel(config="ch0", exposure=50),),
             stim_channels=(Channel(config="stim-405", exposure=100),),
-            x_pos=123.0, y_pos=456.0, z_pos=7.0, min_start_time=1,
+            x_pos=123.0,
+            y_pos=456.0,
+            z_pos=7.0,
+            min_start_time=1,
             metadata={"stim": True},
         )
         planned = ev.plan_events(stim_mode="previous")
@@ -338,7 +400,11 @@ class TestPlanEvents:
         ev = RTMEvent(
             index={"t": 0, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={},
         )
         cur = ev.plan_events(stim_mode="current")
         prev = ev.plan_events(stim_mode="previous")
@@ -365,7 +431,11 @@ class TestPlanEvents:
         ev = RTMEvent(
             index={"t": 0, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={},
         )
         ev.plan_events(
             stim_mode="current",
@@ -387,6 +457,7 @@ class TestPlanEvents:
 # ===================================================================
 # Ref as a separate phase
 # ===================================================================
+
 
 class TestRefPhase:
     """Ref is a separate RTMSequence phase, not a special channel type."""
@@ -420,6 +491,7 @@ class TestRefPhase:
 # PowerChannel survives iter_events (regression)
 # ===================================================================
 
+
 class TestPowerChannelPreserved:
     """Imaging PowerChannels keep power+group through RTMSequence.iter_events.
 
@@ -434,21 +506,36 @@ class TestPowerChannelPreserved:
             time_plan={"interval": 1.0, "loops": 2},
             stage_positions=[(0, 0, 0), (100, 100, 0)],
             channels=[
-                PowerChannel(config="mScarlet3", exposure=250, group="TTL_ERK", power=20),
+                PowerChannel(
+                    config="mScarlet3", exposure=250, group="TTL_ERK", power=20
+                ),
                 PowerChannel(config="miRFP", exposure=350, group="TTL_ERK", power=100),
             ],
-            stim_channels=(PowerChannel(config="CyanStim", exposure=200, group="TTL_ERK", power=25),),
+            stim_channels=(
+                PowerChannel(
+                    config="CyanStim", exposure=200, group="TTL_ERK", power=25
+                ),
+            ),
             stim_frames={1},
             stim_exposure=stim_exposure,
-            ref_channels=(PowerChannel(config="mCitrine", exposure=500, group="TTL_ERK", power=100),),
+            ref_channels=(
+                PowerChannel(
+                    config="mCitrine", exposure=500, group="TTL_ERK", power=100
+                ),
+            ),
             ref_frames={1},
         )
 
     def test_imaging_channels_keep_power_and_group(self):
         ev = next(iter(self._seq()))
-        assert [type(c).__name__ for c in ev.channels] == ["PowerChannel", "PowerChannel"]
+        assert [type(c).__name__ for c in ev.channels] == [
+            "PowerChannel",
+            "PowerChannel",
+        ]
         assert (ev.channels[0].config, ev.channels[0].power, ev.channels[0].group) == (
-            "mScarlet3", 20, "TTL_ERK",
+            "mScarlet3",
+            20,
+            "TTL_ERK",
         )
         assert (ev.channels[1].power, ev.channels[1].group) == (100, "TTL_ERK")
 
@@ -494,7 +581,9 @@ class TestPowerChannelPreserved:
         events = combine(phase1, phase2, axis="t")
 
         assert len(events) == 12  # 3t * 3p + 1t * 3p
-        opto_events = [e for e in events if e.metadata.get("img_type") == ImgType.IMG_REF]
+        opto_events = [
+            e for e in events if e.metadata.get("img_type") == ImgType.IMG_REF
+        ]
         assert len(opto_events) == 3
         opto_positions = {e.index["p"] for e in opto_events}
         assert opto_positions == {0, 1, 2}
@@ -554,7 +643,9 @@ class TestPowerChannelPreserved:
         assert len(events) == 6
         stim_events = [e for e in events if len(e.stim_channels) > 0]
         assert len(stim_events) == 3
-        opto_events = [e for e in events if e.metadata.get("img_type") == ImgType.IMG_REF]
+        opto_events = [
+            e for e in events if e.metadata.get("img_type") == ImgType.IMG_REF
+        ]
         assert len(opto_events) == 1
         # Ref comes after all stim events
         assert opto_events[0].index["t"] > max(e.index["t"] for e in stim_events)
@@ -563,6 +654,7 @@ class TestPowerChannelPreserved:
 # ===================================================================
 # ref_channels / ref_frames on RTMSequence (inline, like stim)
 # ===================================================================
+
 
 class TestRefChannelsInline:
     """ref_channels + ref_frames on RTMSequence (not via phase concatenation)."""
@@ -601,7 +693,11 @@ class TestRefChannelsInline:
             index={"t": 0, "p": 0},
             channels=(Channel(config="ch0", exposure=50),),
             ref_channels=(Channel(config="mCitrine", exposure=600),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={},
         )
         mda = ev.to_mda_events()
         assert len(mda) == 2
@@ -612,9 +708,16 @@ class TestRefChannelsInline:
         """Ref MDAEvents carry a c-index (unlike stim)."""
         ev = RTMEvent(
             index={"t": 0, "p": 0},
-            channels=(Channel(config="ch0", exposure=50), Channel(config="ch1", exposure=50)),
+            channels=(
+                Channel(config="ch0", exposure=50),
+                Channel(config="ch1", exposure=50),
+            ),
             ref_channels=(Channel(config="mCitrine", exposure=600),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0, metadata={},
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
+            metadata={},
         )
         mda = ev.to_mda_events()
         c_indices = [m.index.get("c") for m in mda]
@@ -627,7 +730,10 @@ class TestRefChannelsInline:
             channels=(Channel(config="ch0", exposure=50),),
             stim_channels=(Channel(config="stim-405", exposure=100),),
             ref_channels=(Channel(config="mCitrine", exposure=600),),
-            x_pos=0, y_pos=0, z_pos=0, min_start_time=0,
+            x_pos=0,
+            y_pos=0,
+            z_pos=0,
+            min_start_time=0,
             metadata={"stim": True},
         )
         mda = ev.to_mda_events()
@@ -656,6 +762,7 @@ class TestRefChannelsInline:
 # ===================================================================
 # Negative indexing for stim_frames and ref_frames
 # ===================================================================
+
 
 class TestNegativeIndexing:
     """Negative indices in stim_frames and ref_frames resolve correctly."""
@@ -797,8 +904,7 @@ class TestCombineT:
         # Boundary: phase_a completes (p=0,t=0,1; p=1,t=0,1)
         # then phase_b begins (p=0,t=2,3; p=1,t=2,3).
         tp = [(e.index["t"], e.index["p"]) for e in events]
-        assert tp == [(0, 0), (1, 0), (0, 1), (1, 1),
-                      (2, 0), (3, 0), (2, 1), (3, 1)]
+        assert tp == [(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (3, 0), (2, 1), (3, 1)]
 
     def test_empty_a_returns_b(self):
         b = self._mk(loops=2)
@@ -811,7 +917,9 @@ class TestCombineT:
         assert len(events) == 3
 
     def test_three_way_t_chain(self):
-        events = combine(self._mk(loops=2), self._mk(loops=3), self._mk(loops=1), axis="t")
+        events = combine(
+            self._mk(loops=2), self._mk(loops=3), self._mk(loops=1), axis="t"
+        )
         assert [e.index["t"] for e in events] == [0, 1, 2, 3, 4, 5]
 
 
@@ -832,20 +940,19 @@ class TestCombineP:
     def test_p_offsets_past_a_max(self):
         """b's p indices shift past a's max."""
         a = self._mk(positions=[(0, 0, 0), (1, 0, 0), (2, 0, 0)])  # p=0..2
-        b = self._mk(positions=[(3, 0, 0), (4, 0, 0)])              # p=0..1
+        b = self._mk(positions=[(3, 0, 0), (4, 0, 0)])  # p=0..1
         events = combine(a, b, axis="p")
         p_indices = {e.index["p"] for e in events}
         assert p_indices == {0, 1, 2, 3, 4}
 
     def test_p_interleaves_at_each_timepoint(self):
         """At each t, FOVs from both sub-experiments appear together."""
-        a = self._mk(loops=2, positions=[(0, 0, 0), (1, 0, 0)])     # p=0,1
-        b = self._mk(loops=2, positions=[(2, 0, 0), (3, 0, 0)])     # becomes p=2,3
+        a = self._mk(loops=2, positions=[(0, 0, 0), (1, 0, 0)])  # p=0,1
+        b = self._mk(loops=2, positions=[(2, 0, 0), (3, 0, 0)])  # becomes p=2,3
         events = combine(a, b, axis="p")
         tp = [(e.index["t"], e.index["p"]) for e in events]
         # t=0: p=0,1,2,3; then t=1: p=0,1,2,3
-        assert tp == [(0, 0), (0, 1), (0, 2), (0, 3),
-                      (1, 0), (1, 1), (1, 2), (1, 3)]
+        assert tp == [(0, 0), (0, 1), (0, 2), (0, 3), (1, 0), (1, 1), (1, 2), (1, 3)]
 
     def test_p_does_not_offset_time(self):
         """Both sub-experiments share the wall clock."""

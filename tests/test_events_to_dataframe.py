@@ -97,5 +97,6 @@ class TestRefPhaseInDataframe:
         assert df.iloc[-1]["img_type"] == ImgType.IMG_REF
         # First 5 rows: img_type is NaN (no img_type in their metadata)
         import pandas as pd
+
         for _, row in df.iloc[:5].iterrows():
             assert pd.isna(row["img_type"])

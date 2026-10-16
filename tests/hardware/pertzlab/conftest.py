@@ -221,9 +221,7 @@ def microscope(scope_name: str, synthetic_affine: np.ndarray):
     elif scope_name == "niesen":
         from faro.microscope.pertzlab.niesen import Niesen
 
-        mic = Niesen(
-            affine_calibration_matrix=synthetic_affine, fast_init=True
-        )
+        mic = Niesen(affine_calibration_matrix=synthetic_affine, fast_init=True)
     elif scope_name == "jungfrau":
         from faro.core.dmd import DMD
         from faro.microscope.pertzlab.jungfrau import Jungfrau
@@ -364,9 +362,9 @@ def assert_clean_run(controller, tmp_path: Path, *, expect_tracks: bool) -> None
     assert zarr_path.is_dir(), f"OME-Zarr store not created at {zarr_path}"
 
     grp = zarr.open_group(str(zarr_path), mode="r")
-    assert "ome" in grp.attrs, (
-        "OME metadata missing on root group — store will not load in napari"
-    )
+    assert (
+        "ome" in grp.attrs
+    ), "OME metadata missing on root group — store will not load in napari"
 
     assert (tmp_path / "events.json").is_file(), "events.json not written"
 
@@ -394,9 +392,7 @@ def open_stim_channel_array(zarr_path):
     ome = root.attrs["ome"]
     multiscales = ome["multiscales"][0]
     channels = ome["omero"]["channels"]
-    stim_idx = next(
-        i for i, c in enumerate(channels) if c["label"].startswith("stim_")
-    )
+    stim_idx = next(i for i, c in enumerate(channels) if c["label"].startswith("stim_"))
     arr = root[multiscales["datasets"][0]["path"]]
     return arr, stim_idx
 

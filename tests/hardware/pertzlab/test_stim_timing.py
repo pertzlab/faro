@@ -106,9 +106,7 @@ def run_whole_fov_stim(microscope, tmp_path):
         pipeline = ImageProcessingPipeline(
             storage_path=str(tmp_path), stimulator=_WholeFovStim()
         )
-        writer = OmeZarrWriter(
-            storage_path=str(tmp_path), store_stim_images=True
-        )
+        writer = OmeZarrWriter(storage_path=str(tmp_path), store_stim_images=True)
         controller = Controller(microscope, pipeline, writer=writer)
         try:
             controller.run_experiment(list(sequence), stim_mode=stim_mode)

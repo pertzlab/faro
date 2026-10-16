@@ -31,7 +31,10 @@ def as_channel(channel) -> Channel:
         return Channel(config=channel)
     if isinstance(channel, dict):
         return Channel(**channel)
-    raise TypeError(f"expected a Channel, a channel dict or a config name, got {type(channel).__name__}")
+    raise TypeError(
+        f"expected a Channel, a channel dict or a config name, got {type(channel).__name__}"
+    )
+
 
 class AbstractMicroscope:
     """Base class defining the microscope interface.
@@ -46,9 +49,9 @@ class AbstractMicroscope:
         "*.debug=false; *.warning=false"  # Fix to suppress PyQT warnings from napari-micromanager when running in a Jupyter notebook
     )
 
-    dmd = None                      # optional DMD device
-    use_autofocus_event = False     # optional autofocus
-    dmd_needs_to_be_waken = False   # optional DMD wake
+    dmd = None  # optional DMD device
+    use_autofocus_event = False  # optional autofocus
+    dmd_needs_to_be_waken = False  # optional DMD wake
 
     def __init__(self):
         self.dmd = None
@@ -69,7 +72,9 @@ class AbstractMicroscope:
         """Connect frameReady callback: callback(img, event)."""
         raise NotImplementedError
 
-    def disconnect_frame(self, callback: Callable[[np.ndarray, MDAEvent], None]) -> None:
+    def disconnect_frame(
+        self, callback: Callable[[np.ndarray, MDAEvent], None]
+    ) -> None:
         """Disconnect frameReady callback."""
         raise NotImplementedError
 

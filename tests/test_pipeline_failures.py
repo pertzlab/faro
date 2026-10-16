@@ -214,9 +214,7 @@ class TestDeferredReloadsViaWriter:
 
         writer = _FakeZarrWriter()
         pipeline = _RecordingPipeline(tmp_dir)
-        analyzer = Analyzer(
-            pipeline, max_workers=1, max_queue_size=4, writer=writer
-        )
+        analyzer = Analyzer(pipeline, max_workers=1, max_queue_size=4, writer=writer)
         try:
             event = SimpleNamespace(index={"t": 3})
             metadata = {"fname": "003_00042", "fov": 3, "timestep": 3}
@@ -273,9 +271,7 @@ class TestDeferredReloadsViaWriter:
             # None for a skipped frame, or raises queue.Empty on timeout.
             fov_state = analyzer.get_fov_state(0)
             assert fov_state.tracks_queue.wait_for_frame(5, timeout=5) is None
-            assert any(
-                e.source == "deferred" for e in analyzer.background_errors
-            )
+            assert any(e.source == "deferred" for e in analyzer.background_errors)
             # The unreloadable frame was never handed to the pipeline.
             assert pipeline.calls == []
         finally:
@@ -334,15 +330,11 @@ class TestDeferredReloadFromRealOmeZarr:
 
             def run(self, img=None, event=None, file_path=None):
                 with lock:
-                    recorded.append(
-                        (event.index.get("t"), event.index.get("p"), img)
-                    )
+                    recorded.append((event.index.get("t"), event.index.get("p"), img))
                 return {}
 
         pipeline = _RecordingPipeline(tmp_dir)
-        analyzer = Analyzer(
-            pipeline, max_workers=1, max_queue_size=4, writer=writer
-        )
+        analyzer = Analyzer(pipeline, max_workers=1, max_queue_size=4, writer=writer)
         try:
             # Write each raw frame to the store exactly as the storage worker
             # would, then enqueue it on the deferred queue (pixels dropped — only
@@ -380,6 +372,7 @@ class TestDeferredReloadFromRealOmeZarr:
 # Failing component helpers
 # ===================================================================
 
+
 class CrashingSegmentator(OtsuSegmentator):
     """Segmentator that raises on every call."""
 
@@ -392,6 +385,7 @@ class CrashingTracker(TrackerTrackpy):
 
     def track_cells(self, df_old, df_new, fov_state):
         raise RuntimeError("Tracking crashed!")
+
 
 class CrashingFE(SimpleFE):
     """Feature extractor that raises on every call."""
@@ -565,8 +559,6 @@ class TestCrashingFeatureExtractor:
 # ===================================================================
 
 
-
-
 # ===================================================================
 # Test Class 14: Continue experiment — sequential continuation
 # ===================================================================
@@ -731,4 +723,3 @@ class TestBurstNoSignalLoss:
 # ===================================================================
 # Test Class: Analyzer.get_stim_mask timeout recording
 # ===================================================================
-

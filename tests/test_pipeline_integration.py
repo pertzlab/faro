@@ -43,8 +43,6 @@ EXPECTED_AREA_2 = math.pi * CIRCLE2_RADIUS**2  # ~707
 N_TIMEPOINTS = 5
 
 
-
-
 # ===================================================================
 # Test Class 2: End-to-end, no stimulation
 # ===================================================================
@@ -142,9 +140,7 @@ class TestContinueExperimentOmeZarr:
     def _check_store(ctrl, tmp_dir, n_total):
         import zarr
 
-        assert ctrl.background_errors == [], [
-            e.message for e in ctrl.background_errors
-        ]
+        assert ctrl.background_errors == [], [e.message for e in ctrl.background_errors]
         raw = zarr.open(os.path.join(tmp_dir, "acquisition.ome.zarr"), mode="r")["0"]
         assert raw.shape[0] == n_total, raw.shape
         assert raw[n_total - 1].max() > 0, "last appended frame is empty"
@@ -196,6 +192,7 @@ class TestContinueExperimentModeMismatchRaises:
                 )
         finally:
             ctrl.finish_experiment()
+
 
 N_PHASE1_FRAMES = 3
 N_PHASE2_FRAMES = 3

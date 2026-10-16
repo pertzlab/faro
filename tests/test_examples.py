@@ -96,11 +96,15 @@ def _prepare(nb_path: Path, fillers: dict[str, str], params: str | None):
             cell.source = cell.source + "\n" + params
         # magics do not survive a plain kernel run without IPython extensions
         cell.source = "\n".join(
-            line for line in cell.source.splitlines() if not line.lstrip().startswith("%")
+            line
+            for line in cell.source.splitlines()
+            if not line.lstrip().startswith("%")
         )
         cells.append(cell)
     missing = set(fillers) - seen
-    assert not missing, f"{nb_path.name}: fillers without a TODO cell: {sorted(missing)}"
+    assert (
+        not missing
+    ), f"{nb_path.name}: fillers without a TODO cell: {sorted(missing)}"
     nb.cells = cells
     return nb
 
@@ -153,7 +157,9 @@ def _all_notebooks() -> list[Path]:
 def test_readme_anchors_exist(nb_path: Path):
     anchors = _readme_anchors()
     missing = _notebook_readme_links(nb_path) - anchors
-    assert not missing, f"{nb_path.name} links to README sections that do not exist: {sorted(missing)}"
+    assert (
+        not missing
+    ), f"{nb_path.name} links to README sections that do not exist: {sorted(missing)}"
 
 
 @pytest.mark.parametrize("rel", sorted(FILLERS), ids=lambda r: r.split("/")[0])
@@ -166,7 +172,9 @@ def test_template_raise_cells_match_fillers(rel: str):
         if c.cell_type == "code" and "raise NotImplementedError" in c.source
     }
     assert None not in raising, f"{rel}: a raising cell is missing its todo:<name> tag"
-    assert raising == set(FILLERS[rel]), f"{rel}: raise cells {raising} != fillers {set(FILLERS[rel])}"
+    assert raising == set(
+        FILLERS[rel]
+    ), f"{rel}: raise cells {raising} != fillers {set(FILLERS[rel])}"
 
 
 def test_template_folders_are_complete():
@@ -174,7 +182,9 @@ def test_template_folders_are_complete():
     for folder in TEMPLATES.iterdir():
         if not folder.is_dir():
             continue
-        assert (folder / "pyproject.toml").exists(), f"{folder.name}: missing pyproject.toml"
+        assert (
+            folder / "pyproject.toml"
+        ).exists(), f"{folder.name}: missing pyproject.toml"
         assert list(folder.glob("*.ipynb")), f"{folder.name}: missing notebook"
 
 
@@ -234,7 +244,9 @@ def _make_source_run(path: Path) -> Path:
     pipeline = ImageProcessingPipeline(
         storage_path=str(path),
         segmentators=[
-            SegmentationMethod("labels", OtsuSegmentator(), use_channel=0, save_tracked=True)
+            SegmentationMethod(
+                "labels", OtsuSegmentator(), use_channel=0, save_tracked=True
+            )
         ],
         feature_extractor=SimpleFE("labels"),
         tracker=TrackerTrackpy(search_range=30),

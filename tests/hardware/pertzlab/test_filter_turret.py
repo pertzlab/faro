@@ -81,9 +81,7 @@ def test_filter_turret_changes_land(microscope) -> None:
     misses: list[tuple[int, str, str, str]] = []
     for rep in range(REPEATS):
         for channel, expected_cube in pairs:
-            event = useq.MDAEvent(
-                channel={"group": TURRET_GROUP, "config": channel}
-            )
+            event = useq.MDAEvent(channel={"group": TURRET_GROUP, "config": channel})
             engine._set_event_channel(event)  # setConfig + verify/force-move
             try:
                 mmc.waitForDevice(DEVICE)
@@ -100,7 +98,6 @@ def test_filter_turret_changes_land(microscope) -> None:
         f"Filter turret did not land on the commanded cube on "
         f"{len(misses)}/{n_changes} change(s): "
         + "; ".join(
-            f"rep{r} {ch}: want {want!r} got {got!r}"
-            for r, ch, want, got in misses[:8]
+            f"rep{r} {ch}: want {want!r} got {got!r}" for r, ch, want, got in misses[:8]
         )
     )

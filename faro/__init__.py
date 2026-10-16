@@ -21,6 +21,7 @@
 # Headless paths are unaffected: with no Qt around, pymmcore-plus would
 # pick psygnal anyway. Setting this is a no-op there.
 import os
+
 os.environ["PYMM_SIGNALS_BACKEND"] = "psygnal"
 
 # Default console output for the "faro" logger tree, so hardware and

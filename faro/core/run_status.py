@@ -16,6 +16,7 @@ loaded :mod:`psygnal` routes the emission to listeners' threads through
 Qt's queued connections, so a napari widget connected on the main thread
 sees a queued slot call from the worker without extra plumbing.
 """
+
 from __future__ import annotations
 
 import threading
@@ -48,13 +49,17 @@ class RunStatus:
     #  - n_frames_received counts MDAEvents (individual channel snaps).
     # Widgets must compare like-with-like: progress is n_events_acquired
     # / n_events_total, NOT n_frames_received / n_events_total.
-    n_events_total: int = 0          # how many RTMEvents the run was started with
-    n_events_consumed: int = 0       # RTMEvents pulled by the event stream so far
-    n_events_acquired: int = 0       # RTMEvents whose first frame has arrived (WaitEvents bump on completion)
-    n_frames_received: int = 0       # MDAEvent frames acknowledged via frameReady
+    n_events_total: int = 0  # how many RTMEvents the run was started with
+    n_events_consumed: int = 0  # RTMEvents pulled by the event stream so far
+    n_events_acquired: int = (
+        0  # RTMEvents whose first frame has arrived (WaitEvents bump on completion)
+    )
+    n_frames_received: int = 0  # MDAEvent frames acknowledged via frameReady
     # Timing.
-    started_at: float | None = None       # time.monotonic() when the first frame began acquiring
-    finished_at: float | None = None      # time.monotonic() when the worker exited
+    started_at: float | None = (
+        None  # time.monotonic() when the first frame began acquiring
+    )
+    finished_at: float | None = None  # time.monotonic() when the worker exited
     last_frame_wallclock: float | None = None
     # Lag: how late the *current RTMEvent* started acquiring vs its
     # scheduled min_start_time, in ms. Measured once per RTMEvent (on its

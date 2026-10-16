@@ -1,6 +1,7 @@
 # combines a segmentor, stimulator and tracker into a image processing pipeline.
 
 import inspect
+import logging
 import os
 from typing import List
 
@@ -18,6 +19,8 @@ from faro.core.data_structures import FovState, ImgType, SegmentationMethod, Wai
 from faro.core.utils import labels_to_particles, create_folders
 from datetime import datetime
 import queue
+
+logger = logging.getLogger(__name__)
 
 
 def store_img(img: np.array, metadata, path: str, folder: str, *, writer=None):
@@ -509,12 +512,21 @@ class ImageProcessingPipeline:
                     and not df_tracked.empty
                     and "particle" in df_tracked.columns
                 ):
-                    df_tracked = self.feature_extractor_ref.extract_features(
-                        segmentation_results,
-                        img_ref if img_ref is not None else img,
-                        df_tracked,
-                        metadata,
-                    )
+                    if img_ref is None:
+                        # The reference channels are not in the image. Do not
+                        # measure the imaging channels instead.
+                        logger.warning(
+                            "Reference frame fov=%s t=%s has no reference "
+                            "channels (image shape %s); no reference features "
+                            "for this frame.",
+                            metadata.get("fov"),
+                            frame_idx,
+                            img.shape,
+                        )
+                    else:
+                        df_tracked = self.feature_extractor_ref.extract_features(
+                            segmentation_results, img_ref, df_tracked, metadata
+                        )
             tracked_ok = True
         finally:
             if tracked_ok:

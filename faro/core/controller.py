@@ -1,5 +1,12 @@
 from faro.core.pipeline import store_img, ImageProcessingPipeline
-from faro.core.data_structures import FovState, FrameWaitCancelled, ImgType, StimMode, WaitEvent
+from faro.core.data_structures import (
+    FovState,
+    FrameWaitCancelled,
+    ImgType,
+    StimMode,
+    WaitEvent,
+)
+from faro.core.qt import pump_qt_events
 from faro.core.run_status import RunHandle, RunStatus
 from faro.core.writers import (
     Writer,
@@ -18,6 +25,7 @@ import contextlib
 import logging
 import threading
 import traceback
+from collections import Counter
 from dataclasses import dataclass
 from typing import Iterator, Literal
 from faro.core._useq_compat import SLMImage
@@ -32,6 +40,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 logger = logging.getLogger(__name__)
+
+# Background errors of one kind (source and exception type) that are kept
+# with their traceback. Later ones are only counted.
+KEEP_ERRORS_PER_KIND = 50
 
 
 BackgroundErrorSource = Literal["storage", "deferred", "pipeline", "stim_mask"]
@@ -65,14 +77,14 @@ class QueueStats:
       permanently behind.
     """
 
-    storage_depth: int        # images buffered, awaiting disk write
-    storage_max: int          # storage queue capacity
-    pipeline_inflight: int    # pipeline tasks submitted, not yet finished
-    pipeline_max: int         # depth at which new frames get deferred
-    deferred_depth: int       # frames deferred for later reprocessing
-    stored_images: int        # cumulative images written
-    skipped_pipeline: int     # cumulative frames deferred
-    deferred_processed: int   # cumulative deferred frames later processed
+    storage_depth: int  # images buffered, awaiting disk write
+    storage_max: int  # storage queue capacity
+    pipeline_inflight: int  # pipeline tasks submitted, not yet finished
+    pipeline_max: int  # depth at which new frames get deferred
+    deferred_depth: int  # frames deferred for later reprocessing
+    stored_images: int  # cumulative images written
+    skipped_pipeline: int  # cumulative frames deferred
+    deferred_processed: int  # cumulative deferred frames later processed
 
 
 class Analyzer:
@@ -164,7 +176,10 @@ class Analyzer:
         # Experiments intentionally log-and-continue on background-thread
         # errors (one bad filter wheel shouldn't crash a 24h run). Tests
         # assert this list is empty at end of run to catch silent failures.
+        # The list keeps the first errors of each kind; _error_counts counts
+        # all of them (see _record_background_error).
         self.background_errors: list[BackgroundError] = []
+        self._error_counts: Counter = Counter()
         self._error_lock = threading.Lock()
         self._stim_mask_timeout = stim_mask_timeout
 
@@ -227,16 +242,44 @@ class Analyzer:
         ``traceback.format_exc()`` call below reads the current
         exception context and returns ``'NoneType: None\\n'`` if
         there is none.
+
+        Only the first ``KEEP_ERRORS_PER_KIND`` errors of each kind (source
+        and exception type) are kept and printed with their traceback. A bug
+        that fails on every frame would otherwise add one traceback per
+        frame. Later errors of the same kind are only counted, with a short
+        log line every 100. ``error_summary()`` gives the counts.
         """
-        tb = traceback.format_exc()
+        exc_type = type(exc).__name__
         msg = str(exc)
-        print(f"[Analyzer] {source} error: {type(exc).__name__}: {msg}")
-        print(tb)
-        logger.error("%s error: %s: %s\n%s", source, type(exc).__name__, msg, tb)
+        kind = (source, exc_type)
         with self._error_lock:
-            self.background_errors.append(
-                BackgroundError(source, type(exc).__name__, msg, tb)
-            )
+            self._error_counts[kind] += 1
+            n = self._error_counts[kind]
+            if n <= KEEP_ERRORS_PER_KIND:
+                tb = traceback.format_exc()
+                self.background_errors.append(
+                    BackgroundError(source, exc_type, msg, tb)
+                )
+
+        if n <= KEEP_ERRORS_PER_KIND:
+            print(f"[Analyzer] {source} error: {exc_type}: {msg}")
+            print(tb)
+            logger.error("%s error: %s: %s\n%s", source, exc_type, msg, tb)
+            if n == KEEP_ERRORS_PER_KIND:
+                logger.error(
+                    "%s error %s happened %d times. Further ones are only "
+                    "counted (see error_summary()).",
+                    source,
+                    exc_type,
+                    n,
+                )
+        elif n % 100 == 0:
+            logger.error("%s error %s, %d times so far: %s", source, exc_type, n, msg)
+
+    def error_summary(self) -> Counter:
+        """Number of background errors per (source, exception type)."""
+        with self._error_lock:
+            return Counter(self._error_counts)
 
     @property
     def stimulator_needs_data(self) -> bool:
@@ -326,7 +369,8 @@ class Analyzer:
                     )
 
                 if (
-                    isinstance(self.pipeline.stimulator, StimWithImage)
+                    self.pipeline is not None  # a run can have only a writer
+                    and isinstance(self.pipeline.stimulator, StimWithImage)
                     and metadata["img_type"] == ImgType.IMG_RAW
                 ):
                     # Always put in "previous" mode so the next stim event's
@@ -449,9 +493,7 @@ class Analyzer:
             future = self.executor.submit(
                 self.pipeline.run, img=img, event=event, file_path=None
             )
-            future.add_done_callback(
-                self._make_pipeline_done_callback(event, metadata)
-            )
+            future.add_done_callback(self._make_pipeline_done_callback(event, metadata))
             if self.debug:
                 print(
                     f"[Analyzer] Pipeline submitted (active={self.active_pipeline_tasks}, pending_deferred={self._deferred_queue.qsize()})"
@@ -460,6 +502,25 @@ class Analyzer:
             print(f"Could not submit pipeline task: {str(e)}")
             with self.task_lock:
                 self.active_pipeline_tasks -= 1
+
+    def _reload_frame(self, metadata: dict) -> np.ndarray:
+        """Read a deferred frame back from storage, as the pipeline expects it.
+
+        A reference frame is stored in two parts (see ``_do_store``): the
+        imaging channels as "raw" and the reference channels as "ref". The
+        pipeline expects both in one stack, imaging channels first.
+        """
+        img = self.writer.read_raw(metadata)
+        if metadata.get("img_type") != ImgType.IMG_REF or not metadata.get(
+            "ref_channels"
+        ):
+            return img
+        ref = self.writer.read_ref(metadata)
+        if img.ndim == 2:
+            img = img[np.newaxis]
+        if ref.ndim == 2:
+            ref = ref[np.newaxis]
+        return np.concatenate([img, ref], axis=0)
 
     def _deferred_worker(self):
         """Worker thread that processes deferred images when capacity becomes available.
@@ -491,6 +552,14 @@ class Analyzer:
                             print(
                                 f"[Analyzer] Still overloaded -> requeue deferred (active={self.active_pipeline_tasks}, max={self.max_queue_size})"
                             )
+                        # Keep this sleep inside the lock. Holding the lock
+                        # here blocks _try_submit_pipeline, so a freed
+                        # pipeline slot goes to a deferred (older) frame and
+                        # not to a new frame. Tracking needs frame N-1 before
+                        # frame N. If new frames take the slots, they block
+                        # in get_predecessor until _queue_timeout, and
+                        # TestBurstNoSignalLoss fails. See TODO.md for a
+                        # cleaner fix.
                         time.sleep(0.5)
                         continue
 
@@ -505,7 +574,7 @@ class Analyzer:
                 # writer (rather than hardcoding raw/<fname>.tiff) keeps this
                 # correct across backends.
                 try:
-                    img = self.writer.read_raw(metadata)
+                    img = self._reload_frame(metadata)
                 except Exception as e:
                     with self.task_lock:
                         self.active_pipeline_tasks -= 1
@@ -542,6 +611,10 @@ class Analyzer:
 
             except Exception as e:
                 self._record_background_error("deferred", e)
+            finally:
+                # wait_idle counts the frame until here (a frame put back
+                # above counts again as a new task).
+                self._deferred_queue.task_done()
 
     def run(self, img: np.array, event: MDAEvent) -> dict:
         """Called from MDA callback - must return INSTANTLY.
@@ -611,9 +684,7 @@ class Analyzer:
                     try:
                         fov_idx = metadata.get("fov", 0)
                         frame_idx = event.index.get("t", 0)
-                        self.get_fov_state(fov_idx).tracks_queue.skip_frame(
-                            frame_idx
-                        )
+                        self.get_fov_state(fov_idx).tracks_queue.skip_frame(frame_idx)
                     except Exception:
                         pass
 
@@ -665,9 +736,7 @@ class Analyzer:
         if self.writer is not None:
             self.writer.close()
 
-    def wait_idle(
-        self, timeout: float | None = 30.0, poll: float = 0.05
-    ) -> bool:
+    def wait_idle(self, timeout: float | None = 30.0, poll: float = 0.05) -> bool:
         """Block until storage, pipeline, and deferred queues all drain.
 
         Returns True if idle was reached before the timeout, False
@@ -677,8 +746,11 @@ class Analyzer:
         """
         deadline = None if timeout is None else time.monotonic() + timeout
         while deadline is None or time.monotonic() < deadline:
-            storage_empty = self._storage_queue.qsize() == 0
-            deferred_empty = self._deferred_queue.qsize() == 0
+            # A frame counts until its worker calls task_done(), after it is
+            # handed to the pipeline. qsize() alone would miss a frame that a
+            # worker has taken from its queue but not handed over yet.
+            storage_empty = self._storage_queue.unfinished_tasks == 0
+            deferred_empty = self._deferred_queue.unfinished_tasks == 0
             with self.task_lock:
                 pipeline_idle = self.active_pipeline_tasks == 0
             if storage_empty and deferred_empty and pipeline_idle:
@@ -765,6 +837,7 @@ class Controller:
         # Background-thread errors harvested from the Analyzer on shutdown.
         # Survives finish_experiment() so tests/notebooks can inspect it.
         self.background_errors: list[BackgroundError] = []
+        self._error_counts: Counter = Counter()  # all errors, see error_summary()
 
         # Fatal condition raised from the signal-callback thread, surfaced
         # through the handle's RunStatus.fatal_error.
@@ -814,14 +887,40 @@ class Controller:
         """
         return self._current_handle
 
+    # pipeline and writer are fixed when the Controller is created. Without
+    # these properties, ``ctrl.pipeline = p`` would silently create a new
+    # attribute that nothing reads, and every run would store nothing.
+
+    @property
+    def pipeline(self) -> ImageProcessingPipeline | None:
+        """The pipeline every acquisition of this Controller runs (read-only)."""
+        return self._pipeline
+
+    @pipeline.setter
+    def pipeline(self, value) -> None:
+        raise AttributeError(
+            "Controller.pipeline cannot be changed. Create a new "
+            "Controller(mic, pipeline, writer=...) instead."
+        )
+
+    @property
+    def writer(self) -> Writer | None:
+        """The storage backend frames are written through (read-only)."""
+        return self._writer
+
+    @writer.setter
+    def writer(self, value) -> None:
+        raise AttributeError(
+            "Controller.writer cannot be changed. Create a new "
+            "Controller(mic, pipeline, writer=...) instead."
+        )
+
     @property
     def pending_events(self) -> list | None:
         """Events staged via :meth:`load_experiment` but not yet started."""
         return self._pending_run[0] if self._pending_run is not None else None
 
-    def load_experiment(
-        self, events, *, stim_mode="current", validate=True
-    ) -> list:
+    def load_experiment(self, events, *, stim_mode="current", validate=True) -> list:
         """Validate and stage an experiment without starting it.
 
         Validates and sorts the events exactly like :meth:`run_experiment`,
@@ -839,10 +938,12 @@ class Controller:
         Returns the sorted events list.
 
         Raises:
-            RuntimeError: If a run is still in progress.
+            RuntimeError: If a run is still in progress, or if the run would
+                store nothing (no writer and no pipeline).
             ValueError: If ``validate=True`` and events fail validation.
         """
         self._require_no_active_run()
+        self._require_storage()
         events = list(events)
         if validate:
             if not self.validate_events(events):
@@ -904,11 +1005,13 @@ class Controller:
                 bad event lists surface as exceptions on the calling thread.
 
         Raises:
-            RuntimeError: If a previous run is still in progress. Call
-                ``handle.wait()`` or ``handle.cancel()`` first.
+            RuntimeError: If a previous run is still in progress (call
+                ``handle.wait()`` or ``handle.cancel()`` first), or if the run
+                would store nothing (no writer and no pipeline).
             ValueError: If ``validate=True`` and events fail validation.
         """
         self._require_no_active_run()
+        self._require_storage()
         self._pending_run = None  # a direct run supersedes any staged load
         events = list(events)
         if validate:
@@ -1013,6 +1116,19 @@ class Controller:
                 "handle.cancel() first."
             )
 
+    def _require_storage(self) -> None:
+        """Raise if a run would store nothing.
+
+        Without a writer, the Analyzer writes TIFFs to the pipeline's
+        storage_path. Without both, every frame is acquired and dropped.
+        """
+        if self._writer is None and self._pipeline is None:
+            raise RuntimeError(
+                "This Controller has no writer and no pipeline, so the run would "
+                "store nothing. Create it with a pipeline, a writer, or both: "
+                "Controller(mic, pipeline, writer=...)."
+            )
+
     def _cancel_stim_waits(self) -> None:
         """RunHandle ``on_cancel`` hook: wake the event stream's mask wait.
 
@@ -1111,9 +1227,7 @@ class Controller:
 
         except BaseException as exc:
             traceback.print_exc()
-            handle.update(
-                state="error", fatal_error=exc, finished_at=time.monotonic()
-            )
+            handle.update(state="error", fatal_error=exc, finished_at=time.monotonic())
         else:
             # Update wall-clock offset for continuation
             if self._experiment_start is not None:
@@ -1184,12 +1298,9 @@ class Controller:
                     # shutdown is the gate — only snapshot background_errors
                     # and drop the Analyzer once it succeeds. On TimeoutError
                     # the Analyzer is still alive and the caller can retry.
-                    self._analyzer.shutdown(
-                        wait=True, drain_timeout=drain_timeout
-                    )
-                    self.background_errors.extend(
-                        self._analyzer.background_errors
-                    )
+                    self._analyzer.shutdown(wait=True, drain_timeout=drain_timeout)
+                    self.background_errors.extend(self._analyzer.background_errors)
+                    self._error_counts.update(self._analyzer.error_summary())
                     self._analyzer = None
                 self._t_offset = 0
                 self._time_offset = 0.0
@@ -1203,28 +1314,19 @@ class Controller:
             finally:
                 done.set()
 
-        threading.Thread(
-            target=_teardown, name="FaroFinishWorker", daemon=True
-        ).start()
+        threading.Thread(target=_teardown, name="FaroFinishWorker", daemon=True).start()
         while not done.wait(timeout=0.05):
-            self._pump_qt_events()
+            pump_qt_events()
         if box:
             raise box[0]
 
-    @staticmethod
-    def _pump_qt_events() -> None:
-        """Process pending Qt events if a Qt app is running; no-op otherwise.
+    def error_summary(self) -> Counter:
+        """Number of background errors per (source, exception type).
 
-        Used by finish_experiment (which blocks the calling/main thread by
-        design) to keep napari responsive while teardown runs on a worker.
+        ``background_errors`` keeps only the first errors of each kind. This
+        gives the full counts of all finished experiments.
         """
-        try:
-            from qtpy.QtCore import QCoreApplication
-        except Exception:
-            return
-        app = QCoreApplication.instance()
-        if app is not None:
-            app.processEvents()
+        return Counter(self._error_counts)
 
     def queue_stats(self) -> "QueueStats | None":
         """Snapshot of the Analyzer's queue depths, or None when idle.
@@ -1322,8 +1424,6 @@ class Controller:
             with contextlib.suppress(Exception):
                 mmc.stopSequenceAcquisition()
 
-        self._mic.connect_frame(self._on_frame_ready)
-
         self._n_stim_fallbacks = 0
         self._active_handle = handle
 
@@ -1344,7 +1444,9 @@ class Controller:
             try:
                 log_handler = logging.FileHandler(
                     os.path.join(storage_path, "log.txt"),
-                    mode="a", encoding="utf-8", delay=True,
+                    mode="a",
+                    encoding="utf-8",
+                    delay=True,
                 )
                 log_handler.setFormatter(
                     logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1377,9 +1479,7 @@ class Controller:
         if self._pre_loop_hook is not None:
             self._pre_loop_hook()
 
-        logger.info(
-            "MDA run started: %d events, stim_mode=%s", len(events), stim_mode
-        )
+        logger.info("MDA run started: %d events, stim_mode=%s", len(events), stim_mode)
 
         def _on_runner_canceled(*_args) -> None:
             # Turn an external runner cancel (e.g. the stop button of a
@@ -1394,13 +1494,18 @@ class Controller:
                 handle.externally_cancelled = True
                 handle.cancel()
 
-        self._mic.connect_sequence_canceled(_on_runner_canceled)
-
-        mda_thread = self._mic.run_mda(
-            self._event_stream(stim_mode=stim_mode, handle=handle)
-        )
-
+        # Connect inside the try, so that the finally also disconnects when
+        # run_mda raises (e.g. another MDA is still running). psygnal allows
+        # duplicate connections: a callback left connected would get every
+        # frame twice in the next run.
+        mda_thread = None
         try:
+            self._mic.connect_frame(self._on_frame_ready)
+            self._mic.connect_sequence_canceled(_on_runner_canceled)
+            mda_thread = self._mic.run_mda(
+                self._event_stream(stim_mode=stim_mode, handle=handle)
+            )
+
             # Supervision only: the generator runs on the MDA thread. A
             # cancel is forwarded to the runner once so it interrupts a
             # min_start_time sleep the generator cannot reach; the
@@ -1415,14 +1520,25 @@ class Controller:
                 mda_thread.join(timeout=0.2)
         finally:
             self._event_queue = None
-            mda_thread.join()
+            if mda_thread is not None:
+                mda_thread.join()
             with contextlib.suppress(Exception):
                 self._mic.disconnect_sequence_canceled(_on_runner_canceled)
-            self._mic.disconnect_frame(self._on_frame_ready)
+            # Suppressed: connect_frame raises before it connects on the Qt
+            # signal backend, and a Qt disconnect raises for a callback that
+            # is not connected. That error would replace the clear one.
+            with contextlib.suppress(Exception):
+                self._mic.disconnect_frame(self._on_frame_ready)
+            # A timepoint that misses a frame (cancel, failed snap) stays in
+            # the buffer. It must not merge with the frames of a later run at
+            # the same (t, p).
+            self._frame_buffers.clear()
             s = handle.status()
             logger.info(
                 "MDA run finished: %d/%d events acquired, %d stim fallbacks",
-                s.n_events_acquired, s.n_events_total, s.n_stim_fallbacks,
+                s.n_events_acquired,
+                s.n_events_total,
+                s.n_stim_fallbacks,
             )
             if log_handler is not None:
                 faro_logger = logging.getLogger("faro")
@@ -1441,9 +1557,7 @@ class Controller:
             self._fatal_error = None
             raise fatal
 
-    def _event_stream(
-        self, *, stim_mode: str, handle: RunHandle
-    ) -> Iterator[MDAEvent]:
+    def _event_stream(self, *, stim_mode: str, handle: RunHandle) -> Iterator[MDAEvent]:
         """Yield MDAEvents to the MDA runner, one pull at a time.
 
         The runner asks for the next event only after the previous one
@@ -1526,8 +1640,7 @@ class Controller:
                 # *not* needed: the pipeline always-computes in previous
                 # mode, so the predecessor's mask exists for every t > 0.
                 suppress_stim = (
-                    stim_mode == "previous"
-                    and rtm_event.index.get("t", 0) == 0
+                    stim_mode == "previous" and rtm_event.index.get("t", 0) == 0
                 )
 
                 planned = rtm_event.plan_events(
@@ -1642,7 +1755,9 @@ class Controller:
             updates["n_events_acquired"] = prev.n_events_acquired + 1
             if prev.started_at is None:
                 # Anchor elapsed clock to first acquisition (matches _lag_origin).
-                exposure_s_for_start = (getattr(event, "exposure", None) or 0.0) / 1000.0
+                exposure_s_for_start = (
+                    getattr(event, "exposure", None) or 0.0
+                ) / 1000.0
                 updates["started_at"] = time.monotonic() - exposure_s_for_start
             # Lag = how far this RTMEvent's acquisition start drifted from
             # its scheduled min_start_time. frameReady fires when the frame
@@ -1666,9 +1781,7 @@ class Controller:
                     # First frame defines t0: its acquisition start
                     # corresponds to this event's scheduled min_start_time.
                     self._lag_origin = acq_start - min_start
-                updates["lag_ms"] = (
-                    acq_start - self._lag_origin - min_start
-                ) * 1000.0
+                updates["lag_ms"] = (acq_start - self._lag_origin - min_start) * 1000.0
         handle.update(**updates)
 
     def _on_frame_ready(self, img: np.ndarray, event: MDAEvent) -> None:
@@ -1785,7 +1898,9 @@ class Controller:
             stim_mask = analyzer.get_stim_mask(fov_index, meta)
             logger.debug(
                 "Stim mask for t=%s p=%s built in %.3f s",
-                t, fov_index, time.perf_counter() - t0,
+                t,
+                fov_index,
+                time.perf_counter() - t0,
             )
         else:
             # Data-dependent: wait on the pipeline's mask queue until
@@ -1807,11 +1922,7 @@ class Controller:
             late_s = time.monotonic() - due
 
         handle = self._active_handle
-        if (
-            stim_mask is None
-            and handle is not None
-            and handle.cancel_event.is_set()
-        ):
+        if stim_mask is None and handle is not None and handle.cancel_event.is_set():
             return None
         if stim_mask is None:
             waited = time.perf_counter() - t0
@@ -1841,7 +1952,6 @@ class Controller:
         return SLMImage(
             data=stim_mask, device=self._mic.dmd.name, exposure=stim_ch.exposure
         )
-
 
 
 class ControllerSimulated(Controller):

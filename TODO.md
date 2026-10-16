@@ -205,3 +205,11 @@ touch camera geometry properties (Binning, ROI, PixelSize).
   (visible in `assertion output`). That's noisy — consider
   formatting only the exception type + message in the assertion
   string and logging the full tracebacks separately.
+- `Analyzer._deferred_worker` sleeps 0.5 s while it holds `task_lock`
+  so that deferred frames get pipeline slots before new frames (see
+  the comment there). Cleaner fix: wait on a `threading.Condition` on
+  `task_lock` (notified when a pipeline task finishes) and keep the
+  same frame instead of requeueing it at the end. Also let
+  `_try_submit_pipeline` defer new frames while
+  `_deferred_queue.unfinished_tasks > 0`. Do this only if real runs
+  show deferred frames or tracking timeouts.

@@ -34,6 +34,7 @@ from tests.fake_mmc import build_core
 # Power-property mapping (manual-only; unmapped power fails loud)
 # ===================================================================
 
+
 class TestPowerPropertyMapping:
     """Power mappings are declared on the microscope; no auto-detection."""
 
@@ -123,8 +124,9 @@ class _DuckCore:
     _confirm_xy = _M._confirm_xy
     _confirm_z = _M._confirm_z
 
-    def __init__(self, devices, xy="TIXYDrive", z="TIZDrive",
-                 xy_pos=(0.0, 0.0), z_pos=0.0):
+    def __init__(
+        self, devices, xy="TIXYDrive", z="TIZDrive", xy_pos=(0.0, 0.0), z_pos=0.0
+    ):
         self._devices = devices
         self._xy = xy
         self._z = z
@@ -352,6 +354,7 @@ class TestFilterVerify:
         core.verify_config("TTL_ERK", "mScarlet3")
         assert core.getState_calls == 0
         assert core.setState_calls == []
+
 
 # ===================================================================
 # DMD/SLM uploads, live-stop, and keep-alive lifecycle

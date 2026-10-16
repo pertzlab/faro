@@ -16,7 +16,7 @@ class UniMMCoreSimulation(PyMMCoreMicroscope):
 
     def __init__(
         self,
-        mmc, # pymmcore_plus CMMCorePlus instance
+        mmc,  # pymmcore_plus CMMCorePlus instance
     ):
         super().__init__()
         self.mmc = mmc

@@ -54,5 +54,5 @@ class MyStimulator(StimWithPipeline):
         labels = label_images["labels"]
         mask = np.zeros(labels.shape, dtype=np.uint8)
         for prop in regionprops(labels):
-            mask[labels == prop.label] = 1          # TODO: your rule
+            mask[labels == prop.label] = 1  # TODO: your rule
         return mask, None

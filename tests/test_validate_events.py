@@ -36,6 +36,7 @@ from faro.feature_extraction.base import FeatureExtractor
 # Helpers: minimal concrete implementations for the happy path
 # ---------------------------------------------------------------------------
 
+
 class GoodSegmentator(Segmentator):
     def segment(self, image):
         return np.zeros_like(image)
@@ -60,26 +61,31 @@ class GoodStimulator(StimWithPipeline):
 # Helpers: broken implementations (missing params)
 # ---------------------------------------------------------------------------
 
+
 class StimMissingTracks(StimWithPipeline):
     """Forgot to add the ``tracks`` kwarg."""
+
     def get_stim_mask(self, label_images, metadata=None, img=None):
         return np.zeros((10, 10), dtype=np.uint8), None
 
 
 class SegMissingImage(Segmentator):
     """Forgot to accept ``image``."""
+
     def segment(self):
         return np.zeros((10, 10))
 
 
 class TrackerMissingFovState(Tracker):
     """Forgot to accept ``fov_state``."""
+
     def track_cells(self, df_old, df_new):
         return pd.concat([df_old, df_new], ignore_index=True)
 
 
 class FEMissingMetadata(FeatureExtractor):
     """Forgot to accept ``metadata``."""
+
     def extract_features(self, labels, image, df_tracked=None):
         return pd.DataFrame(), None
 
@@ -87,6 +93,7 @@ class FEMissingMetadata(FeatureExtractor):
 # ---------------------------------------------------------------------------
 # Helpers: implementations that accept **kwargs (should always pass)
 # ---------------------------------------------------------------------------
+
 
 class StimWithKwargs(StimWithPipeline):
     def get_stim_mask(self, label_images, **kwargs):
@@ -96,6 +103,7 @@ class StimWithKwargs(StimWithPipeline):
 # ---------------------------------------------------------------------------
 # Helpers: implementations with required_metadata
 # ---------------------------------------------------------------------------
+
 
 class StimNeedsFraction(StimWithPipeline):
     required_metadata: set[str] = {"stim_fraction"}
@@ -128,6 +136,7 @@ class FENeedsThreshold(FeatureExtractor):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def tmp_path_cleanup():
@@ -168,6 +177,7 @@ def _make_events(*, stim=False, metadata=None):
 # Signature validation tests
 # ===================================================================
 
+
 class TestSignatureValidation:
     """validate_pipeline checks that subclass methods match their base class."""
 
@@ -195,7 +205,8 @@ class TestSignatureValidation:
 
     def test_segmentator_missing_image_fails(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, segmentator=SegMissingImage(),
+            tmp_path_cleanup,
+            segmentator=SegMissingImage(),
         )
         events = _make_events()
 
@@ -209,7 +220,8 @@ class TestSignatureValidation:
 
     def test_tracker_missing_fov_state_fails(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, tracker=TrackerMissingFovState(),
+            tmp_path_cleanup,
+            tracker=TrackerMissingFovState(),
         )
         events = _make_events()
 
@@ -222,7 +234,8 @@ class TestSignatureValidation:
 
     def test_fe_missing_metadata_fails(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, fe=FEMissingMetadata(),
+            tmp_path_cleanup,
+            fe=FEMissingMetadata(),
         )
         events = _make_events()
 
@@ -244,8 +257,12 @@ class TestSignatureValidation:
 
         class StimExtra(StimWithPipeline):
             def get_stim_mask(
-                self, label_images, metadata=None, img=None,
-                tracks=None, extra_param=None,
+                self,
+                label_images,
+                metadata=None,
+                img=None,
+                tracks=None,
+                extra_param=None,
             ):
                 return np.zeros((10, 10), dtype=np.uint8), None
 
@@ -257,6 +274,7 @@ class TestSignatureValidation:
 # ===================================================================
 # Required metadata tests
 # ===================================================================
+
 
 class TestRequiredMetadata:
     """validate_pipeline checks that events carry required metadata."""
@@ -289,7 +307,8 @@ class TestRequiredMetadata:
 
     def test_tracker_metadata_missing_fails(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, tracker=TrackerNeedsCondition(),
+            tmp_path_cleanup,
+            tracker=TrackerNeedsCondition(),
         )
         events = _make_events()
 
@@ -302,7 +321,8 @@ class TestRequiredMetadata:
 
     def test_tracker_metadata_present_passes(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, tracker=TrackerNeedsCondition(),
+            tmp_path_cleanup,
+            tracker=TrackerNeedsCondition(),
         )
         events = _make_events(metadata={"condition": "control"})
         assert pipeline.validate_pipeline(events) is True
@@ -311,7 +331,8 @@ class TestRequiredMetadata:
 
     def test_seg_metadata_missing_fails(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, segmentator=SegNeedsChannel(),
+            tmp_path_cleanup,
+            segmentator=SegNeedsChannel(),
         )
         events = _make_events()
 
@@ -324,7 +345,8 @@ class TestRequiredMetadata:
 
     def test_seg_metadata_present_passes(self, tmp_path_cleanup):
         pipeline = _make_pipeline(
-            tmp_path_cleanup, segmentator=SegNeedsChannel(),
+            tmp_path_cleanup,
+            segmentator=SegNeedsChannel(),
         )
         events = _make_events(metadata={"seg_channel": "DAPI"})
         assert pipeline.validate_pipeline(events) is True
@@ -351,7 +373,8 @@ class TestRequiredMetadata:
         """A WaitEvent carries no metadata and must not trip the
         required-metadata check that applies to acquired events."""
         pipeline = _make_pipeline(
-            tmp_path_cleanup, tracker=TrackerNeedsCondition(),
+            tmp_path_cleanup,
+            tracker=TrackerNeedsCondition(),
         )
         events = _make_events(metadata={"condition": "control"}) + [wait(5.0)]
         assert pipeline.validate_pipeline(events) is True
@@ -404,6 +427,7 @@ class TestRequiredMetadata:
 # ===================================================================
 # Combined: signature + metadata
 # ===================================================================
+
 
 class TestCombinedValidation:
     """Both signature and metadata problems are reported together."""

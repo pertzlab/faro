@@ -128,16 +128,12 @@ def test_division_produces_two_tracked_daughters(tmp_dir, tracker):
 
     for t in range(DIVISION_FRAME):
         frame = df[df["timestep"] == t]
-        assert len(frame) == 1, (
-            f"pre-division frame t={t} has {len(frame)} detections"
-        )
+        assert len(frame) == 1, f"pre-division frame t={t} has {len(frame)} detections"
 
     daughter_ids_per_frame: list[set[int]] = []
     for t in range(DIVISION_FRAME, N_FRAMES):
         frame = df[df["timestep"] == t]
-        assert len(frame) == 2, (
-            f"post-division frame t={t} has {len(frame)} detections"
-        )
+        assert len(frame) == 2, f"post-division frame t={t} has {len(frame)} detections"
         daughter_ids_per_frame.append(set(frame["particle"].tolist()))
 
     persistent_ids = set.intersection(*daughter_ids_per_frame)
@@ -169,9 +165,9 @@ def test_motile_records_parent_on_division(tmp_dir):
 
     # Pre-division: no parent info
     pre = df[df["timestep"] < DIVISION_FRAME]
-    assert pre["parent_particle"].isna().all(), (
-        f"pre-division rows should have <NA> parent, got {pre['parent_particle'].tolist()}"
-    )
+    assert (
+        pre["parent_particle"].isna().all()
+    ), f"pre-division rows should have <NA> parent, got {pre['parent_particle'].tolist()}"
 
     # Division frame: both daughters share a single parent ID, and
     # that parent ID matches the particle tracked in the previous frame.

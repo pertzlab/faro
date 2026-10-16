@@ -27,5 +27,7 @@ class FeatureExtractor:
         df = df.rename({"centroid-0": "x", "centroid-1": "y"}, axis="columns")
         return df
 
-    def extract_features(self, labels: dict, image: np.ndarray, df_tracked=None, metadata=None):
+    def extract_features(
+        self, labels: dict, image: np.ndarray, df_tracked=None, metadata=None
+    ):
         raise NotImplementedError("Subclasses should implement this!")

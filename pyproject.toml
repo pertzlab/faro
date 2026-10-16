@@ -115,6 +115,10 @@ pymmcore-widgets = { git = "https://github.com/pertzlab/pymmcore-widgets.git", b
 # preview-during-run). Track upstream main like the other faro envs.
 napari-micromanager = { git = "https://github.com/pymmcore-plus/napari-micromanager.git", branch = "main" }
 
+[tool.black]
+# Same as black's default and the pre-commit hook (.pre-commit-config.yaml).
+line-length = 88
+
 [tool.pytest.ini_options]
 markers = [
     "hardware: requires a real Pertzlab microscope (selected via --scope or FARO_SCOPE env var). Skipped by default.",

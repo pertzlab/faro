@@ -22,7 +22,10 @@ class StimPercentageOfCell(StimWithPipeline):
         return xp > 0
 
     def get_stim_mask(
-        self, label_images, metadata: dict = None, img: np.ndarray = None,
+        self,
+        label_images,
+        metadata: dict = None,
+        img: np.ndarray = None,
         tracks=None,
     ) -> np.ndarray:
         label_image = label_images["labels"]

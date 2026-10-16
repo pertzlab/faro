@@ -6,7 +6,7 @@ class PymmcoreProxyMic(PyMMCoreMicroscope):
 
     def __init__(
         self,
-        url, # URL of the pymmcore-proxy server, e.g. "http://localhost:5600"
+        url,  # URL of the pymmcore-proxy server, e.g. "http://localhost:5600"
     ):
         super().__init__()
         self.url = url

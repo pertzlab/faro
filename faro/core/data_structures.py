@@ -603,7 +603,9 @@ class WaitEvent(RTMEvent):
 
 
 def wait(duration_s: float, *, min_start_time: float | None = None) -> WaitEvent:
-    """Construct a :class:`WaitEvent`; composes with :func:`combine`::
+    """Construct a :class:`WaitEvent`.
+
+    It composes with :func:`combine`::
 
         events = combine(baseline, wait(60), stim, axis="t")
     """
@@ -817,9 +819,7 @@ class RTMSequence(MDASequence):
                     )
                 else:
                     exp = stim_exposure_map[t]
-                    stim = tuple(
-                        _channel_with_exposure(ch, exp) for ch in stim_tuple
-                    )
+                    stim = tuple(_channel_with_exposure(ch, exp) for ch in stim_tuple)
             else:
                 stim = ()
             ref = ref_tuple if ref_tuple and t in ref_set else ()
@@ -904,10 +904,13 @@ def _combine_pair(
     # WaitEvents are pure time markers: they don't claim an axis index
     # (so subsequent t/p numbering is unaffected) but their duration_s
     # extends the wall-clock end of the preceding sequence.
-    max_key = max(
-        (e.index.get(axis, 0) for e in events_a if not isinstance(e, WaitEvent)),
-        default=-1,
-    ) + 1
+    max_key = (
+        max(
+            (e.index.get(axis, 0) for e in events_a if not isinstance(e, WaitEvent)),
+            default=-1,
+        )
+        + 1
+    )
 
     time_offset = 0.0
     if offset_time:

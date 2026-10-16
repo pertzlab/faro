@@ -96,7 +96,10 @@ def test_calibrate_dmd_accepts_dict_name_or_channel(channel):
 def test_calibration_recovers_misaligned_projector():
     th, s = np.deg2rad(4), 0.92
     truth = np.array(
-        [[s * np.cos(th), -s * np.sin(th), 30.0], [s * np.sin(th), s * np.cos(th), -18.0]]
+        [
+            [s * np.cos(th), -s * np.sin(th), 30.0],
+            [s * np.sin(th), s * np.cos(th), -18.0],
+        ]
     )
     mic, _ = _scope(slm_affine=truth)
     target = _target()

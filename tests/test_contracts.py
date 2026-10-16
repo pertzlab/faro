@@ -441,11 +441,13 @@ class TestFeatureExtractionContractParametrized:
 
     def test_extract_features_empty_labels(self, fe):
         labels = {"labels": np.zeros((IMG_H, IMG_W), dtype=np.int32)}
-        img = np.stack([
-            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
-            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
-            np.zeros((IMG_H, IMG_W), dtype=np.uint16),
-        ])
+        img = np.stack(
+            [
+                np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+                np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+                np.zeros((IMG_H, IMG_W), dtype=np.uint16),
+            ]
+        )
         result = fe.extract_features(labels, img)
         _assert_valid_features(result)
         assert len(result[0]) == 0, "No labels should produce empty table"
