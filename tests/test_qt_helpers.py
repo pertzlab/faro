@@ -101,21 +101,29 @@ def test_run_mda_drains_posted_qt_events():
 _ROUTE_SCRIPT = textwrap.dedent(
     """
     import logging
+    import sys
     import threading
     import time
 
     from psygnal import Signal
+    from psygnal.qt import start_emitting_from_queue
     from qtpy.QtCore import QCoreApplication, QEvent, QObject
 
     from faro.core.qt import deliver_gui_slots_on_main_thread
     from tests.fake_microscope import FakeMicroscope
     from tests.fixtures import CircleScene
 
+    hook_calls = []
+    sys.excepthook = lambda *exc: hook_calls.append(exc[1])
     app = QCoreApplication([])
+    # psygnal's own drainer (it re-raises into Qt) must not take over the queue
+    start_emitting_from_queue()
     core = FakeMicroscope(CircleScene()).mmc
     assert deliver_gui_slots_on_main_thread(core)
+    assert deliver_gui_slots_on_main_thread(object()) is False  # no core
     MAIN = threading.main_thread()
-    calls = {k: [] for k in ("widget", "plain", "snap", "mda", "after", "dead", "other")}
+    keys = ("widget", "plain", "snap", "mda", "after", "dead", "other", "dev_prop")
+    calls = {k: [] for k in keys}
     messages = []
 
     class Handler(logging.Handler):
@@ -197,7 +205,25 @@ _ROUTE_SCRIPT = textwrap.dedent(
     core.events.configSet.connect(w.after)
     from_thread(lambda: core.events.configSet.emit("Group", "Preset"))
     assert wait_for(lambda: calls["after"] == [True]), calls
-    assert any("GUI slot raised" in m for m in messages), messages
+    errors = [m for m in messages if "GUI slot raised" in m]
+    assert errors and "boom" in errors[0], messages  # names the slot
+    assert hook_calls == [], hook_calls  # logged, not raised into Qt
+
+    # devicePropertyChanged(...).connect(slot) connects a wrapper function;
+    # a Qt slot behind it is routed too, and disconnect still works
+    class Exposure(QObject):
+        def on_value(self, value):
+            calls["dev_prop"].append((value, on_main()))
+
+    exposure = Exposure()
+    core.events.devicePropertyChanged("Cam", "Exposure").connect(exposure.on_value)
+    from_thread(lambda: core.events.propertyChanged.emit("Cam", "Exposure", "12"))
+    assert calls["dev_prop"] == [], calls
+    assert wait_for(lambda: calls["dev_prop"] == [("12", True)]), calls
+    core.events.devicePropertyChanged("Cam", "Exposure").disconnect(exposure.on_value)
+    from_thread(lambda: core.events.propertyChanged.emit("Cam", "Exposure", "13"))
+    wait_for(lambda: False, timeout=0.2)
+    assert calls["dev_prop"] == [("12", True)], calls
 
     # a slot whose widget was deleted before delivery is skipped
     dead = Widget("dead")
@@ -210,6 +236,7 @@ _ROUTE_SCRIPT = textwrap.dedent(
     from_thread(lambda: core.events.pixelSizeChanged.emit(0.6))
     assert wait_for(lambda: calls["after"] == [True, True]), calls
     assert calls["dead"] == [] and sum("GUI slot raised" in m for m in messages) == n_errors
+    assert hook_calls == [], hook_calls
 
     # psygnal signals that do not belong to the core are not changed
     class Other:
@@ -230,6 +257,99 @@ def test_gui_slots_run_on_main_thread():
     result = subprocess.run(
         [sys.executable, "-c", _ROUTE_SCRIPT],
         cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, (
+        result.stdout + result.stderr
+    )
+
+
+_APP_REPLACED_SCRIPT = textwrap.dedent(
+    """
+    import gc
+    import threading
+    import time
+
+    from qtpy import sip
+    from qtpy.QtCore import QCoreApplication, QObject
+
+    from faro.core.qt import deliver_gui_slots_on_main_thread
+    from tests.fake_microscope import FakeMicroscope
+    from tests.fixtures import CircleScene
+
+    core = FakeMicroscope(CircleScene()).mmc
+    app = QCoreApplication([])
+    assert deliver_gui_slots_on_main_thread(core)
+    sip.delete(app)  # the queue timer goes with it
+    del app
+    gc.collect()
+
+    app = QCoreApplication([])
+    assert deliver_gui_slots_on_main_thread(core)
+    got = []
+
+    class Widget(QObject):
+        def on_prop(self, dev, prop, value):
+            if dev == "Dev":
+                got.append(threading.current_thread() is threading.main_thread())
+
+    w = Widget()
+    core.events.propertyChanged.connect(w.on_prop)
+    t = threading.Thread(target=lambda: core.events.propertyChanged.emit("Dev", "P", "1"))
+    t.start()
+    t.join()
+    end = time.time() + 5
+    while time.time() < end and not got:
+        app.processEvents()
+        time.sleep(0.005)
+    assert got == [True], got
+    print("OK")
+"""
+)
+
+
+def test_queue_timer_restarts_with_a_new_app():
+    pytest.importorskip("qtpy.QtCore")
+    result = subprocess.run(
+        [sys.executable, "-c", _APP_REPLACED_SCRIPT],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, (
+        result.stdout + result.stderr
+    )
+
+
+_STATUS_WIDGET_SCRIPT = textwrap.dedent(
+    """
+    import threading
+
+    import psygnal.qt
+    from qtpy.QtWidgets import QApplication
+
+    import faro.core.qt as fq
+    from faro.widgets.experiment_status import ExperimentStatusWidget
+
+    app = QApplication([])
+    widget = ExperimentStatusWidget()
+    assert fq._QUEUE_TIMER is not None and fq._QUEUE_TIMER.isActive()
+    theirs = psygnal.qt._TIMERS.get(threading.main_thread())
+    assert theirs is None or not theirs.isActive(), "psygnal's drainer runs"
+    print("OK")
+"""
+)
+
+
+def test_status_widget_uses_faros_queue_drainer():
+    pytest.importorskip("qtpy.QtWidgets")
+    result = subprocess.run(
+        [sys.executable, "-c", _STATUS_WIDGET_SCRIPT],
+        cwd=REPO,
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
         capture_output=True,
         text=True,
         timeout=120,
