@@ -110,6 +110,12 @@ url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv]
+# Qt 6.12.0 gives a spinbox without +/- buttons a 1 px wide text field when a
+# style sheet sets its border or padding, so the value is hidden. napari's
+# theme, the pymmcore-widgets sliders (e.g. the Illumination Control) and the
+# magicgui sliders (e.g. the cellpose-SAM thresholds) all do that. Qt 6.11
+# shows the values.
+constraint-dependencies = ["PyQt6-Qt6<6.12"]
 conflicts = [
     [
         { extra = "api74" },
