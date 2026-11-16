@@ -262,8 +262,21 @@ def main(args: Sequence[str] | None = None) -> None:
     # Imported only after the microscope is built: pymmcore_widgets sets
     # PYMM_SIGNALS_BACKEND=qt when unset, and faro needs the psygnal backend.
     import napari
+    from napari.qt import get_qapp
     from napari_micromanager.main_window import MainWindow
 
+    from faro.core.qt import deliver_gui_slots_on_main_thread
+
+    # psygnal delivers the core's events on the thread that sends them (the
+    # MMCore notification thread, the MDA thread). The widgets connect after
+    # this call, so their slots run on the GUI thread; faro's callbacks do
+    # not change.
+    get_qapp()
+    if not deliver_gui_slots_on_main_thread(mic.mmc):
+        logger.info(
+            "Core events (%s) are not routed to the GUI thread.",
+            type(mic.mmc.events).__name__,
+        )
     _add_pertzlab_widgets(mic)
     viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
