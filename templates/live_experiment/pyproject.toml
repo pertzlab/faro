@@ -29,5 +29,7 @@ faro = { git = "https://github.com/pertzlab/faro.git", branch = "main" }
 # With a lab package: the lab package pins faro to its own source (git main).
 # When the faro line above is anything else (a rev pin or a local clone),
 # this replaces the lab package's pin; without it uv stops with
-# "conflicting URLs for package `faro`".
+# "conflicting URLs for package `faro`". The override replaces every faro
+# requirement, extras included, so repeat your faro extras here, e.g.
+# ["faro[cellpose,pertzlab-widgets]"]; otherwise they are dropped silently.
 # override-dependencies = ["faro"]

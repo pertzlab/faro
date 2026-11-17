@@ -725,11 +725,12 @@ code/
 
 ```toml
 [project]
-dependencies = ["faro-pertzlab"]
+dependencies = ["faro-pertzlab", "faro[api75,cellpose]"]
 
 [tool.uv]
 # The lab package pins faro to git; this replaces that pin with the local clone.
-override-dependencies = ["faro"]
+# It replaces every faro requirement, so it repeats the faro extras.
+override-dependencies = ["faro[api75,cellpose]"]
 
 [tool.uv.sources]
 faro          = { path = "../../faro",          editable = true }
@@ -744,9 +745,13 @@ Notes on how uv treats this setup:
   `[tool.uv]` settings (`conflicts`, `constraint-dependencies`) do not: uv
   reads them only in the project that declares them.
 * `editable = true` works only with `path` sources; uv rejects it for `git`.
-* Without `override-dependencies = ["faro"]`, uv stops with "conflicting URLs
-  for package `faro`", because the lab package asks for faro from git and the
-  experiment asks for the local clone.
+* Without the override, uv stops with "conflicting URLs for package `faro`",
+  because the lab package asks for faro from git and the experiment asks for
+  the local clone. The same happens with a `rev` pin of faro.
+* The override replaces every requirement on faro, extras included: with
+  `override-dependencies = ["faro"]`, `faro[api75]` in `dependencies` is
+  dropped silently and the default pymmcore is installed. So list all faro
+  extras in the override.
 * A new or renamed scope entry point is seen after `uv sync` (`uv run` does it
   for you). A running Jupyter kernel needs a restart.
 

@@ -51,7 +51,7 @@ To run an experiment against a local faro checkout, switch the source in `pyproj
 
 ## Real microscopes: lab packages
 
-The microscope classes live in lab packages ([faro-pertzlab](https://github.com/pertzlab/faro-pertzlab), [faro-aoki](https://github.com/pertzlab/faro-aoki)), not in faro. Add yours to `dependencies` (the commented lines in `pyproject.toml`); it brings faro along. When the experiment's faro source differs from the lab package's (a `rev` pin or a local clone), uncomment `override-dependencies = ["faro"]` too: the lab package pins faro to git main, and without the override uv stops with "conflicting URLs for package `faro`". See [Lab packages](../README.md#lab-packages) in the faro README.
+The microscope classes live in lab packages ([faro-pertzlab](https://github.com/pertzlab/faro-pertzlab), [faro-aoki](https://github.com/pertzlab/faro-aoki)), not in faro. Add yours to `dependencies` (the commented lines in `pyproject.toml`); it brings faro along. When the experiment's faro source differs from the lab package's (a `rev` pin or a local clone), uncomment `override-dependencies = ["faro"]` too: the lab package pins faro to git main, and without the override uv stops with "conflicting URLs for package `faro`". The override replaces every faro requirement, extras included, so list your faro extras in it (`["faro[cellpose]"]`); otherwise they are dropped silently. See [Lab packages](../README.md#lab-packages) in the faro README.
 
 ## When things look stale
 
