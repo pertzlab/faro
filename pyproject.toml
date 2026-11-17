@@ -25,7 +25,21 @@ dependencies = [
     # dependency so the example notebook and the templates run right after
     # `uv sync`, without hardware or Micro-Manager.
     "virtual-microscope-teaching",
+    # Qt 6.12.0 gives a spinbox without +/- buttons a 1 px wide text field
+    # when a style sheet sets its border or padding, so the value is hidden.
+    # napari's theme, the pymmcore-widgets sliders (e.g. the Illumination
+    # Control) and the magicgui sliders (e.g. the cellpose-SAM thresholds) all
+    # do that. Qt 6.11 shows the values. A dependency, not a uv constraint:
+    # uv applies [tool.uv] constraints only in the project that declares them,
+    # so a constraint would not reach projects that depend on faro.
+    "PyQt6-Qt6<6.12",
 ]
+
+[project.entry-points."faro.microscopes"]
+# Scope names for `faro-napari <name>` and `pytest --scope <name>`. Lab
+# packages (faro-pertzlab, faro-aoki, ...) add their microscopes to this
+# group; see faro/microscope/registry.py.
+demo = "faro.microscope.demo:MMDemo"
 
 [project.scripts]
 # Launch napari-micromanager on a faro microscope class (see
@@ -110,12 +124,6 @@ url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv]
-# Qt 6.12.0 gives a spinbox without +/- buttons a 1 px wide text field when a
-# style sheet sets its border or padding, so the value is hidden. napari's
-# theme, the pymmcore-widgets sliders (e.g. the Illumination Control) and the
-# magicgui sliders (e.g. the cellpose-SAM thresholds) all do that. Qt 6.11
-# shows the values.
-constraint-dependencies = ["PyQt6-Qt6<6.12"]
 conflicts = [
     [
         { extra = "api74" },
@@ -146,7 +154,7 @@ line-length = 88
 
 [tool.pytest.ini_options]
 markers = [
-    "hardware: requires a real Pertzlab microscope (selected via --scope or FARO_SCOPE env var). Skipped by default.",
+    # "hardware" is registered by faro.testing.plugin (loaded in tests/conftest.py).
     "examples: executes the example notebooks and templates on the virtual microscope (slow).",
 ]
 

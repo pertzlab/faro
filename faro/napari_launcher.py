@@ -1,16 +1,20 @@
 """Launch napari-micromanager on a faro microscope class.
 
 ``python -m napari_micromanager -c some.cfg`` only loads a Micro-Manager
-``.cfg``. Several Pertzlab scopes need Python-side setup that a cfg cannot
-express -- the DMD wake/blank loop and hold exposure, the ROI-follows-binning
-hook, the laser keepalive, the per-scope MDA engine. This launcher builds the
+``.cfg``. Many scopes need Python-side setup that a cfg cannot express --
+the DMD wake/blank loop and hold exposure, the ROI-follows-binning hook, the
+laser keepalive, the per-scope MDA engine. This launcher builds the
 microscope class first and hands its configured core to
 ``MainWindow(viewer, mmcore=...)``. The rest mirrors upstream's
 ``napari_micromanager.__main__``.
 
+Scope names come from the ``faro.microscopes`` entry points of the installed
+lab packages (see ``faro.microscope.registry``).
+
 Examples
 --------
-    uv run faro-napari moench
+    uv run faro-napari demo
+    uv run faro-napari moench                      # needs faro-pertzlab
     uv run faro-napari moench --kwarg uncropped=True
     uv run faro-napari mypkg.scopes:MyScope --kwarg port=3
 
@@ -30,18 +34,12 @@ import logging
 import time
 from collections.abc import Sequence
 from functools import partial
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from faro.microscope.registry import available_scopes, load_scope_class
 
-SCOPES = {
-    "moench": "faro.microscope.pertzlab.moench:Moench",
-    "niesen": "faro.microscope.pertzlab.niesen:Niesen",
-    "jungfrau": "faro.microscope.pertzlab.jungfrau:Jungfrau",
-    "demo": "faro.microscope.demo:MMDemo",
-}
+logger = logging.getLogger(__name__)
 
 # Widgets from the pertzlab pymmcore-widgets branch that get a button in the
 # napari-micromanager toolbar: toolbar label -> (pymmcore_widgets class name,
@@ -343,7 +341,7 @@ def main(args: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="faro-napari",
         description="Run napari-micromanager on a faro microscope class.",
-        epilog=f"Registered scopes: {', '.join(SCOPES)}",
+        epilog=f"Registered scopes: {', '.join(sorted(available_scopes()))}",
     )
     parser.add_argument(
         "scope", help="registered scope name, or 'module.path:ClassName'"
@@ -357,11 +355,10 @@ def main(args: Sequence[str] | None = None) -> None:
     )
     parsed_args = parser.parse_args(args)
 
-    target = SCOPES.get(parsed_args.scope, parsed_args.scope)
-    if ":" not in target:
-        parser.error(f"unknown scope {target!r}")
-    module_path, _, class_name = target.partition(":")
-    cls = getattr(import_module(module_path), class_name)
+    try:
+        cls = load_scope_class(parsed_args.scope)
+    except LookupError as e:
+        parser.error(str(e))
     mic = cls(**dict(parse_kwarg(item) for item in parsed_args.kwarg))
     _cache_snapped_image(mic.mmc)
 

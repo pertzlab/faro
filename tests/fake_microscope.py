@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from faro.microscope.pymmcore import PyMMCoreMicroscope
 
-from tests.fake_mmc import Scene, build_core
+from faro.testing.fake_mmc import Scene, build_core
 
 
 class SimDMD:

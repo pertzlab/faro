@@ -13,7 +13,7 @@ import pytest
 from faro.core.data_structures import Channel, PowerChannel, RTMEvent, wait
 from faro.core.utils import validate_hardware
 
-from tests.fake_mmc import build_validation_core as _core
+from faro.testing.fake_mmc import build_validation_core as _core
 
 
 def _make_events(*, channels=None, stim_channels=None, n=3):
