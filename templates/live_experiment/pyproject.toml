@@ -11,6 +11,9 @@ dependencies = [
     # "faro[cellpose]",
     # "faro[stardist]",
     # "faro[pertzlab-widgets]",   # the lab's pymmcore-widgets (stage map, ...)
+    # On a real scope, add your lab package (it depends on faro):
+    # "faro-pertzlab",
+    # "faro-aoki",
 ]
 
 [tool.uv.sources]
@@ -18,3 +21,15 @@ dependencies = [
 faro = { git = "https://github.com/pertzlab/faro.git", branch = "main" }
 # faro = { git = "https://github.com/pertzlab/faro.git", rev = "0123456789abcdef0123456789abcdef01234567" }
 # faro = { path = "../../faro", editable = true }
+# Your lab package, from git or from a local clone:
+# faro-pertzlab = { git = "https://github.com/pertzlab/faro-pertzlab.git", branch = "main" }
+# faro-pertzlab = { path = "../../faro-pertzlab", editable = true }
+
+# [tool.uv]
+# With a lab package: the lab package pins faro to its own source (git main).
+# When the faro line above is anything else (a rev pin or a local clone),
+# this replaces the lab package's pin; without it uv stops with
+# "conflicting URLs for package `faro`". The override replaces every faro
+# requirement, extras included, so repeat your faro extras here, e.g.
+# ["faro[cellpose,pertzlab-widgets]"]; otherwise they are dropped silently.
+# override-dependencies = ["faro"]

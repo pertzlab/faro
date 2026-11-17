@@ -73,13 +73,14 @@ ROI-follows-binning, laser keepalive, the per-scope MDA engine). `faro-napari`
 builds the microscope class first, then hands its configured core to the plugin:
 
 ```bash
-uv run faro-napari moench
-uv run faro-napari moench --kwarg uncropped=True
 uv run faro-napari demo                          # MM demo config, no hardware
+uv run faro-napari moench                        # a scope from an installed lab package
+uv run faro-napari moench --kwarg uncropped=True
 uv run faro-napari mypkg.scopes:MyScope --kwarg port=3   # any microscope class
 ```
 
-`--kwarg` values are parsed as Python literals. `mic` and `mmcore` are in the
+Scope names come from the installed [lab packages](#lab-packages);
+`faro-napari --help` lists them. `--kwarg` values are parsed as Python literals. `mic` and `mmcore` are in the
 napari console, so e.g. `mic.calibrate_dmd(CyanStim)` or
 `mic.dmd.affine = np.load(...)` can be run there. See
 [faro/napari_launcher.py](faro/napari_launcher.py).
@@ -96,23 +97,23 @@ and `faro-napari` adds two buttons to the plugin's toolbar:
 * **Continuous Focus**: turns the hardware autofocus (e.g. PFS) on and off, and
   shows whether it is locked in focus.
 
-`uv run` syncs the environment to the extras on its command line before it
-runs. So give the extras on each run, together with the pymmcore extra for the
-scope's Micro-Manager (`api74` for Jungfrau, `api75` for Moench):
+In faro's own environment, `uv run` syncs the environment to the extras on its
+command line before it runs. So give the extras on each run:
 
 ```bash
-uv run --extra api74 --extra pertzlab-widgets faro-napari jungfrau
+uv run --extra pertzlab-widgets faro-napari demo
 ```
 
 Or sync once, then run without a sync:
 
 ```bash
-uv sync --extra api74 --extra pertzlab-widgets
-uv run --no-sync faro-napari jungfrau
+uv sync --extra pertzlab-widgets
+uv run --no-sync faro-napari demo
 ```
 
-A `uv run` or `uv sync` without these extras puts back pymmcore-widgets from
-PyPI (no lab widgets) and the default pymmcore.
+A `uv run` or `uv sync` without the extra puts back pymmcore-widgets from PyPI
+(no lab widgets). A project that depends on faro asks for it as
+`faro[pertzlab-widgets]` (faro-pertzlab does that for its scopes).
 
 ## Pipeline
 
@@ -654,10 +655,7 @@ AbstractMicroscope                # useq MDA interface
   │    ├─ MMDemo                  # Micro-Manager demo hardware
   │    ├─ UniMMCoreSimulation     # simulated microscope
   │    ├─ PymmcoreProxyMic        # remote via pymmcore-proxy
-  │    └─ pertzlab/
-  │         ├─ Jungfrau
-  │         ├─ Moench
-  │         └─ Niesen
+  │    └─ lab scopes              # in lab packages, e.g. faro-pertzlab: Jungfrau, Moench, Niesen
   └─ InscoperMicroscope           # implements via Inscoper SDK (planned)
 ```
 
@@ -693,9 +691,120 @@ POWER_PROPERTIES = {
 }
 ```
 
+## Lab packages
+
+faro contains no lab microscopes. Each lab keeps its microscope classes,
+Micro-Manager configs and hardware tests in its own package, which depends on
+faro and registers its scopes by name:
+
+| Package | Scopes |
+|---------|--------|
+| [faro-pertzlab](https://github.com/pertzlab/faro-pertzlab) | `moench`, `niesen`, `jungfrau` |
+| [faro-aoki](https://github.com/alandolt/faro-aoki) | `ix83_unit2`, `ti2e` |
+
+An experiment depends on the lab package, which brings faro along:
+
+```python
+from faro_pertzlab.moench import Moench
+mic = Moench()
+```
+
+and `faro-napari moench` finds the scope through the package's entry point.
+
+### Working on faro and a lab package at the same time
+
+Clone the repositories next to each other and install both as editable, so
+the code you read and change is the code that runs:
+
+```
+code/
+  faro/
+  faro-pertzlab/
+  faro-experiments/<experiment>/pyproject.toml
+```
+
+```toml
+[project]
+dependencies = ["faro-pertzlab", "faro[api75,cellpose]"]
+
+[tool.uv]
+# The lab package pins faro to git; this replaces that pin with the local clone.
+# It replaces every faro requirement, so it repeats the faro extras.
+override-dependencies = ["faro[api75,cellpose]"]
+
+[tool.uv.sources]
+faro          = { path = "../../faro",          editable = true }
+faro-pertzlab = { path = "../../faro-pertzlab", editable = true }
+```
+
+Notes on how uv treats this setup:
+
+* faro's own `[tool.uv.sources]` (napari-micromanager main, the virtual
+  microscope, the CUDA torch index, the `pertzlab-widgets` build) carry over to
+  projects that depend on faro, both from git and from a path. faro's
+  `[tool.uv]` settings (`conflicts`, `constraint-dependencies`) do not: uv
+  reads them only in the project that declares them.
+* `editable = true` works only with `path` sources; uv rejects it for `git`.
+* Without the override, uv stops with "conflicting URLs for package `faro`",
+  because the lab package asks for faro from git and the experiment asks for
+  the local clone. The same happens with a `rev` pin of faro.
+* The override replaces every requirement on faro, extras included: with
+  `override-dependencies = ["faro"]`, `faro[api75]` in `dependencies` is
+  dropped silently and the default pymmcore is installed. So list all faro
+  extras in the override.
+* A new or renamed scope entry point is seen after `uv sync` (`uv run` does it
+  for you). A running Jupyter kernel needs a restart.
+
+### Creating a lab package
+
+```
+faro-mylab/
+  pyproject.toml
+  src/faro_mylab/
+    __init__.py
+    myscope.py           # class MyScope(PyMMCoreMicroscope)
+    configs/myscope.cfg  # shipped inside the package
+  tests/
+    conftest.py          # pytest_plugins = ["faro.testing.plugin"]
+    hardware/test_*.py
+```
+
+```toml
+[project]
+name = "faro-mylab"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["faro"]
+
+[project.entry-points."faro.microscopes"]
+myscope = "faro_mylab.myscope:MyScope"
+
+[tool.uv.sources]
+faro = { git = "https://github.com/pertzlab/faro.git", branch = "main" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+```
+
+Give the config path relative to the package, so it works on every machine:
+
+```python
+from importlib.resources import files
+MICROMANAGER_CONFIG = str(files("faro_mylab") / "configs" / "myscope.cfg")
+```
+
+`faro.testing` has what the hardware tests of every lab share: the
+`faro.testing.plugin` pytest plugin (`--scope`, the `hardware` marker, the
+`microscope`, `safe_positions` and `cellpose_segmentator` fixtures),
+`faro.testing.hardware` (`assert_clean_run`, `load_tracks_df`, ...) and
+`faro.testing.fake_mmc` (a `UniMMCore` with pure-Python camera and SLM for
+unit tests without hardware).
+
 ## Adding Your Own Micro-Manager Microscope
 
-Create a new file in `faro/microscope/` and inherit from `PyMMCoreMicroscope`:
+Put the class in your [lab package](#lab-packages) and inherit from
+`PyMMCoreMicroscope`:
 
 ```python
 import pymmcore_plus
@@ -720,7 +829,11 @@ class MyScope(PyMMCoreMicroscope):
         pass  # optional cleanup
 ```
 
-For DMD support, set up `self.dmd` in `__init__()`, see `pertzlab/moench.py` for an example.
+For DMD support, set up `self.dmd` in `__init__()`, see
+[`faro_pertzlab/moench.py`](https://github.com/pertzlab/faro-pertzlab/blob/main/src/faro_pertzlab/moench.py)
+for an example. To show only some light-source properties in the
+"Illumination Control" dock of `faro-napari`, list them in `LIGHT_PROPERTIES`
+as `(device, property, label)` tuples.
 
 ## Installation
 

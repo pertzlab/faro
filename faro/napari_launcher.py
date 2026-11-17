@@ -1,16 +1,20 @@
 """Launch napari-micromanager on a faro microscope class.
 
 ``python -m napari_micromanager -c some.cfg`` only loads a Micro-Manager
-``.cfg``. Several Pertzlab scopes need Python-side setup that a cfg cannot
-express -- the DMD wake/blank loop and hold exposure, the ROI-follows-binning
-hook, the laser keepalive, the per-scope MDA engine. This launcher builds the
+``.cfg``. Many scopes need Python-side setup that a cfg cannot express --
+the DMD wake/blank loop and hold exposure, the ROI-follows-binning hook, the
+laser keepalive, the per-scope MDA engine. This launcher builds the
 microscope class first and hands its configured core to
 ``MainWindow(viewer, mmcore=...)``. The rest mirrors upstream's
 ``napari_micromanager.__main__``.
 
+Scope names come from the ``faro.microscopes`` entry points of the installed
+lab packages (see ``faro.microscope.registry``).
+
 Examples
 --------
-    uv run faro-napari moench
+    uv run faro-napari demo
+    uv run faro-napari moench                      # needs faro-pertzlab
     uv run faro-napari moench --kwarg uncropped=True
     uv run faro-napari mypkg.scopes:MyScope --kwarg port=3
 
@@ -30,17 +34,12 @@ import logging
 import time
 from collections.abc import Sequence
 from functools import partial
-from importlib import import_module
+from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from faro.microscope.registry import available_scopes, load_scope_class
 
-SCOPES = {
-    "moench": "faro.microscope.pertzlab.moench:Moench",
-    "niesen": "faro.microscope.pertzlab.niesen:Niesen",
-    "jungfrau": "faro.microscope.pertzlab.jungfrau:Jungfrau",
-    "demo": "faro.microscope.demo:MMDemo",
-}
+logger = logging.getLogger(__name__)
 
 # Widgets from the pertzlab pymmcore-widgets branch that get a button in the
 # napari-micromanager toolbar: toolbar label -> (pymmcore_widgets class name,
@@ -232,12 +231,117 @@ def _add_pertzlab_widgets(mic) -> None:
         DOCK_WIDGETS[label] = (factory, getattr(MDI6, icon_name))
 
 
+def _resolve_light_properties(core, wanted) -> list[tuple[str, str, str]]:
+    """Map ``(device, name[, label])`` entries to ``(device, property, label)``.
+
+    A name matches a property exactly, else as the prefix of one (for names
+    an adapter builds at runtime). Without a label, ``device::property`` is
+    shown. Unloaded devices and unmatched names are skipped with a warning.
+    """
+    loaded = set(core.getLoadedDevices())
+    found = []
+    for device, name, *rest in wanted:
+        if device not in loaded:
+            logger.warning("Light widget: device %r is not loaded.", device)
+            continue
+        props = core.getDevicePropertyNames(device)
+        match = (
+            name
+            if name in props
+            else next((p for p in props if p.startswith(name)), None)
+        )
+        if match is None:
+            logger.warning(
+                "Light widget: %r has no property %r. Properties: %s",
+                device,
+                name,
+                ", ".join(props),
+            )
+            continue
+        label = rest[0] if rest else f"{device}::{match}"
+        found.append((device, match, label))
+    return found
+
+
+def _replace_illumination_widget(mic) -> None:
+    """Show only ``mic.LIGHT_PROPERTIES`` in the "Illumination Control" dock.
+
+    napari-micromanager's widget shows every Intensity/Power/Level property
+    of the config. Like ``_add_pertzlab_widgets``, this must run before
+    ``MainWindow`` is created.
+    """
+    wanted = getattr(mic, "LIGHT_PROPERTIES", None)
+    if not wanted:
+        return
+
+    from napari_micromanager._gui_objects._toolbar import DOCK_WIDGETS
+    from pymmcore_widgets import PropertiesWidget, PropertyWidget
+    from qtpy.QtWidgets import QLabel, QSizePolicy
+
+    class LightWidget(PropertiesWidget):
+        """Sliders for a fixed list of light-source properties."""
+
+        def __init__(self, *, parent=None, mmcore=None):
+            # PropertiesWidget.__init__ calls rebuild(), which reads this.
+            self._wanted = list(wanted)
+            super().__init__(parent=parent, mmcore=mmcore)
+            self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        def rebuild(self) -> None:
+            layout = self.layout()
+            while layout.count():
+                layout.takeAt(0).widget().deleteLater()
+            for row, (dev, prop, label) in enumerate(
+                _resolve_light_properties(self._mmc, self._wanted)
+            ):
+                name = QLabel(label)
+                name.setToolTip(f"{dev}::{prop}")
+                value = PropertyWidget(dev, prop, mmcore=self._mmc)
+                layout.addWidget(name, row, 0)
+                layout.addWidget(value, row, 1)
+
+    key = "Illumination Control"
+    DOCK_WIDGETS[key] = (LightWidget, DOCK_WIDGETS[key][1])
+
+
+FARO_ICON = Path(__file__).parent / "resources" / "faro_icon.png"
+
+
+def _set_faro_app_id() -> None:
+    """Give the process its own Windows taskbar group.
+
+    napari's ``get_qapp`` sets napari's app ID, so the taskbar groups the
+    window with napari and shows napari's icon. Call after ``get_qapp`` and
+    before the first window is created; a window keeps the ID it opened with.
+    """
+    import sys
+
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("faro.napari")
+
+
+def _set_faro_icon(viewer) -> None:
+    """Show the faro icon on the napari window and in the taskbar.
+
+    napari sets its own application icon when it creates the QApplication;
+    this replaces it once the viewer exists.
+    """
+    from qtpy.QtGui import QIcon
+    from qtpy.QtWidgets import QApplication
+
+    icon = QIcon(str(FARO_ICON))
+    QApplication.instance().setWindowIcon(icon)
+    viewer.window._qt_window.setWindowIcon(icon)
+
+
 def main(args: Sequence[str] | None = None) -> None:
     """Build the microscope, then run napari-micromanager on its core."""
     parser = argparse.ArgumentParser(
         prog="faro-napari",
         description="Run napari-micromanager on a faro microscope class.",
-        epilog=f"Registered scopes: {', '.join(SCOPES)}",
+        epilog=f"Registered scopes: {', '.join(sorted(available_scopes()))}",
     )
     parser.add_argument(
         "scope", help="registered scope name, or 'module.path:ClassName'"
@@ -251,26 +355,41 @@ def main(args: Sequence[str] | None = None) -> None:
     )
     parsed_args = parser.parse_args(args)
 
-    target = SCOPES.get(parsed_args.scope, parsed_args.scope)
-    if ":" not in target:
-        parser.error(f"unknown scope {target!r}")
-    module_path, _, class_name = target.partition(":")
-    cls = getattr(import_module(module_path), class_name)
+    try:
+        cls = load_scope_class(parsed_args.scope)
+    except LookupError as e:
+        parser.error(str(e))
     mic = cls(**dict(parse_kwarg(item) for item in parsed_args.kwarg))
     _cache_snapped_image(mic.mmc)
 
     # Imported only after the microscope is built: pymmcore_widgets sets
     # PYMM_SIGNALS_BACKEND=qt when unset, and faro needs the psygnal backend.
     import napari
+    from napari.qt import get_qapp
     from napari_micromanager.main_window import MainWindow
 
+    from faro.core.qt import deliver_gui_slots_on_main_thread
+
+    # psygnal delivers the core's events on the thread that sends them (the
+    # MMCore notification thread, the MDA thread). The widgets connect after
+    # this call, so their slots run on the GUI thread; faro's callbacks do
+    # not change.
+    get_qapp()
+    _set_faro_app_id()
+    if not deliver_gui_slots_on_main_thread(mic.mmc):
+        logger.info(
+            "Core events (%s) are not routed to the GUI thread.",
+            type(mic.mmc.events).__name__,
+        )
     _add_pertzlab_widgets(mic)
+    _replace_illumination_widget(mic)
     viewer = napari.Viewer()
     win = MainWindow(viewer, mmcore=mic.mmc)
     dw = viewer.window.add_dock_widget(win, name="MicroManager", area="top")
     if hasattr(dw, "_close_btn"):
         dw._close_btn = False
     viewer.update_console({"mic": mic, "mmcore": mic.mmc})
+    _set_faro_icon(viewer)
     napari.run()
 
     # The window is closed, but its widgets are still connected to the core.

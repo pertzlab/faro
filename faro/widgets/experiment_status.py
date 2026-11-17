@@ -579,13 +579,13 @@ class ExperimentStatusWidget(QWidget):
 
         # Drain psygnal's queued callbacks via a main-thread QTimer; without
         # this, statusChanged emissions from the worker thread would sit in
-        # psygnal's _GLOBAL_QUEUE forever. Idempotent across widgets.
-        try:
-            from psygnal.qt import start_emitting_from_queue
+        # psygnal's _GLOBAL_QUEUE forever. Idempotent across widgets. faro's
+        # drainer, not psygnal's: it logs exceptions in the callbacks instead
+        # of raising them into Qt, also for the core's GUI slots that
+        # deliver_gui_slots_on_main_thread queues on the same queue.
+        from faro.core.qt import start_main_thread_queue
 
-            start_emitting_from_queue()
-        except ImportError:
-            pass
+        start_main_thread_queue()
 
         # Tick the elapsed/remaining clocks between statusChanged emissions
         # so the time fields don't visibly freeze between frames.
@@ -837,7 +837,7 @@ class ExperimentStatusWidget(QWidget):
 
         self._handle = handle
         # thread="main" routes worker-thread emits through psygnal's main-
-        # thread queue (drained by start_emitting_from_queue's QTimer in
+        # thread queue (drained by start_main_thread_queue's QTimer in
         # __init__). Without it the slot would run synchronously off the
         # worker thread and touch QWidgets / OpenGL from the wrong thread.
         handle.statusChanged.connect(self._refresh, thread="main")
