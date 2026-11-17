@@ -31,6 +31,12 @@ class PyMMCoreMicroscope(AbstractMicroscope):
 
     MICROMANAGER_PATH = "C:\\Program Files\\Micro-Manager-2.0"
     POWER_PROPERTIES: dict[str, tuple[str, str]] = {}
+    # (device, property) or (device, property, label) entries shown by the
+    # "Illumination Control" widget of ``faro-napari``. A property matches by
+    # exact name, else by name prefix (for names built at runtime). The label
+    # replaces the "device::property" text. None keeps napari-micromanager's
+    # widget, which shows every Intensity/Power/Level property.
+    LIGHT_PROPERTIES: list[tuple[str, ...]] | None = None
 
     def __init__(self):
         super().__init__()
