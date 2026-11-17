@@ -12,6 +12,9 @@ Hardware tests carry ``@pytest.mark.hardware`` and are gated as follows:
   registered under ``<name>`` (see ``faro.microscope.registry``).
 - ``FARO_SCOPE=<name> pytest``: same, through the environment.
 
+pytest also puts directory names into a test's keywords, so every test in
+a directory named ``hardware`` is gated the same way, marked or not.
+
 Fixtures: ``scope_name``, ``microscope`` (builds the registered class with no
 arguments; override it in the lab's conftest when a scope needs arguments),
 ``synthetic_affine``, ``safe_positions`` and ``cellpose_segmentator``.
