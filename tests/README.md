@@ -7,12 +7,14 @@ pytest                         # full suite, sequential
 pytest -n auto                 # parallel (pytest-xdist), ~60s on 10 cores
 pytest tests/test_contracts.py # one file
 pytest -k "division"           # by name
-pytest --scope moench          # also run Pertzlab hardware tests
 ```
 
-Hardware tests under `tests/hardware/` require a real Pertzlab scope and
-are auto-skipped without `--scope <moench|niesen|jungfrau>` (or
-`FARO_SCOPE=...`).
+faro has no hardware tests of its own. They live in the lab packages
+([faro-pertzlab](https://github.com/pertzlab/faro-pertzlab),
+[faro-aoki](https://github.com/pertzlab/faro-aoki)) and use
+`faro.testing`: the `faro.testing.plugin` pytest plugin adds `--scope <name>`
+(any registered microscope name, or `FARO_SCOPE=...`) and skips
+`@pytest.mark.hardware` tests without it.
 
 ## Layout
 
@@ -27,7 +29,6 @@ are auto-skipped without `--scope <moench|niesen|jungfrau>` (or
 | `test_tracking_divisions.py` | Cell division handling for both trackers. |
 | `test_writers.py` | TIFF + OME-Zarr schema: shapes, axis order, plate layout. |
 | `test_validate_hardware.py` | Pre-flight `validate_hardware` checks (channel existence, exposure/power limits). |
-| `hardware/pertzlab/test_pertzlab_unit.py` | Pertzlab-specific unit tests (power-property detection, `MoenchCMMCorePlus` position-confirmed stage waits). Uses fakes; drives no hardware. |
 | `test_event_ordering.py` | `RTMSequence.iter_events` axis-order semantics. |
 | `test_examples.py` | Executes `examples/live_experiment.ipynb` and both `templates/` notebooks on the virtual microscope (run verbatim with small frame counts; `gui` cells dropped; the re-analysis paths cell swapped for a generated source run); checks README anchors the notebooks link to. Marker `examples`. |
 | `test_events_to_dataframe.py` | Event-list → DataFrame serialization. |
@@ -35,7 +36,7 @@ are auto-skipped without `--scope <moench|niesen|jungfrau>` (or
 
 Shared helpers live in:
 
-- **`fake_mmc.py`** — `build_core(scene)` spins up a real `UniMMCore`
+- **`faro/testing/fake_mmc.py`** (importable as `faro.testing.fake_mmc`, so lab packages can use it too) — `build_core(scene)` spins up a real `UniMMCore`
   wired to pure-Python `FakeCamera` / `FakeSLM` devices. The `Scene`
   protocol is the test's plug-in for frame rendering.
 - **`fake_microscope.py`** — `FakeMicroscope(scene)` wraps `build_core`
@@ -154,7 +155,7 @@ runs; pass `tracker=TrackerTrackpy(...)` directly to `make_pipeline`.
 A scene is any object with `image_height`, `image_width`, `channels`,
 and `render(event)`. Add `slm_name`/`slm_shape` and
 `on_slm_displayed(mask, event)` for stim-aware scenes. The whole
-protocol is documented in `fake_mmc.py::Scene`.
+protocol is documented in `faro/testing/fake_mmc.py::Scene`.
 
 ```python
 class MovingBar:
@@ -176,7 +177,7 @@ Use `build_validation_core` when you need a core that reports specific
 channels/devices/property limits without running acquisitions:
 
 ```python
-from tests.fake_mmc import build_validation_core
+from faro.testing.fake_mmc import build_validation_core
 
 def test_my_validator_rejects_bogus_channel():
     mmc = build_validation_core(

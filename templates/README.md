@@ -49,6 +49,10 @@ Change the `rev` hash, run `uv lock --upgrade-package faro` and `uv sync`, rerun
 
 To run an experiment against a local faro checkout, switch the source in `pyproject.toml` to the `path = ...` line (adjust the relative path), then `uv sync`. Code edits in the checkout are picked up immediately. Switch back to a `rev` pin and re-lock before the experiment goes dormant, so it stays reproducible.
 
+## Real microscopes: lab packages
+
+The microscope classes live in lab packages ([faro-pertzlab](https://github.com/pertzlab/faro-pertzlab), [faro-aoki](https://github.com/pertzlab/faro-aoki)), not in faro. Add yours to `dependencies` (the commented lines in `pyproject.toml`); it brings faro along. When the experiment's faro source differs from the lab package's (a `rev` pin or a local clone), uncomment `override-dependencies = ["faro"]` too: the lab package pins faro to git main, and without the override uv stops with "conflicting URLs for package `faro`". See [Lab packages](../README.md#lab-packages) in the faro README.
+
 ## When things look stale
 
 `uv sync` again. If faro was updated in place, `uv sync --reinstall-package faro`.
