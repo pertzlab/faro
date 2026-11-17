@@ -700,7 +700,7 @@ faro and registers its scopes by name:
 | Package | Scopes |
 |---------|--------|
 | [faro-pertzlab](https://github.com/pertzlab/faro-pertzlab) | `moench`, `niesen`, `jungfrau` |
-| [faro-aoki](https://github.com/pertzlab/faro-aoki) | `ix83_unit2`, `ti2e` |
+| [faro-aoki](https://github.com/alandolt/faro-aoki) | `ix83_unit2`, `ti2e` |
 
 An experiment depends on the lab package, which brings faro along:
 

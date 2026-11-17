@@ -11,7 +11,7 @@ pytest -k "division"           # by name
 
 faro has no hardware tests of its own. They live in the lab packages
 ([faro-pertzlab](https://github.com/pertzlab/faro-pertzlab),
-[faro-aoki](https://github.com/pertzlab/faro-aoki)) and use
+[faro-aoki](https://github.com/alandolt/faro-aoki)) and use
 `faro.testing`: the `faro.testing.plugin` pytest plugin adds `--scope <name>`
 (any registered microscope name, or `FARO_SCOPE=...`) and skips
 `@pytest.mark.hardware` tests without it.
