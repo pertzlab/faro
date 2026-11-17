@@ -472,17 +472,25 @@ def generate_df_acquire(
     phase_id=None,
     phase_name=None,
     condition=None,
+    first_fov_index=0,
 ):
+    """One row per (FOV, timestep) of a legacy df_acquire.
+
+    The FOVs get the indices ``first_fov_index``, ``first_fov_index + 1``, ...
+    in list order. Pass the offset when a FOV group is a slice of a larger
+    list, e.g. ``generate_df_acquire(fovs[21:42], ..., first_fov_index=21)``,
+    so the groups keep distinct FOV indices. ``channel_optocheck`` is acquired
+    as reference channel(s) on ``optocheck_timepoints`` (default: last frame).
+    """
     n_fovs_simultaneously = time_between_timesteps // time_per_fov
     optocheck_timepoints = (
         optocheck_timepoints if optocheck_timepoints is not None else [n_frames - 1]
     )
     timesteps = range(n_frames)
     dfs = []
-    first_fov_index = fovs[0].index
-    for _, fov in enumerate(fovs):
-        fov_index = fov.index
-        fov_group = (fov_index - first_fov_index) // n_fovs_simultaneously
+    for i, fov in enumerate(fovs):
+        fov_index = first_fov_index + i
+        fov_group = i // n_fovs_simultaneously
         start_time_fov = start_time + fov_group * time_between_timesteps * len(
             timesteps
         )

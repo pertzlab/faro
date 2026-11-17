@@ -77,6 +77,7 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
         "channels",
         "stim_channels",
         "ref_channels",
+        "optocheck_channels",
         "stim",
         "stim_channel_name",
         "stim_channel_group",
@@ -154,6 +155,12 @@ def df_to_events(df_acquire: pd.DataFrame) -> list[RTMEvent]:
             and len(ref_channels_raw) > 0
         ):
             ref_channels = tuple(_dict_to_channel(d) for d in ref_channels_raw)
+        # Legacy columns of generate_df_acquire: the optocheck channel(s) are
+        # the reference channels of the rows flagged ``optocheck``.
+        elif pd.notna(row.get("optocheck", False)) and bool(row.get("optocheck")):
+            optocheck_raw = row.get("optocheck_channels")
+            if isinstance(optocheck_raw, (list, tuple)) and len(optocheck_raw) > 0:
+                ref_channels = tuple(_dict_to_channel(d) for d in optocheck_raw)
 
         # --- metadata: everything not consumed above ---
         metadata = {k: v for k, v in row.items() if k not in _SKIP_META}
