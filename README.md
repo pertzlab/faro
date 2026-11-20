@@ -24,6 +24,8 @@ Pipeline   <-->  Controller   <-->   Microscope
 
 Run [`examples/live_experiment.ipynb`](examples/live_experiment.ipynb) for a complete optogenetic feedback experiment on a virtual microscope. No hardware needed.
 
+Run end to end it takes about 70 s on an M1 Max, most of it real-time acquisition (60 frames at 1 s). It writes an OME-Zarr store with images and stimulation masks, per-frame tracks as parquet, and the plots shown in the notebook. Cells tagged `gui` open a napari viewer and need a display; they can be skipped, as in `tests/test_examples.py`.
+
 ```python
 # 1. Set microscope
 mic = UniMMCoreSimulation(mmc=mmc)
@@ -723,6 +725,8 @@ class MyScope(PyMMCoreMicroscope):
 For DMD support, set up `self.dmd` in `__init__()`, see `pertzlab/moench.py` for an example.
 
 ## Installation
+
+Tested on Windows 10 and 11 (microscope control) and macOS on Apple silicon (simulation, demo, analysis), with Python 3.12 or newer. Typical install time with `uv sync` is about 1–2 min on a standard desktop. The demo needs no hardware. Real experiments need a microscope with a DMD or galvo scanner for stimulation, and the `cellpose` extra needs an NVIDIA GPU with CUDA 13 for GPU segmentation.
 
 This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
