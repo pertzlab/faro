@@ -21,6 +21,12 @@ dependencies = [
     "ome-writers",
     "napari-ome-zarr",
     "zarr>=3",
+    # Not used directly: ome-writers -> yaozarrs[io] -> fsspec[s3] pulls in s3fs.
+    # Without a floor, uv can backtrack to s3fs 0.3.5 (2019, no fsspec pin),
+    # whose setup.py uses configparser.SafeConfigParser and fails to build on
+    # Python >= 3.12. A real dependency (not a [tool.uv] constraint) so the
+    # floor also applies to projects that install faro (templates, experiments).
+    "s3fs>=2024.1",
     # Pure-Python simulated microscope (brings numba and opencv). A base
     # dependency so the example notebook and the templates run right after
     # `uv sync`, without hardware or Micro-Manager.
